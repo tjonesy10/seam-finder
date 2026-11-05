@@ -332,6 +332,8 @@ def test_at8_load_runs_recorded(database_url, engine):
         assert row["rows_upserted"] is not None
         assert row["rows_deleted"] is not None
         assert row["rows_skipped"] is not None
+        if row["dataset"] != "player_week_stats":
+            assert row["rows_skipped"] == 0
         assert row["error"] is None
 
 
@@ -400,6 +402,8 @@ def test_missing_stats_file_records_failure_and_other_datasets_continue(database
     assert by_key[("players", None)]["status"] == "succeeded"
     assert by_key[("games", 1800)]["status"] == "succeeded"
     assert by_key[("games", 1800)]["rows_read"] == 0
+    assert by_key[("games", 1800)]["rows_upserted"] == 0
+    assert by_key[("games", 1800)]["rows_skipped"] == 0
     failed = by_key[("player_week_stats", 1800)]
     assert failed["status"] == "failed"
     assert "source file not found" in failed["error"]
@@ -565,10 +569,132 @@ def test_games_load_that_would_orphan_stats_rolls_back(database_url, engine, tmp
     assert "fk_player_week_stats_game_id" in failed[-1]["error"]
 
 
+def test_no_stubs_when_every_player_is_already_loaded(database_url, engine):
+    assert _load(database_url, [2025]) is True
+    notes = [
+        row["notes"]
+        for row in _runs(engine)
+        if row["dataset"] == "player_week_stats" and row["season"] == 2025
+    ]
+    assert notes == ["stub_players=0"]
+
+
+def test_placeholder_only_stats_create_no_stubs(database_url, engine, tmp_path):
+    data_dir = _copy_fixture(tmp_path)
+    path = data_dir / "stats_player" / "stats_player_week_2024.parquet"
+    frame = pl.read_parquet(path).filter(pl.col("player_id").is_null())
+    frame.write_parquet(path)
+    assert _load(database_url, [2024], data_dir=data_dir) is True
+    notes = [
+        row["notes"]
+        for row in _runs(engine)
+        if row["dataset"] == "player_week_stats" and row["season"] == 2024
+    ]
+    assert notes == ["stub_players=0"]
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM player_week_stats WHERE season = 2024")).scalar() == 0
+
+
+def test_stub_without_display_name_fails(database_url, engine, tmp_path):
+    assert _load(database_url, [2024], datasets=["teams", "players", "games"]) is True
+    before = _rows(engine, "players", "gsis_id")
+    data_dir = _copy_fixture(tmp_path)
+    path = data_dir / "stats_player" / "stats_player_week_2024.parquet"
+    frame = pl.read_parquet(path)
+    template = frame.filter(pl.col("player_id") == "00-0036900").with_columns(
+        pl.lit("00-0099992").alias("player_id"),
+        pl.lit(None, dtype=pl.String).alias("player_display_name"),
+    )
+    pl.concat([frame, template], how="diagonal").write_parquet(path)
+    assert _load(database_url, [2024], data_dir=data_dir, datasets=["player_week_stats"]) is False
+    assert _rows(engine, "players", "gsis_id") == before
+    failed = [row for row in _runs(engine) if row["status"] == "failed"][-1]
+    assert "missing display name" in failed["error"]
+
+
+def test_unresolved_team_fails_the_games_load(database_url, engine, tmp_path):
+    assert _load(database_url, [2024], datasets=["teams", "games"]) is True
+    before = _rows(engine, "games", "game_id")
+    data_dir = _copy_fixture(tmp_path)
+    path = data_dir / "schedules" / "games.parquet"
+    frame = pl.read_parquet(path).with_columns(
+        pl.when(pl.col("game_id") == "2024_10_CIN_BAL")
+        .then(pl.lit("ZZZ"))
+        .otherwise(pl.col("home_team"))
+        .alias("home_team")
+    )
+    frame.write_parquet(path)
+    assert _load(database_url, [2024], data_dir=data_dir, datasets=["games"]) is False
+    assert _rows(engine, "games", "game_id") == before
+    failed = [row for row in _runs(engine) if row["dataset"] == "games" and row["status"] == "failed"][-1]
+    assert "unresolved team_abbr" in failed["error"]
+    assert "ZZZ" in failed["error"]
+
+
+def test_unresolved_stats_foreign_keys_name_the_missing_key(database_url, engine, tmp_path):
+    assert _load(database_url, [2024], datasets=["teams", "players", "games"]) is True
+    before = _rows(engine, "player_week_stats", "gsis_id, season, week")
+    data_dir = _copy_fixture(tmp_path)
+    path = data_dir / "stats_player" / "stats_player_week_2024.parquet"
+    frame = pl.read_parquet(path).with_columns(
+        pl.when(pl.col("player_id") == "00-0036900")
+        .then(pl.lit("ZZZ"))
+        .otherwise(pl.col("opponent_team"))
+        .alias("opponent_team")
+    )
+    frame.write_parquet(path)
+    assert _load(database_url, [2024], data_dir=data_dir, datasets=["player_week_stats"]) is False
+    assert _rows(engine, "player_week_stats", "gsis_id, season, week") == before
+    failed = [row for row in _runs(engine) if row["status"] == "failed"][-1]
+    assert "unresolved team_abbr" in failed["error"]
+    assert "ZZZ" in failed["error"]
+
+    frame = pl.read_parquet(FIXTURE_DIR / "stats_player" / "stats_player_week_2024.parquet")
+    frame = frame.with_columns(
+        pl.when(pl.col("player_id") == "00-0036900")
+        .then(pl.lit("2024_10_NO_SUCH"))
+        .otherwise(pl.col("game_id"))
+        .alias("game_id")
+    )
+    frame.write_parquet(path)
+    assert _load(database_url, [2024], data_dir=data_dir, datasets=["player_week_stats"]) is False
+    assert _rows(engine, "player_week_stats", "gsis_id, season, week") == before
+    failed = [row for row in _runs(engine) if row["status"] == "failed"][-1]
+    assert "unresolved game_id" in failed["error"]
+    assert "2024_10_NO_SUCH" in failed["error"]
+
+
+def test_unexpected_loader_error_exits_nonzero(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user@/db")
+
+    def boom(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("loader.run.run_load", boom)
+    assert main(["--seasons", "2024"]) == 1
+
+
+def test_players_failure_fails_the_run(database_url, engine, tmp_path):
+    data_dir = _copy_fixture(tmp_path)
+    path = data_dir / "players" / "players.parquet"
+    pl.read_parquet(path).drop("display_name").write_parquet(path)
+    assert _load(database_url, [2024], data_dir=data_dir, datasets=["players"]) is False
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM players")).scalar() == 0
+
+
+def test_explicit_data_dir_wins_over_env(database_url, engine, tmp_path, monkeypatch):
+    monkeypatch.setenv("SEAM_DATA_DIR", str(tmp_path / "missing"))
+    assert _load(database_url, [2024], data_dir=FIXTURE_DIR, datasets=["teams"]) is True
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM teams")).scalar() > 0
+
+
 def test_cli_module_and_bad_season(database_url, monkeypatch):
     monkeypatch.setenv("SEAM_DATA_DIR", str(FIXTURE_DIR))
     assert main(["--seasons", "2024", "--trigger", "local"]) == 0
     assert main(["--seasons", "1800", "--trigger", "manual"]) == 1
+    assert main(["--seasons", "not-a-season"]) == 1
     monkeypatch.delenv("DATABASE_URL")
     assert main(["--seasons", "2024"]) == 1
 

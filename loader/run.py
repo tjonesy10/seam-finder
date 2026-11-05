@@ -38,7 +38,8 @@ WEEK_MIN = 1
 WEEK_MAX = 22
 
 _DB_URL = re.compile(r"postgres(?:ql)?(?:\+[a-z0-9]+)?:\/\/\S+", re.IGNORECASE)
-_SMALL = 32767
+_SMALLINT_MIN = -32768
+_SMALLINT_MAX = 32767
 
 
 def redact(message: str, secret: str | None = None) -> str:
@@ -115,7 +116,7 @@ def _convert(value, field: Field):
             number = int(value)
         except (TypeError, ValueError) as exc:
             raise LoadError(f"invalid integer: {field.source}") from exc
-        if number < -_SMALL or number > _SMALL:
+        if number < _SMALLINT_MIN or number > _SMALLINT_MAX:
             raise LoadError(f"smallint out of range: {field.source}")
         return number
     if field.kind == "date":
