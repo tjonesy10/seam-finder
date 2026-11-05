@@ -28,7 +28,7 @@ New tests for the correction:
 ## Command
 
 ```text
-python3 -m pytest tests -q --tb=line
+pytest -q --tb=line
 .............s.......................................                    [100%]
 52 passed, 1 skipped in 3.06s
 ```
