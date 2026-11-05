@@ -1,0 +1,50 @@
+name: refresh
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Season or range to load, for example 2024 or 2015-2026. Empty loads the current season."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install .
+
+      - name: Migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          READONLY_ROLE: ${{ vars.READONLY_ROLE }}
+        run: alembic upgrade head
+
+      - name: Load
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TRIGGER: ${{ github.event_name }}
+          SEASONS: ${{ github.event.inputs.seasons }}
+        run: |
+          if [ "$TRIGGER" = "schedule" ]; then
+            python -m loader --trigger schedule
+          elif [ -n "$SEASONS" ]; then
+            python -m loader --trigger manual --seasons "$SEASONS"
+          else
+            python -m loader --trigger manual
+          fi
