@@ -249,12 +249,27 @@ def test_downgrade_and_upgrade(engine):
         assert conn.execute(text("SELECT to_regclass('public.player_week_stats')")).scalar()
 
 
-def test_readonly_role_is_select_only(engine, monkeypatch):
-    monkeypatch.setenv("READONLY_ROLE", "seam_reader")
-    from loader.grants import apply_readonly_grant, revoke_readonly_grant
+def _drop_reader(engine):
+    from loader.grants import revoke_readonly_grant
 
     with engine.begin() as conn:
-        conn.execute(text("DROP ROLE IF EXISTS seam_reader"))
+        exists = conn.execute(
+            text("SELECT 1 FROM pg_roles WHERE rolname = 'seam_reader'")
+        ).first()
+        if exists is None:
+            return
+        revoke_readonly_grant(conn)
+    with engine.begin() as conn:
+        conn.execute(text("DROP OWNED BY seam_reader"))
+        conn.execute(text("DROP ROLE seam_reader"))
+
+
+def test_readonly_role_is_select_only(engine, monkeypatch):
+    monkeypatch.setenv("READONLY_ROLE", "seam_reader")
+    from loader.grants import apply_readonly_grant
+
+    _drop_reader(engine)
+    with engine.begin() as conn:
         conn.execute(text("CREATE ROLE seam_reader"))
         conn.execute(text("GRANT seam_reader TO CURRENT_USER"))
         apply_readonly_grant(conn)
@@ -287,8 +302,5 @@ def test_readonly_role_is_select_only(engine, monkeypatch):
                     conn.execute(text("RESET ROLE"))
                     conn.commit()
     finally:
-        with engine.begin() as conn:
-            revoke_readonly_grant(conn)
-            conn.execute(text("DROP OWNED BY seam_reader"))
-            conn.execute(text("DROP ROLE IF EXISTS seam_reader"))
+        _drop_reader(engine)
         monkeypatch.delenv("READONLY_ROLE", raising=False)

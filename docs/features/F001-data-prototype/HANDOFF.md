@@ -1,2 +1,3 @@
 [2026-11-05 09:26 ET] [blueprint] BLOCKED -> SPEC.md drafted; open questions for Cosmo pending
 [2026-11-05 10:15 ET] [blueprint] DONE -> SPEC.md -> next: forge (Pass A) | Decided: public repo, seasons 2015-2026, POST included, daily refresh, Neon+Render free; split into Pass A/B
+[2026-11-05 11:05 ET] [forge] DONE -> TEST_REPORT.md -> next: Groko | Decided: season/week bounds 1999-2100 and 1-22, stub names split from display_name, ON DELETE CASCADE on player_week_stats.game_id, READONLY_ROLE from the environment, CLI trigger defaults to local; Rejected: none. AT24 BLOCKED, DATABASE_URL secret missing

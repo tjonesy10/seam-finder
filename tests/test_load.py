@@ -84,6 +84,46 @@ def test_at1_idempotent_load(database_url, engine):
     assert all(row["rows_deleted"] == 0 for row in rerun)
 
 
+def _within_one_percent(actual, expected) -> bool:
+    if expected == 0:
+        return actual == 0
+    return abs(actual - expected) / expected <= 0.01
+
+
+@pytest.mark.network
+@pytest.mark.skipif(os.environ.get("RUN_NETWORK_TESTS") != "1", reason="set RUN_NETWORK_TESTS=1")
+def test_at2_network_current_season_within_one_percent(database_url, engine):
+    from loader.source import HttpSource
+
+    season = current_season()
+    assert run_load(database_url=database_url, seasons=[season], trigger="local") is True
+    source = HttpSource()
+    try:
+        teams = pl.read_parquet(source.fetch_parquet("teams", None))
+        players = pl.read_parquet(source.fetch_parquet("players", None))
+        games = pl.read_parquet(source.fetch_parquet("games", None)).filter(pl.col("season") == season)
+        stats = pl.read_parquet(source.fetch_parquet("player_week_stats", season))
+        stats = stats.filter((pl.col("season") == season) & pl.col("player_id").is_not_null())
+    finally:
+        source.close()
+    with engine.connect() as conn:
+        assert _within_one_percent(conn.execute(text("SELECT count(*) FROM teams")).scalar(), teams.height)
+        assert _within_one_percent(
+            conn.execute(text("SELECT count(*) FROM players")).scalar(), players.height
+        )
+        assert _within_one_percent(
+            conn.execute(text("SELECT count(*) FROM games WHERE season = :season"), {"season": season}).scalar(),
+            games.height,
+        )
+        assert _within_one_percent(
+            conn.execute(
+                text("SELECT count(*) FROM player_week_stats WHERE season = :season"),
+                {"season": season},
+            ).scalar(),
+            stats.height,
+        )
+
+
 def test_at2_row_counts_match_fixture(database_url, engine):
     assert _load(database_url, [2024, 2025]) is True
     teams = pl.read_parquet(FIXTURE_DIR / "teams" / "teams_colors_logos.parquet")
