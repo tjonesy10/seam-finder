@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-05)
+Accepted (2026-11-05)
 
 ## Context
 
@@ -51,4 +51,4 @@ Cosmo chose free public nflverse data: players, teams, weekly player stats, and 
 - Data is at most about a day old in season; stat corrections appear by the Thursday run.
 - `games` has nflverse's `game_type` (REG, WC, DIV, CON, SB); we add `season_type` (REG or POST) so games and stats filter the same way.
 - If nflverse changes file names or columns, validation fails loudly and the site keeps the last good data.
-- Public sharing depends on CC BY 4.0 attribution being shown and on the unclear status of underlying NFL rights; flagged as an open question in the [F001 SPEC](../features/F001-data-prototype/SPEC.md#open-questions).
+- Owner approved a public, non-commercial site (2026-11-05) with the CC BY 4.0 attribution footer and no logos or headshots; underlying NFL rights remain with their owners.

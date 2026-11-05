@@ -1,4 +1,4 @@
-Status: DRAFT, open questions pending
+Status: READY (2026-11-05). Open questions answered.
 
 # F001: Data prototype (Part 1)
 
@@ -132,6 +132,10 @@ Server-rendered HTML from the same FastAPI app, using the same query functions a
 - The web app connects with a read-only role (`SELECT` only).
 - Config only from environment variables; `.env` git-ignored; `.env.example` has placeholders only.
 
+## Secrets rule
+
+The repo is public. No database URLs, passwords, API keys or tokens are ever committed, including in docs, examples, tests, fixtures or workflow files. The loader's `DATABASE_URL` lives only as a GitHub Actions secret; the web app's read-only `DATABASE_URL` lives only as a Render environment variable. `.env` is git-ignored and `.env.example` holds placeholders only. Workflow logs must not echo secrets.
+
 ## Acceptance tests
 
 Tests run against a throwaway Postgres (CI service container). Fixtures are small parquet files cut from real nflverse files and committed under `tests/fixtures/`, plus one optional live test marked `network`.
@@ -168,7 +172,11 @@ Pages
 Refresh and repo
 - **AT24 Refresh workflow runs.** Given the `DATABASE_URL` secret is set, when `refresh.yml` is started by hand with `seasons=2024`, then the job succeeds and `load_runs` has new `succeeded` rows with trigger `manual` for teams, players, and 2024 games and stats. The workflow file contains a `schedule` trigger with cron `0 11 * * *`.
 - **AT25 Refresh failure fails the job.** Given a loader failure (e.g. a bad seasons input like `1800`), the job ends failed and `load_runs` records `failed` where a load started.
-- **AT26 No secrets in repo.** A gitleaks scan of the full history finds nothing; no file contains a `postgres://` or `postgresql://` URL with a password; `.env` is in `.gitignore`; `.env.example` holds placeholders only.
+- **AT26 No secrets in repo.** A gitleaks scan of the full history finds nothing; no file contains a `postgres://` or `postgresql://` URL with a password; `.env` is in `.gitignore`; `.env.example` holds placeholders only, and no workflow step prints `DATABASE_URL`.
+
+## Build passes
+
+Built and handed off as two passes, each its own PR. **Pass A (F001a): schema, migrations, loader, refresh workflow** - AT1-AT8, AT24-AT26. **Pass B (F001b): read API and web pages** - AT9-AT23 (plus AT26 re-checked). Pass B starts after Pass A is merged and data is loaded.
 
 ## Non-goals
 
@@ -181,14 +189,16 @@ Dev/CI: `pytest`, `ruff`, gitleaks (CI action).
 Fallback only, pinned, if release URLs change: `nflreadpy`.
 Not allowed without asking: an ORM layer, pandas, a JS framework or bundler, any paid service.
 
-## Open questions
+## Decisions (answered 2026-11-05)
 
-1. **Accounts (flag).** Building and hosting needs Cosmo to create a Neon account and a Render account, both free tier, no card. Default: yes, free tiers, no payment method added (so overages suspend instead of bill).
-2. **Public sharing (flag).** nflverse-data is CC BY 4.0, which allows sharing with attribution, but nflverse also says NFL data "belong to their respective owners". Default: share the site publicly, non-commercial, attribution footer, no logos or headshots. Cosmo decides whether that risk is acceptable.
-3. **Seasons.** Default 2015-2026 (data goes back to 1999; adding seasons is a backfill).
-4. **Refresh schedule.** Default daily at 11:00 UTC year-round plus manual. Alternative: in-season only.
-5. **Postseason.** Default include POST weeks in games and stats.
-6. **Repo visibility.** The repo is private, so Actions minutes count against GitHub Free's monthly allowance (a daily run is expected to use a small part of it; estimate, not measured). Default: stay private.
+1. Neon and Render free accounts: approved, being set up by the owner.
+2. Public, non-commercial site with the nflverse CC BY 4.0 footer credit; no logos or headshots.
+3. Seasons 2015-2026.
+4. Daily GitHub Actions refresh at 11:00 UTC year-round plus manual workflow_dispatch.
+5. Include postseason (POST) weeks.
+6. The repo is public.
+
+Open questions: none.
 
 ## ADRs
 
