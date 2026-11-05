@@ -56,5 +56,5 @@ jobs:
         run: |
           scheme=postgresql
           export DATABASE_URL="${scheme}://${PGUSER}@${PGHOST}:${PGPORT}/${PGDATABASE}"
-          ruff check loader tests migrations
+          ruff check loader web tests migrations
           pytest

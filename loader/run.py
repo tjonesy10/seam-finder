@@ -26,6 +26,7 @@ from loader.tables import (
     players,
     teams,
 )
+from loader.url import normalize_database_url
 
 DATASETS = ("teams", "players", "games", "player_week_stats")
 TRIGGERS = ("local", "manual", "schedule")
@@ -53,14 +54,6 @@ def redact(message: str, secret: str | None = None) -> str:
                 "postgresql+psycopg://" + secret[len("postgresql://") :], "<database>"
             )
     return cleaned[:4000]
-
-
-def normalize_database_url(url: str) -> str:
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://") :]
-    if url.startswith("postgresql://"):
-        url = "postgresql+psycopg://" + url[len("postgresql://") :]
-    return url
 
 
 def current_season(today: date | None = None) -> int:

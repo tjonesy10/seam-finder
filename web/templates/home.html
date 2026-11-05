@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block body %}
+<ul>
+  {% for page in pages %}
+  <li><a href="{{ page.href }}">{{ page.label }}</a></li>
+  {% endfor %}
+</ul>
+<h2>Last refresh per dataset</h2>
+<ul>
+  {% for item in datasets %}
+  <li>{{ item.dataset }}: {{ item.finished_at }}</li>
+  {% endfor %}
+</ul>
+{% endblock %}

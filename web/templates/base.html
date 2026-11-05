@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }}</title>
+  <style>
+    body { font-family: sans-serif; margin: 1.5rem; color: #1a1a1a; }
+    a { color: #0b3d91; }
+    table { border-collapse: collapse; }
+    th, td { border: 1px solid #ccc; padding: 0.25rem 0.5rem; text-align: left; white-space: nowrap; }
+    .table-wrap { overflow-x: auto; }
+    form { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin: 1rem 0; }
+    label { display: flex; flex-direction: column; font-size: 0.9rem; }
+    .error { color: #8a1f1f; font-weight: bold; }
+    footer { margin-top: 2rem; max-width: 46rem; }
+    .pager { margin-top: 0.75rem; }
+  </style>
+</head>
+<body>
+  <p><a href="/">Seam Finder</a></p>
+  <h1>{{ title }}</h1>
+  {% block body %}{% endblock %}
+  <footer>
+    <p>{{ attribution.text }}</p>
+    <ul>
+      {% for link in attribution.links %}
+      <li><a href="{{ link.url }}">{{ link.label }}</a></li>
+      {% endfor %}
+    </ul>
+    <p>Last refresh: {{ last_refresh_et }}</p>
+  </footer>
+</body>
+</html>
