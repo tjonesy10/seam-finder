@@ -52,12 +52,12 @@ tests/test_schema.py::test_upgrade_head_twice_is_safe PASSED
 Gitleaks (`gitleaks detect --source . --redact --log-opts=--all --no-banner`), exit 0:
 
 ```text
-INF 6 commits scanned.
-INF scanned ~150848 bytes (150.85 KB) in 130ms
+INF 7 commits scanned.
+INF scanned ~161063 bytes (161.06 KB) in 158ms
 INF no leaks found
 ```
 
-CI is `.github/workflows/ci.yml`: Postgres 16 service, `ruff check`, `pytest`. The live `refresh.yml` run is the blocked AT24 check.
+CI workflow: `.github/workflows/ci.yml` (Postgres 16 service, `ruff check`, `pytest`). After push, GitHub reported no check runs on PR #3 (`gh pr checks` → "no checks reported"). The live `refresh.yml` run is the blocked AT24 check.
 
 ## Mutation
 
