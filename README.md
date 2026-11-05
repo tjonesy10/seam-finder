@@ -18,3 +18,10 @@ Seam Finder is an advanced analytics and decision-engine platform designed to fi
 • Optimization Engine: Implements integer programming models to construct mathematically optimal DFS lineups under strict salary constraints.
 
 • API Architecture: Built with high-throughput endpoints to deliver lightning-fast draft suggestions and real-time point tracking.
+
+## Data attribution
+
+Data: nflverse (nflverse-data), licensed CC BY 4.0. Changes: subset of columns, loaded into a database. Not affiliated with or endorsed by the NFL or nflverse. NFL data belong to their respective owners.
+
+- https://github.com/nflverse/nflverse-data
+- https://creativecommons.org/licenses/by/4.0/
