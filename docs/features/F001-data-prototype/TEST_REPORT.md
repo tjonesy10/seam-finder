@@ -2,6 +2,8 @@
 
 Date: 2026-11-05. Scope: schema, Alembic migrations, nflverse loader, `.github/workflows/refresh.yml`. Pass B (API and pages, AT9–AT23) was not built.
 
+Correction pass: season/week bounds and the `--trigger` default stay as built. `players.first_name` and `players.last_name` are nullable. A stats-only player stores `display_name` and leaves both name columns null until the players file supplies them. Every foreign key is `ON DELETE RESTRICT`. A games load that would delete a game still referenced by `player_week_stats` fails, rolls back, and records `load_runs.status = failed`.
+
 ## Results
 
 | AT | Result | Evidence |
@@ -14,79 +16,77 @@ Date: 2026-11-05. Scope: schema, Alembic migrations, nflverse loader, `.github/w
 | AT6 | PASS | `tests/test_load.py::test_at6_placeholder_rows_skipped` |
 | AT7 | PASS | `tests/test_load.py::test_at7_failed_load_keeps_old_data` |
 | AT8 | PASS | `tests/test_load.py::test_at8_load_runs_recorded` |
-| AT24 | BLOCKED | `DATABASE_URL` secret is not set, so the live refresh run was not started. The workflow file checks in `tests/test_refresh.py::test_refresh_workflow_schedule_and_dispatch` passed. |
-| AT25 | PASS | `tests/test_load.py::test_missing_stats_file_records_failure_and_other_datasets_continue`, `tests/test_load.py::test_cli_module_and_bad_season`, and the workflow has no `continue-on-error` |
-| AT26 | PASS | `tests/test_refresh.py::test_at26_no_secrets_in_repo` and a gitleaks scan of history |
+| AT24 | BLOCKED | `DATABASE_URL` secret is not set, so the live refresh run was not started. `tests/test_refresh.py::test_refresh_workflow_schedule_and_dispatch` passed. |
+| AT25 | PASS | `tests/test_load.py::test_missing_stats_file_records_failure_and_other_datasets_continue`, `tests/test_load.py::test_cli_module_and_bad_season`, and `refresh.yml` has no `continue-on-error` |
+| AT26 | PASS | `tests/test_refresh.py::test_at26_no_secrets_in_repo` |
+
+New tests for the correction:
+
+- `tests/test_load.py::test_stub_name_stays_null_until_players_file` — gsis_id `00-0099991`, display name `Odell Beckham Jr.`, null `first_name` and `last_name` until a players-file load sets `Odell` and `Beckham Jr.`
+- `tests/test_load.py::test_games_load_that_would_orphan_stats_rolls_back` — removing `2024_10_CIN_BAL` fails on `fk_player_week_stats_game_id`; games and stats are unchanged
 
 ## Command
 
 ```text
-python3 -m pytest tests -v --tb=no
-37 passed, 1 skipped in 2.82s
+python3 -m pytest tests -q --tb=line
+......s...............................                                   [100%]
+37 passed, 1 skipped in 2.83s
 ```
 
-The skipped test is the optional network check. It is off unless `RUN_NETWORK_TESTS=1`. Run on its own against a fresh download of the current season:
+The skip is `test_at2_network_current_season_within_one_percent` unless `RUN_NETWORK_TESTS=1`. That live check passed earlier on its own: `1 passed in 16.01s`.
 
-```text
-1 passed in 16.01s
-```
+## CI
 
-Excerpt:
+`.github/workflows/ci.yml` triggers:
 
-```text
-tests/test_load.py::test_at1_idempotent_load PASSED
-tests/test_load.py::test_at2_row_counts_match_fixture PASSED
-tests/test_load.py::test_at3_chase_week PASSED
-tests/test_load.py::test_at4_allen_and_dal_phi PASSED
-tests/test_load.py::test_at5_removed_source_row_is_deleted PASSED
-tests/test_load.py::test_at6_placeholder_rows_skipped PASSED
-tests/test_load.py::test_at7_failed_load_keeps_old_data PASSED
-tests/test_load.py::test_at8_load_runs_recorded PASSED
-tests/test_load.py::test_cli_module_and_bad_season PASSED
-tests/test_refresh.py::test_refresh_workflow_schedule_and_dispatch PASSED
-tests/test_refresh.py::test_at26_no_secrets_in_repo PASSED
-tests/test_schema.py::test_upgrade_head_twice_is_safe PASSED
-======================== 37 passed, 1 skipped in 2.82s =========================
-```
+- `pull_request`
+- `push` to `main` and to every other branch (`**`)
 
-Gitleaks (`gitleaks detect --source . --redact --log-opts=--all --no-banner`), exit 0:
+`actionlint` reports the file as valid. After pushing `2292a92` to `cursor/f001-pass-a-loader-210d`:
 
-```text
-INF 7 commits scanned.
-INF scanned ~161063 bytes (161.06 KB) in 158ms
-INF no leaks found
-```
+- `gh pr checks 3` → `no checks reported on the 'cursor/f001-pass-a-loader-210d' branch`
+- `GET /repos/tjonesy10/seam-finder/actions/runs` → HTTP 200 `{"total_count":0,"workflow_runs":[]}`
+- `GET /repos/tjonesy10/seam-finder/actions/workflows` → HTTP 200 `{"total_count":0,"workflows":[]}` (GitHub lists workflow files from the default branch only; `ci.yml` is not on `main`)
+- `GET /repos/tjonesy10/seam-finder/actions/permissions` → HTTP 403 `{"message":"Resource not accessible by integration","status":"403"}`
+- Commit `2292a92` check suites: Claude `queued`, Cursor `queued`. No GitHub Actions suite.
 
-CI workflow: `.github/workflows/ci.yml` (Postgres 16 service, `ruff check`, `pytest`). After push, GitHub reported no check runs on PR #3 (`gh pr checks` → "no checks reported"). The live `refresh.yml` run is the blocked AT24 check.
+A repository with Actions disabled returns HTTP 403 and the message `Actions is disabled` from the workflows endpoint. This repo returns HTTP 200 and an empty list, so that endpoint does not say Actions is disabled. GitHub still created no workflow run for the push or the pull request. No CI run URL exists.
 
 ## Mutation
 
-`./mutator --changed` from the repo root selected nothing: the loader and migrations were already committed, and that flag only sees uncommitted files.
-
-The run that executed was:
+Command, explicit file list (`--changed` is empty once the files are committed):
 
 ```text
 /tmp/side/mutator/mutator --no-coverage --max-workers 1 \
   --test-command "/usr/bin/python3 -m pytest -q --tb=no" \
-  loader migrations
+  loader/run.py loader/tables.py migrations/versions/0001_initial.py
 ```
 
-`--max-workers 1` keeps the suite off a shared Postgres. Exit 0.
+Exit 3.
 
 ```text
-Total                                                       226         0          0    226  100.0%
+Total    Killed 141    Survived 46    Uncovered 0    Sites 187    Score 75.4%
 ```
 
-226 killed, 0 survived, 0 uncovered. No survivors left to add tests for.
+Survivors by function:
 
-Before that run, tests were added for the edges the scan was about to leave open: season/week bounds (`test_season_and_week_bounds`), display-name splitting (`test_split_name_one_and_many_tokens`), release file names, and a missing read-only role. The session fixture rebuilds the schema from the migration on disk so a mutated `0001_initial` is what the column checks see.
+| Function | Survived |
+|---|---|
+| `_convert` | 19 |
+| `_create_stubs` | 5 |
+| `run_load` | 3 |
+| `_log` | 2 |
+| `load_games` | 2 |
+| `load_stats` | 2 |
+| `main` | 2 |
+| `upgrade` | 2 |
+| `delete` path literals, `ensure_unique`, `fields`, `load_players`, `load_teams`, `normalize_database_url`, `parse_datasets`, `parse_seasons`, `redact`, `upsert` | 1 each |
 
-## Open questions
+They are coercion edges the fixtures do not hit (boolean and numeric boundary flips inside `_convert`), log `flush` flags, string-join operators, and two migration flags tests do not observe: `Identity(always=True)` and `UUID(as_uuid=True)`. No further tests were added after this run.
 
-1. Season and week bounds. ADR 0002 says "keys non-null and unique; season and week in range; season_type in {REG, POST}" and does not give numbers. The only numbers in the F001 spec are the API rules: "season int 1999-2100; week int 1-22". The loader uses those bounds.
+## Decisions from the spec owner
 
-2. Stub player names. ADR 0002 says a missing player gets "a minimal players row (gsis_id, display name, position from the stats file)". The data dictionary marks `first_name` and `last_name` NOT NULL. The loader splits `player_display_name` on the last space. A one-token name is stored in both columns.
-
-3. Game delete versus stats. The data dictionary says `player_week_stats.game_id` is an FK to `games` and does not say `ON DELETE`. The migration uses `ON DELETE CASCADE` so a games reload can remove a game that previous stats still reference. The stats load then rewrites that season.
-
-4. CLI trigger default. The spec lists `--trigger local|manual|schedule` and says "Default: current season, all four datasets." It does not say the default trigger. The CLI uses `local` when the flag is omitted. The workflow always passes `schedule` or `manual`.
+1. Season 1999–2100 and week 1–22. Confirmed. No code change.
+2. Do not split `player_display_name`. `first_name` and `last_name` are nullable. Confirmed in the migration and loader.
+3. Every foreign key is `ON DELETE RESTRICT`. No `ON DELETE CASCADE`. Confirmed.
+4. `--trigger` defaults to `local`. Confirmed. No code change.
