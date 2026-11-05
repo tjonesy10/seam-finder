@@ -9,6 +9,8 @@
 | team abbreviation | Short team code; our team key. Includes historical codes (OAK, SD, STL). | `team_abbr`; `team`, `home_team`, `away_team`, `opponent_team` |
 | game_id | nflverse game key, `{season}_{week}_{away}_{home}`. | `games.game_id` |
 | season | NFL season year it starts in (the 2025 season's playoffs are in early 2026). | `season` |
+| read-only role | The Postgres login the web app uses; it can only `SELECT`. Its name is set in the `READONLY_ROLE` Actions variable. | `READONLY_ROLE` |
+| cold start | The wait (about a minute) when a sleeping Render free instance gets its first request. | n/a |
 | secret | A credential (DB URL, key, token) stored only in GitHub Actions secrets or Render environment variables, never in the repo. | `DATABASE_URL` |
 | week | Week number within a season; postseason weeks continue after the last regular-season week. | `week` |
 | season type | REG (regular season) or POST (postseason). | `season_type` |
