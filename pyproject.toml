@@ -22,6 +22,7 @@ packages = ["loader"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
   "network: downloads live nflverse release files",
 ]

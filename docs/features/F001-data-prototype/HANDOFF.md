@@ -2,3 +2,4 @@
 [2026-11-05 10:15 ET] [blueprint] DONE -> SPEC.md -> next: forge (Pass A) | Decided: public repo, seasons 2015-2026, POST included, daily refresh, Neon+Render free; split into Pass A/B
 [2026-11-05 11:05 ET] [forge] DONE -> TEST_REPORT.md -> next: Groko | Decided: season/week bounds 1999-2100 and 1-22, stub names split from display_name, ON DELETE CASCADE on player_week_stats.game_id, READONLY_ROLE from the environment, CLI trigger defaults to local; Rejected: none. AT24 BLOCKED, DATABASE_URL secret missing
 [2026-11-05 11:31 ET] [forge] DONE -> TEST_REPORT.md -> next: Groko | Decided: ranges 1999-2100 and week 1-22 confirmed; first_name and last_name nullable with no display-name split; every FK ON DELETE RESTRICT; --trigger default local confirmed. CI: GitHub created no Actions run (actions/runs total_count 0)
+[2026-11-05 12:23 ET] [forge] DONE -> CI fix PR -> next: Groko | Decided: pytest pythonpath config fixes CI import error
