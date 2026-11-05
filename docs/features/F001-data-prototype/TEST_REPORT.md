@@ -99,3 +99,99 @@ Skipped survivors, one line each:
 2. Do not split `player_display_name`. `first_name` and `last_name` are nullable. Confirmed in the migration and loader.
 3. Every foreign key is `ON DELETE RESTRICT`. No `ON DELETE CASCADE`. Confirmed.
 4. `--trigger` defaults to `local`. Confirmed. No code change.
+
+# F001 Pass B test report
+
+Date: 2026-11-05. Scope: read API and server-rendered pages (AT9–AT23), AT26 re-checked, AT27 after deploy.
+
+## Results
+
+| AT | Result | Evidence |
+|---|---|---|
+| AT9 | PASS | `tests/test_api.py::test_at9_root_and_attribution`. Live `GET /api` 200, attribution text and both links. |
+| AT10 | PASS | `tests/test_api.py::test_at10_health` and `test_at10_health_when_database_is_down`. Live `GET /api/health` 200. Unreachable DB returns 503 `service_unavailable`. |
+| AT11 | PASS | `tests/test_api.py::test_at11_teams`. Live `GET /api/teams` 200, `?conf=AFC` 200, `/api/teams/CIN` 200, `/api/teams/XYZ` 404. |
+| AT12 | PASS | `tests/test_api.py::test_at12_players` |
+| AT13 | PASS | `tests/test_api.py::test_at13_games` |
+| AT14 | PASS | `tests/test_api.py::test_at14_player_week_stats` |
+| AT15 | PASS | `tests/test_api.py::test_at15_load_runs` |
+| AT16 | PASS | `tests/test_api.py::test_at16_pagination` |
+| AT17 | PASS | `tests/test_api.py::test_at17_bad_parameters` |
+| AT18 | PASS | `tests/test_readonly.py::test_at18_read_only_role`. CI and local pytest create login role `seam_web_reader` and apply only `loader/grants.py`, then connect as that role. `SELECT` works. `INSERT`, `UPDATE`, `DELETE`, and `CREATE` each raise `42501`. |
+| AT19 | PASS | `tests/test_pages.py::test_at19_each_table_page_renders`. Live `/teams`, `/players`, `/games`, `/stats`, `/load-runs` each 200. |
+| AT20 | PASS | `tests/test_pages.py::test_at20_filters_sort_and_paging`. Browser: `/stats?season=2024&week=10&team=CIN` showed Ja'Marr Chase; the receiving_yards header went to `sort=receiving_yards&order=desc` and ordered 264, 11, 0. |
+| AT21 | PASS | `tests/test_pages.py::test_at21_bad_page_params`. Live `GET /games?week=abc` 400 with `week must be an integer from 1 to 22`. |
+| AT22 | PASS | `tests/test_pages.py::test_at22_attribution_on_every_page`. Live footer `Last refresh: 2026-11-05 14:21:01 ET` plus both links. |
+| AT23 | PASS | `tests/test_pages.py::test_at23_no_external_images`. Browser page source had no `<img>`. |
+| AT26 | PASS | `tests/test_refresh.py::test_at26_no_secrets_in_repo` with gitleaks 8.30.1 over the full history. |
+| AT27 | UNKNOWN | The public URL is not deployed. Check `GET {public URL}/api/health` and `GET {public URL}/` after deploy. |
+
+## Command
+
+```text
+ruff check loader web tests migrations
+pytest -q --tb=line
+```
+
+```text
+All checks passed!
+79 passed, 1 skipped in 5.96s
+```
+
+The skip is `test_at2_network_current_season_within_one_percent` unless `RUN_NETWORK_TESTS=1`.
+
+## Live server
+
+Fixture load, then `uvicorn web.main:app --host 0.0.0.0 --port 8765` with `DATABASE_URL` in the environment (no password in the repo).
+
+`GET /api/health`:
+
+```json
+{"status":"ok","database":"ok","last_refresh":{"dataset":"player_week_stats","season":2025,"finished_at":"2026-11-05T19:21:01.107416+00:00","source_version":"2026-11-05 05:06:05 EST"}}
+```
+
+`GET /api` 200 with `name` Seam Finder, the ADR 0002 attribution text, and links to nflverse-data and CC BY 4.0. `Cache-Control: public, max-age=300`.
+
+Other live responses: `/api/teams` 200, `/api/teams?conf=AFC` 200, `/api/teams/CIN` 200, `/api/teams/XYZ` 404, `/api/players?q=chase` 200 (Ja'Marr Chase), `/api/players?position=WR&team=CIN` 200, `/api/players/00-0036900` 200, `/api/players/00-0000000` 404, `/api/players?q=a` 400, `/api/games?season=2025&week=1` 200 (includes `2025_01_DAL_PHI`), `/api/games?team=PHI&season=2025` 200, `/api/games?season_type=post&season=2024` 200, `/api/games/2025_01_DAL_PHI` 200 (`gameday` `2025-09-04`), `/api/games/nope` 404, `/api/player-week-stats?season=2024&week=10&team=CIN` 200 (Chase: receptions 11, targets 17, receiving_yards 264, fantasy_points 44.4, fantasy_points_ppr 55.4), `/api/player-week-stats?player=00-0036900&season=2024` 200, `/api/player-week-stats?sort=receiving_yards&order=desc&season=2024&week=10` 200 (Chase first), `/api/load-runs` 200, `/api/load-runs?status=failed` 200, `/` 200, `/teams` 200, `/players` 200, `/games` 200, `/stats?season=2024&week=10&team=CIN` 200, `/load-runs` 200, `/games?week=abc` 400.
+
+A browser pass confirmed the teams conference filter, the stats sort link, the games error page, and the absence of images.
+
+## CI
+
+`test` on pull request #8 passed.
+
+https://github.com/tjonesy10/seam-finder/actions/runs/42097604652
+
+Conclusion: success. The job ran ruff, pytest, and gitleaks against the Postgres service container.
+
+## Mutation
+
+Advisory. Command:
+
+```text
+/tmp/mutator-src/mutator/mutator --no-coverage --max-workers 1 \
+  --test-command "python3 -m pytest -q --tb=no" \
+  loader/url.py web/attribution.py web/errors.py web/serialize.py \
+  web/resources.py web/params.py web/queries.py web/pages.py web/main.py
+```
+
+`../crapper` was checked out beside that mutator clone. Exit 3.
+
+```text
+Total    Killed 89    Survived 10    Uncovered 0    Sites 99    Score 89.9%
+```
+
+Tests added for the survivors that change behavior: empty-page range and last refresh, paging links (limit kept, last page, offset 1), stats `season_type` and `position`, load-run `season`, primary-key tie break, `q` length 50, offset max, long `conf`, blank `DATABASE_URL`, and a programming error versus a dropped connection.
+
+Skipped survivors, one line each:
+
+- `web/errors.py` `connection_invalidated` default `False` → `True`: SQLAlchemy always sets that attribute, so the default never runs.
+- `web/main.py` error-page `total=0` → `1`: an error renders an empty range, so that total is not shown.
+- `web/main.py` `pool_pre_ping=True` → `False`: the suite uses a live connection either way.
+- `web/main.py` validation handler `problems[0]` → `[1]`: the handler never runs; parameters are parsed in the app, and `limit=abc` already returns 400.
+- `web/main.py` validation handler `loc or ()` → `and`: the handler never runs.
+- `web/main.py` validation handler unary minus deleted on `loc[-1]`: the handler never runs.
+- `web/main.py` validation handler `loc[-1]` → `[-0]`: the handler never runs.
+- `web/pages.py` error fallback offset `0` → `1`: the error branch sets the range before that offset is used.
+- `web/params.py` position length minimum `1` → `0`: a blank position is ignored before the pattern runs.
+- `web/serialize.py` `text or "0"` → `and`: formatting a decimal never yields an empty string.

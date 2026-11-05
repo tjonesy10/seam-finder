@@ -6,15 +6,9 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 
+from loader.url import normalize_database_url
+
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "nflverse"
-
-
-def normalize_database_url(url: str) -> str:
-    if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://") :]
-    if url.startswith("postgresql://"):
-        url = "postgresql+psycopg://" + url[len("postgresql://") :]
-    return url
 
 
 @pytest.fixture(scope="session")
@@ -36,6 +30,28 @@ def engine(database_url):
     eng = create_engine(normalize_database_url(database_url), pool_pre_ping=True)
     yield eng
     eng.dispose()
+
+
+@pytest.fixture
+def loaded(database_url, clean_tables):
+    from loader.run import run_load
+
+    assert run_load(
+        database_url=database_url,
+        seasons=[2024, 2025],
+        data_dir=FIXTURE_DIR,
+        trigger="local",
+    )
+
+
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+
+    from web.main import app
+
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture(autouse=True)
