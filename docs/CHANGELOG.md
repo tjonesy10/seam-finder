@@ -9,5 +9,8 @@ Added (planning docs, Part 1 data prototype, all DRAFT):
 - `docs/adr/0002-nflverse-load-and-refresh.md`: nflverse-data release files, idempotent upsert, daily GitHub Actions refresh, load_runs, CC BY 4.0 attribution (Proposed).
 - `docs/data-dictionary.md`: teams, players, games, player_week_stats, load_runs; migration plan.
 - `docs/GLOSSARY.md`: terms used across the docs.
-- `docs/features/F001-data-prototype/SPEC.md`: behavior, API contract, acceptance tests AT1-AT26, open questions.
-- `docs/features/F001-data-prototype/HANDOFF.md`: status log (blocked on open questions).
+- `docs/features/F001-data-prototype/SPEC.md`: behavior, API contract, acceptance tests AT1-AT26, decisions.
+- `docs/features/F001-data-prototype/HANDOFF.md`: status log.
+- Open questions answered; SPEC, PRD, architecture READY; ADR 0001 and 0002 Accepted.
+- Repo is public: Actions-minutes note updated; Secrets rule added to the F001 SPEC.
+- F001 split into build passes A (data) and B (API and pages).

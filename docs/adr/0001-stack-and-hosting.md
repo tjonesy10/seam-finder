@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-05)
+Accepted (2026-11-05)
 
 ## Context
 
@@ -17,7 +17,7 @@ Free-tier facts (read 2026-11-05):
 - **Fly.io** ([pricing](https://fly.io/docs/about/pricing/)): no free tier; card required.
 - **Railway** ([pricing](https://railway.com/pricing)): trial credit, then $1/month of free usage on one project.
 - **Vercel Hobby** ([docs](https://vercel.com/docs/plans/hobby)): non-commercial personal use only; serverless functions.
-- **GitHub Actions** ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)): free for public repos; for a private repo on GitHub Free, a monthly included allowance ($12 of compute, which at the listed $0.006/min Linux 2-core rate is about 2,000 minutes, derived). Without a payment method, runs stop when the allowance is used.
+- **GitHub Actions** ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)): The repo is public, so standard GitHub-hosted runners are free.
 
 ## Decision
 
@@ -49,6 +49,6 @@ Free-tier facts (read 2026-11-05):
 ## Consequences
 
 - First page view after 15 minutes idle waits about a minute for Render to start; Neon adds a sub-second wake. Fine for a shared prototype; a paid Render instance removes it if needed later.
-- Cosmo must create Neon and Render accounts (flagged as an open question, not decided here).
-- Expected cost $0/month. What would push to paid: Neon over 100 CU-hours or 5 GB egress (service suspends, no bill, unless upgraded); Render over 750 instance hours or 5 GB bandwidth (suspends without a payment method); GitHub Actions over the private-repo allowance (runs stop without a payment method). At this size none is expected (estimate).
-- Keeping the repo private uses Actions minutes; making it public removes that limit.
+- Owner approved free Neon and Render accounts (2026-11-05); no card on file.
+- Expected cost $0/month. What would push to paid: Neon over 100 CU-hours or 5 GB egress (service suspends, no bill, unless upgraded); Render over 750 instance hours or 5 GB bandwidth (suspends without a payment method). Standard GitHub-hosted runners are free because the repo is public. At this size none is expected (estimate).
+- The repo is public (owner decision 2026-11-05): Actions minutes are not a constraint, and every committed file is world-readable, so the Secrets rule in the F001 SPEC applies.

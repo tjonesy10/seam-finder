@@ -1,6 +1,6 @@
 # PRD: Seam Finder, Part 1 (data prototype)
 
-Status: DRAFT, open questions pending (2026-11-05)
+Status: READY (2026-11-05)
 
 ## Problem
 
@@ -66,4 +66,4 @@ As Cosmo, I want the site at a public URL, so that I can send it to friends.
 
 ## Open questions
 
-See the list in [F001 SPEC](features/F001-data-prototype/SPEC.md#open-questions). Each has a proposed default; nothing that needs a signup, card, or payment is decided here.
+None. Answers recorded in the F001 SPEC Decisions section.
