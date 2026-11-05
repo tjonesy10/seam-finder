@@ -1,6 +1,6 @@
 # Data dictionary: Seam Finder, Part 1
 
-Status: DRAFT (2026-11-05). Source facts measured from nflverse-data release files on 2026-11-05. Load rules: [ADR 0002](adr/0002-nflverse-load-and-refresh.md). Terms: [GLOSSARY.md](GLOSSARY.md).
+Status: READY (2026-11-05). Source facts measured from nflverse-data release files on 2026-11-05. Load rules: [ADR 0002](adr/0002-nflverse-load-and-refresh.md). Terms: [GLOSSARY.md](GLOSSARY.md).
 
 Conventions: snake_case; column names match nflverse except where noted; `NOT NULL` only where the source had zero nulls for 2015-2026 or the loader sets the value. Every data table has `loaded_at timestamptz NOT NULL` (set by the loader on insert/update; not listed below).
 

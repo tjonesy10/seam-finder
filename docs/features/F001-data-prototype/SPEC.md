@@ -1,4 +1,4 @@
-Status: READY (2026-11-05). Open questions answered.
+Status: READY (2026-11-05). Open questions answered. Pass A built; Pass B handed off.
 
 # F001: Data prototype (Part 1)
 
@@ -7,6 +7,22 @@ Related: [PRD](../../prd.md), [architecture](../../architecture.md), [data dicti
 ## Problem / job to be done
 
 Get nflverse players, teams, games, and player weekly stats into Postgres, keep them refreshed, and show them through read-only JSON APIs and simple web pages at a public URL, on free tiers, with attribution. Every later part (projections, valuation, DFS, live data) builds on these tables and keys.
+
+## Requirements
+
+- **R1** Load teams, players, games, and player week stats from nflverse for seasons 2015-2026, including postseason weeks.
+- **R2** Loads are idempotent and match the source: upsert on the natural key and delete rows the source dropped.
+- **R3** A failed load leaves the previous data in place, is recorded as failed, and fails the run.
+- **R4** Every load run is recorded in `load_runs` and readable through the API.
+- **R5** A daily scheduled refresh plus a manual refresh with a seasons input.
+- **R6** Read-only JSON list and get-by-key endpoints for each table, with filters, sort, and pagination.
+- **R7** Bad input returns a consistent error shape (400 or 404), never a stack trace.
+- **R8** A root endpoint with attribution and a health endpoint that reports database status and last refresh.
+- **R9** A server-rendered HTML page per table with filter, sort, and paging, all state in the URL.
+- **R10** nflverse attribution and last refresh time on every page; no logos, headshots, or external images.
+- **R11** The web app reads with a database role that can only `SELECT`.
+- **R12** No secrets in the repo or in workflow logs.
+- **R13** The site runs at a public URL on free tiers.
 
 ## User stories
 
@@ -133,6 +149,15 @@ Server-rendered HTML from the same FastAPI app, using the same query functions a
 - The web app connects with a read-only role (`SELECT` only).
 - Config only from environment variables; `.env` git-ignored; `.env.example` has placeholders only.
 
+### Web app layout and deploy (Pass B)
+
+- Code lives in a new `web/` package next to `loader/`; the ASGI app is `web.main:app`. Add `web` to `[tool.setuptools] packages` and the runtime dependencies listed below to `pyproject.toml`.
+- Add a `.python-version` file containing `3.12` so Render builds with the same Python as CI.
+- Config: `DATABASE_URL` only (the read-only role's URL). Accept `postgres://` and `postgresql://` and normalize to the psycopg driver the same way the loader does. The web app does not read `READONLY_ROLE`.
+- Render settings (the owner provisions the service; nothing Render-specific is committed): runtime Python, free instance, branch `main`, build `pip install .`, start `uvicorn web.main:app --host 0.0.0.0 --port $PORT`, health check path `/api/health`.
+- CI: extend `ruff check` to `web`. AT18 runs in CI by creating a login role with only the grants `loader/grants.py` applies, then connecting as it.
+- Read-only role in production: created by the owner with SQL in Neon's SQL editor (not the Neon console, which adds `neon_superuser`), named in the `READONLY_ROLE` Actions variable so the next refresh's migrate step grants it `SELECT`.
+
 ## Secrets rule
 
 The repo is public. No database URLs, passwords, API keys or tokens are ever committed, including in docs, examples, tests, fixtures or workflow files. The loader's `DATABASE_URL` lives only as a GitHub Actions secret; the web app's read-only `DATABASE_URL` lives only as a Render environment variable. `.env` is git-ignored and `.env.example` holds placeholders only. Workflow logs must not echo secrets.
@@ -142,42 +167,45 @@ The repo is public. No database URLs, passwords, API keys or tokens are ever com
 Tests run against a throwaway Postgres (CI service container). Fixtures are small parquet files cut from real nflverse files and committed under `tests/fixtures/`, plus one optional live test marked `network`.
 
 Load
-- **AT1 Idempotent load.** Given an empty DB and fixture files, when the loader runs twice, then every table's contents (all columns except `loaded_at`) are identical after run 1 and run 2, and run 2 records `rows_deleted = 0`.
-- **AT2 Row counts match source.** Given a load of a season, then `games` rows for that season equal the source rows for that season, and `player_week_stats` rows equal source rows minus rows with null `player_id`; teams and players equal their source row counts plus stub players. Tolerance: exact against the file that was loaded. In the `network` test against a fresh download of the current season, within 1% (the source may update between download and check).
-- **AT3 Known player-week values.** Given 2024 is loaded, when reading gsis_id `00-0036900` (Ja'Marr Chase), season 2024, week 10, then `game_id = 2024_10_CIN_BAL`, `team = CIN`, `opponent_team = BAL`, receptions 11, targets 17, receiving_yards 264, receiving_tds 3, fantasy_points 44.4, fantasy_points_ppr 55.4.
-- **AT4 Second known row and a game.** Given 2025 is loaded, then gsis_id `00-0034857` (Josh Allen) 2025 week 1 has team BUF, opponent BAL, passing_yards 394, rushing_yards 30, rushing_tds 2, fantasy_points 38.76; and game `2025_01_DAL_PHI` has gameday 2025-09-04, away DAL 20, home PHI 24, result 4, total 44, season_type REG.
-- **AT5 Removed source rows are deleted.** Given a season is loaded, when the loader runs on a fixture with one stats row removed, then that row is gone and `rows_deleted = 1`.
-- **AT6 Placeholder rows skipped.** Given a stats fixture containing null-`player_id` "Team" rows, then none are loaded and `rows_skipped` equals their count.
-- **AT7 Failed load keeps old data.** Given a season is loaded, when the loader runs on a fixture missing a required column, then the tables are unchanged, the `load_runs` row has status `failed` with an error message, and the exit code is 1.
-- **AT8 load_runs recorded.** After any run, each dataset+season has a row with status `succeeded` or `failed`, `started_at`, `finished_at`, `source_url`, `source_version`, row counts, and the trigger passed on the command line.
+- **AT1 (R1, R2) Idempotent load.** Given an empty DB and fixture files, when the loader runs twice, then every table's contents (all columns except `loaded_at`) are identical after run 1 and run 2, and run 2 records `rows_deleted = 0`.
+- **AT2 (R1, R2) Row counts match source.** Given a load of a season, then `games` rows for that season equal the source rows for that season, and `player_week_stats` rows equal source rows minus rows with null `player_id`; teams and players equal their source row counts plus stub players. Tolerance: exact against the file that was loaded. In the `network` test against a fresh download of the current season, within 1% (the source may update between download and check).
+- **AT3 (R1) Known player-week values.** Given 2024 is loaded, when reading gsis_id `00-0036900` (Ja'Marr Chase), season 2024, week 10, then `game_id = 2024_10_CIN_BAL`, `team = CIN`, `opponent_team = BAL`, receptions 11, targets 17, receiving_yards 264, receiving_tds 3, fantasy_points 44.4, fantasy_points_ppr 55.4.
+- **AT4 (R1) Second known row and a game.** Given 2025 is loaded, then gsis_id `00-0034857` (Josh Allen) 2025 week 1 has team BUF, opponent BAL, passing_yards 394, rushing_yards 30, rushing_tds 2, fantasy_points 38.76; and game `2025_01_DAL_PHI` has gameday 2025-09-04, away DAL 20, home PHI 24, result 4, total 44, season_type REG.
+- **AT5 (R2) Removed source rows are deleted.** Given a season is loaded, when the loader runs on a fixture with one stats row removed, then that row is gone and `rows_deleted = 1`.
+- **AT6 (R1) Placeholder rows skipped.** Given a stats fixture containing null-`player_id` "Team" rows, then none are loaded and `rows_skipped` equals their count.
+- **AT7 (R3) Failed load keeps old data.** Given a season is loaded, when the loader runs on a fixture missing a required column, then the tables are unchanged, the `load_runs` row has status `failed` with an error message, and the exit code is 1.
+- **AT8 (R3, R4) load_runs recorded.** After any run, each dataset+season has a row with status `succeeded` or `failed`, `started_at`, `finished_at`, `source_url`, `source_version`, row counts, and the trigger passed on the command line.
 
 API
-- **AT9 Root and attribution.** When `GET /api`, then 200 and `attribution.text` matches the ADR 0002 text with both links.
-- **AT10 Health.** Given the DB is up, `GET /api/health` returns 200 with `database = ok`. Given the DB is unreachable, it returns 503 with code `service_unavailable`.
-- **AT11 Teams.** `GET /api/teams` returns all teams; `?conf=AFC` returns only AFC teams; `GET /api/teams/CIN` returns CIN; `GET /api/teams/XYZ` returns 404 `not_found`.
-- **AT12 Players.** `?q=chase` includes 00-0036900; `?position=WR&team=CIN` returns only WRs with latest_team CIN; `GET /api/players/00-0036900` returns him; `GET /api/players/00-0000000` returns 404; `?q=a` returns 400 (`param = q`).
-- **AT13 Games.** `?season=2025&week=1` returns only 2025 week 1 games including `2025_01_DAL_PHI`; `?team=PHI&season=2025` returns only games with PHI home or away; `?season_type=post&season=2024` returns only POST games; `GET /api/games/2025_01_DAL_PHI` returns it; `GET /api/games/nope` returns 404.
-- **AT14 Player week stats.** `?season=2024&week=10&team=CIN` includes Chase's row; `?player=00-0036900&season=2024` returns only his rows ordered by `fantasy_points_ppr` desc; `?sort=receiving_yards&order=desc&season=2024&week=10` puts the highest receiving_yards first.
-- **AT15 Load runs.** `?status=failed` returns only failed runs, newest first.
-- **AT16 Pagination.** Given more than 50 matching rows, `?limit=50&offset=0` and `?limit=50&offset=50` return disjoint rows with the same `page.total`, and the union equals `?limit=100`. `limit=0`, `limit=501`, `offset=-1` each return 400.
-- **AT17 Bad parameters.** `week=abc`, `week=23`, `season_type=XYZ`, `sort=bogus`, `order=up` each return 400 `invalid_parameter` with `param` set; an unknown param (`?foo=1`) returns 400 `unknown_parameter`; an unknown path returns 404 in the error shape.
-- **AT18 Read-only.** The web app's DB role cannot `INSERT`, `UPDATE`, `DELETE`, or `CREATE` (each raises a permission error).
+- **AT9 (R8, R10) Root and attribution.** When `GET /api`, then 200 and `attribution.text` matches the ADR 0002 text with both links.
+- **AT10 (R8) Health.** Given the DB is up, `GET /api/health` returns 200 with `database = ok`. Given the DB is unreachable, it returns 503 with code `service_unavailable`.
+- **AT11 (R6) Teams.** `GET /api/teams` returns all teams; `?conf=AFC` returns only AFC teams; `GET /api/teams/CIN` returns CIN; `GET /api/teams/XYZ` returns 404 `not_found`.
+- **AT12 (R6, R7) Players.** `?q=chase` includes 00-0036900; `?position=WR&team=CIN` returns only WRs with latest_team CIN; `GET /api/players/00-0036900` returns him; `GET /api/players/00-0000000` returns 404; `?q=a` returns 400 (`param = q`).
+- **AT13 (R6) Games.** `?season=2025&week=1` returns only 2025 week 1 games including `2025_01_DAL_PHI`; `?team=PHI&season=2025` returns only games with PHI home or away; `?season_type=post&season=2024` returns only POST games; `GET /api/games/2025_01_DAL_PHI` returns it; `GET /api/games/nope` returns 404.
+- **AT14 (R6) Player week stats.** `?season=2024&week=10&team=CIN` includes Chase's row; `?player=00-0036900&season=2024` returns only his rows ordered by `fantasy_points_ppr` desc; `?sort=receiving_yards&order=desc&season=2024&week=10` puts the highest receiving_yards first.
+- **AT15 (R4, R6) Load runs.** `?status=failed` returns only failed runs, newest first.
+- **AT16 (R6, R7) Pagination.** Given more than 50 matching rows, `?limit=50&offset=0` and `?limit=50&offset=50` return disjoint rows with the same `page.total`, and the union equals `?limit=100`. `limit=0`, `limit=501`, `offset=-1` each return 400.
+- **AT17 (R7) Bad parameters.** `week=abc`, `week=23`, `season_type=XYZ`, `sort=bogus`, `order=up` each return 400 `invalid_parameter` with `param` set; an unknown param (`?foo=1`) returns 400 `unknown_parameter`; an unknown path returns 404 in the error shape.
+- **AT18 (R11) Read-only.** The web app's DB role cannot `INSERT`, `UPDATE`, `DELETE`, or `CREATE` (each raises a permission error).
 
 Pages
-- **AT19 Each table page renders.** `/teams`, `/players`, `/games`, `/stats`, `/load-runs` each return 200 with an HTML table and the filter form listed above.
-- **AT20 Filters, sort, paging on pages.** `/stats?season=2024&week=10&team=CIN` shows Chase's row; clicking the receiving_yards header link reorders by it; the next link shows rows 51-100 and keeps the filters in the URL.
-- **AT21 Bad page params.** `/games?week=abc` returns 400 and shows the error message.
-- **AT22 Attribution visible.** Every page's footer contains the attribution text, links to nflverse-data and the CC BY 4.0 license, and the last refresh time in ET.
-- **AT23 No external images.** No page contains an `<img>` pointing outside the app.
+- **AT19 (R9) Each table page renders.** `/teams`, `/players`, `/games`, `/stats`, `/load-runs` each return 200 with an HTML table and the filter form listed above.
+- **AT20 (R9) Filters, sort, paging on pages.** `/stats?season=2024&week=10&team=CIN` shows Chase's row; clicking the receiving_yards header link reorders by it; the next link shows rows 51-100 and keeps the filters in the URL.
+- **AT21 (R7, R9) Bad page params.** `/games?week=abc` returns 400 and shows the error message.
+- **AT22 (R10) Attribution visible.** Every page's footer contains the attribution text, links to nflverse-data and the CC BY 4.0 license, and the last refresh time in ET.
+- **AT23 (R10) No external images.** No page contains an `<img>` pointing outside the app.
 
 Refresh and repo
-- **AT24 Refresh workflow runs.** Given the `DATABASE_URL` secret is set, when `refresh.yml` is started by hand with `seasons=2024`, then the job succeeds and `load_runs` has new `succeeded` rows with trigger `manual` for teams, players, and 2024 games and stats. The workflow file contains a `schedule` trigger with cron `0 11 * * *`.
-- **AT25 Refresh failure fails the job.** Given a loader failure (e.g. a bad seasons input like `1800`), the job ends failed and `load_runs` records `failed` where a load started.
-- **AT26 No secrets in repo.** A gitleaks scan of the full history finds nothing; no file contains a `postgres://` or `postgresql://` URL with a password; `.env` is in `.gitignore`; `.env.example` holds placeholders only, and no workflow step prints `DATABASE_URL`.
+- **AT24 (R5) Refresh workflow runs.** Given the `DATABASE_URL` secret is set, when `refresh.yml` is started by hand with `seasons=2024`, then the job succeeds and `load_runs` has new `succeeded` rows with trigger `manual` for teams, players, and 2024 games and stats. The workflow file contains a `schedule` trigger with cron `0 11 * * *`.
+- **AT25 (R3, R5) Refresh failure fails the job.** Given a loader failure (e.g. a bad seasons input like `1800`), the job ends failed and `load_runs` records `failed` where a load started.
+- **AT26 (R12) No secrets in repo.** A gitleaks scan of the full history finds nothing; no file contains a `postgres://` or `postgresql://` URL with a password; `.env` is in `.gitignore`; `.env.example` holds placeholders only, and no workflow step prints `DATABASE_URL`.
+
+Deploy
+- **AT27 (R13) Public URL.** Given the Render service is deployed from `main`, when `GET {public URL}/api/health` and `GET {public URL}/`, then both return 200 (allow about a minute for a cold start) and `/` shows the attribution footer. Checked by hand after deploy; the result goes in TEST_REPORT.md.
 
 ## Build passes
 
-Built and handed off as two passes, each its own PR. **Pass A (F001a): schema, migrations, loader, refresh workflow** - AT1-AT8, AT24-AT26. **Pass B (F001b): read API and web pages** - AT9-AT23 (plus AT26 re-checked). Pass B starts after Pass A is merged and data is loaded.
+Built and handed off as two passes, each its own PR. **Pass A (F001a): schema, migrations, loader, refresh workflow** - AT1-AT8, AT24-AT26. **Pass B (F001b): read API and web pages** - AT9-AT23 (plus AT26 re-checked), then AT27 after the owner deploys. Pass A merged and loaded on 2026-11-05 (AT24 passed).
 
 ## Non-goals
 
