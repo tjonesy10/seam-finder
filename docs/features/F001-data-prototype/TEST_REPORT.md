@@ -158,7 +158,11 @@ A browser pass confirmed the teams conference filter, the stats sort link, the g
 
 ## CI
 
-The pull request `test` check is the CI evidence. Result recorded after the run finishes.
+`test` on pull request #8 passed.
+
+https://github.com/tjonesy10/seam-finder/actions/runs/42097604652
+
+Conclusion: success. The job ran ruff, pytest, and gitleaks against the Postgres service container.
 
 ## Mutation
 
