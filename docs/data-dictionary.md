@@ -38,8 +38,8 @@ PK `gsis_id`. Upsert-only (never deleted).
 |---|---|---|---|
 | gsis_id | text | PK | gsis_id |
 | display_name | text | no | display_name |
-| first_name | text | no | first_name |
-| last_name | text | no | last_name |
+| first_name | text | yes | first_name |
+| last_name | text | yes | last_name |
 | position | text | yes | position |
 | position_group | text | yes | position_group |
 | birth_date | date | yes | birth_date (string `YYYY-MM-DD`, parsed) |
@@ -63,6 +63,8 @@ PK `gsis_id`. Upsert-only (never deleted).
 | otc_id | text | yes | otc_id |
 | is_stub | boolean | no | loader: true if created from a stats row because the player was missing from the players file |
 
+Minimal player rows (a gsis_id seen in player_week_stats but missing from the players file) are inserted with `display_name` only; `first_name` and `last_name` stay null until the players file supplies them. The loader never derives them by splitting `display_name` (it breaks on suffixes like 'Jr.' and multi-word surnames).
+
 Indexes: `(position)`, `(latest_team)`, `lower(display_name) text_pattern_ops` for name prefix search.
 
 ## games
@@ -79,8 +81,8 @@ PK `game_id` (format `{season}_{week:02}_{away}_{home}`, e.g. `2025_01_DAL_PHI`)
 | gameday | date | no | gameday (string, parsed) |
 | weekday | text | no | weekday |
 | gametime | text | yes | gametime (`HH:MM` as published) |
-| away_team | text | no | away_team, FK teams |
-| home_team | text | no | home_team, FK teams |
+| away_team | text | no | away_team, FK teams (`teams.team_abbr`) ON DELETE RESTRICT |
+| home_team | text | no | home_team, FK teams (`teams.team_abbr`) ON DELETE RESTRICT |
 | away_score | smallint | yes | away_score (null until played) |
 | home_score | smallint | yes | home_score (null until played) |
 | result | smallint | yes | result (home minus away) |
@@ -106,13 +108,13 @@ Skipped: source rows with null `player_id`. These are placeholder rows named "Te
 
 | Column | Type | Null | Source |
 |---|---|---|---|
-| gsis_id | text | PK, FK players | player_id (renamed) |
+| gsis_id | text | PK, FK players | player_id (renamed); FK `players.gsis_id` ON DELETE RESTRICT |
 | season | smallint | PK | season |
 | week | smallint | PK | week |
 | season_type | text | no | season_type: REG, POST |
-| game_id | text | no, FK games | game_id |
-| team | text | no, FK teams | team |
-| opponent_team | text | no, FK teams | opponent_team |
+| game_id | text | no, FK games | game_id; FK `game_id` -> `games.game_id` ON DELETE RESTRICT |
+| team | text | no, FK teams | team; FK `teams.team_abbr` ON DELETE RESTRICT |
+| opponent_team | text | no, FK teams | opponent_team; FK `teams.team_abbr` ON DELETE RESTRICT |
 | position | text | yes | position (null only on the skipped placeholder rows in 2015-2026; kept nullable) |
 | position_group | text | yes | position_group |
 | completions | smallint | no | completions |
@@ -138,6 +140,8 @@ Skipped: source rows with null `player_id`. These are placeholder rows named "Te
 | special_teams_tds | smallint | no | special_teams_tds |
 | fantasy_points | numeric(6,2) | no | fantasy_points (standard scoring, as computed by nflverse) |
 | fantasy_points_ppr | numeric(6,2) | no | fantasy_points_ppr (PPR, as computed by nflverse) |
+
+`game_id` -> `games.game_id` uses `ON DELETE RESTRICT`. If a games load would delete a game that still has stats rows, that games load fails and rolls back (last good data kept, `load_runs` status failed), per ADR 0002 failure handling. No cascading deletes.
 
 Not loaded (addable later by a migration + loader column map): EPA, air yards, YAC, defense, kicking, punting, and the other ~110 source columns. Nullability above was checked on 2015-2026 rows that have a player_id; the loader checks it every run.
 
@@ -176,4 +180,5 @@ The load_runs row is written in its own transaction (so a failure is recorded ev
 - `0001_initial`: create the five tables above, constraints, indexes, and a read-only role grant (`SELECT` on all tables) for the web app's role. Role names come from config, not the migration.
 - Migrations run as the loader role, at the start of the refresh workflow (`alembic upgrade head`) and locally before tests.
 - Adding stat columns later: one migration adds nullable columns, the loader column map adds the source names, and the next backfill fills them.
+- Foreign keys use `ON DELETE RESTRICT`: `player_week_stats.game_id` -> `games.game_id`, `player_week_stats` -> `players` and -> `teams`, and `games` -> `teams`.
 - No down-migrations needed for part 1 beyond Alembic's generated drop of `0001`.
