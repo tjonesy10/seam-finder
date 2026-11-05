@@ -200,14 +200,6 @@ def convert_rows(frame: pl.DataFrame, mapped: tuple[Field, ...]) -> list[dict]:
     return rows
 
 
-def split_name(display_name: str) -> tuple[str, str]:
-    """players.first_name and last_name are NOT NULL. Stubs only have a display name."""
-    parts = display_name.split()
-    if len(parts) == 1:
-        return parts[0], parts[0]
-    return " ".join(parts[:-1]), parts[-1]
-
-
 def _read_frame(payload: bytes) -> pl.DataFrame:
     return pl.read_parquet(payload)
 
@@ -435,14 +427,13 @@ def _create_stubs(conn, frame: pl.DataFrame, loaded_at: datetime) -> int:
         if display is None or str(display).strip() == "":
             raise LoadError(f"stub player missing display name: {gsis_id}")
         display = str(display)
-        first_name, last_name = split_name(display)
         position = None if record["position"] is None else str(record["position"])
         stubs.append(
             {
                 "gsis_id": gsis_id,
                 "display_name": display,
-                "first_name": first_name,
-                "last_name": last_name,
+                "first_name": None,
+                "last_name": None,
                 "position": position,
                 "is_stub": True,
                 "loaded_at": loaded_at,

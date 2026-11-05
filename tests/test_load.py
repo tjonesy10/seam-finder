@@ -353,8 +353,8 @@ def test_stub_player_created_and_real_player_is_not(database_url, engine):
         ).scalar()
     assert stub["is_stub"] is True
     assert stub["display_name"] == display
-    assert stub["first_name"]
-    assert stub["last_name"]
+    assert stub["first_name"] is None
+    assert stub["last_name"] is None
     assert chase is False
     notes = [
         row["notes"]
@@ -499,25 +499,70 @@ def test_rekeyed_stat_replaces_old_week(database_url, engine, tmp_path):
         ).scalar() == 11
 
 
-def test_removed_game_is_deleted(database_url, engine, tmp_path):
+def test_stub_name_stays_null_until_players_file(database_url, engine, tmp_path):
+    data_dir = _copy_fixture(tmp_path)
+    stats_path = data_dir / "stats_player" / "stats_player_week_2024.parquet"
+    stats = pl.read_parquet(stats_path)
+    template = stats.filter(pl.col("player_id") == "00-0036900")
+    odell = template.with_columns(
+        pl.lit("00-0099991").alias("player_id"),
+        pl.lit("Odell Beckham Jr.").alias("player_display_name"),
+    )
+    pl.concat([stats, odell]).write_parquet(stats_path)
+    assert _load(database_url, [2024], data_dir=data_dir) is True
+    with engine.connect() as conn:
+        stub = conn.execute(
+            text(
+                """
+                SELECT display_name, first_name, last_name, is_stub
+                FROM players WHERE gsis_id = '00-0099991'
+                """
+            )
+        ).mappings().one()
+    assert stub["display_name"] == "Odell Beckham Jr."
+    assert stub["first_name"] is None
+    assert stub["last_name"] is None
+    assert stub["is_stub"] is True
+
+    players_path = data_dir / "players" / "players.parquet"
+    players = pl.read_parquet(players_path)
+    filled = players.head(1).with_columns(
+        pl.lit("00-0099991").alias("gsis_id"),
+        pl.lit("Odell Beckham Jr.").alias("display_name"),
+        pl.lit("Odell").alias("first_name"),
+        pl.lit("Beckham Jr.").alias("last_name"),
+    )
+    pl.concat([players, filled]).write_parquet(players_path)
+    assert _load(database_url, [2024], data_dir=data_dir, datasets=["players"]) is True
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT display_name, first_name, last_name, is_stub
+                FROM players WHERE gsis_id = '00-0099991'
+                """
+            )
+        ).mappings().one()
+    assert row["display_name"] == "Odell Beckham Jr."
+    assert row["first_name"] == "Odell"
+    assert row["last_name"] == "Beckham Jr."
+    assert row["is_stub"] is False
+
+
+def test_games_load_that_would_orphan_stats_rolls_back(database_url, engine, tmp_path):
     assert _load(database_url, [2024, 2025]) is True
+    before_games = _rows(engine, "games", "game_id")
+    before_stats = _rows(engine, "player_week_stats", "gsis_id, season, week")
     data_dir = _copy_fixture(tmp_path)
     path = data_dir / "schedules" / "games.parquet"
     frame = pl.read_parquet(path).filter(pl.col("game_id") != "2024_10_CIN_BAL")
     frame.write_parquet(path)
-    assert _load(database_url, [2024], data_dir=data_dir, datasets=["games"]) is True
-    with engine.connect() as conn:
-        assert conn.execute(
-            text("SELECT count(*) FROM games WHERE game_id = '2024_10_CIN_BAL'")
-        ).scalar() == 0
-        assert conn.execute(
-            text("SELECT count(*) FROM player_week_stats WHERE game_id = '2024_10_CIN_BAL'")
-        ).scalar() == 0
-        assert conn.execute(
-            text("SELECT count(*) FROM player_week_stats WHERE season = 2025")
-        ).scalar() > 0
-    deleted = [row for row in _runs(engine) if row["dataset"] == "games"][-1]["rows_deleted"]
-    assert deleted == 1
+    assert _load(database_url, [2024], data_dir=data_dir, datasets=["games"]) is False
+    assert _rows(engine, "games", "game_id") == before_games
+    assert _rows(engine, "player_week_stats", "gsis_id, season, week") == before_stats
+    failed = [row for row in _runs(engine) if row["dataset"] == "games" and row["season"] == 2024]
+    assert failed[-1]["status"] == "failed"
+    assert "fk_player_week_stats_game_id" in failed[-1]["error"]
 
 
 def test_cli_module_and_bad_season(database_url, monkeypatch):

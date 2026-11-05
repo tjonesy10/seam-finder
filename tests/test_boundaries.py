@@ -3,14 +3,8 @@ import pytest
 from sqlalchemy import text
 
 from loader.grants import revoke_readonly_grant
-from loader.run import ensure_season_type, ensure_season_week, split_name
+from loader.run import ensure_season_type, ensure_season_week
 from loader.source import LoadError, file_name, release_url
-
-
-def test_split_name_one_and_many_tokens():
-    assert split_name("Cher") == ("Cher", "Cher")
-    assert split_name("Ja'Marr Chase") == ("Ja'Marr", "Chase")
-    assert split_name("Travis Etienne Jr.") == ("Travis Etienne", "Jr.")
 
 
 def test_season_and_week_bounds():

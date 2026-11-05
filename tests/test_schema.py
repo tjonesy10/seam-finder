@@ -19,8 +19,8 @@ EXPECTED = {
     "players": {
         "gsis_id": ("text", False),
         "display_name": ("text", False),
-        "first_name": ("text", False),
-        "last_name": ("text", False),
+        "first_name": ("text", True),
+        "last_name": ("text", True),
         "position": ("text", True),
         "position_group": ("text", True),
         "birth_date": ("date", True),
@@ -204,16 +204,18 @@ def test_keys_indexes_and_status_check(engine):
     assert "ix_load_runs_status" in indexdefs
     assert "PRIMARY KEY (gsis_id, season, week)" in defs["player_week_stats_pkey"]
     assert "UNIQUE (gsis_id, game_id)" in defs["uq_player_week_stats_gsis_game"]
-    assert "ON DELETE CASCADE" in defs["fk_player_week_stats_game_id"]
-    for name in (
+    fk_names = (
         "fk_games_away_team",
         "fk_games_home_team",
         "fk_player_week_stats_gsis_id",
+        "fk_player_week_stats_game_id",
         "fk_player_week_stats_team",
         "fk_player_week_stats_opponent_team",
-    ):
+    )
+    for name in fk_names:
         assert "FOREIGN KEY" in defs[name]
-        assert "ON DELETE CASCADE" not in defs[name]
+        assert "ON DELETE RESTRICT" in defs[name]
+        assert "CASCADE" not in defs[name]
     assert "running" in defs["ck_load_runs_status"]
     assert "succeeded" in defs["ck_load_runs_status"]
     assert "failed" in defs["ck_load_runs_status"]
