@@ -14,3 +14,4 @@ Added (planning docs, Part 1 data prototype, all DRAFT):
 - Open questions answered; SPEC, PRD, architecture READY; ADR 0001 and 0002 Accepted.
 - Repo is public: Actions-minutes note updated; Secrets rule added to the F001 SPEC.
 - F001 split into build passes A (data) and B (API and pages).
+- F001 Pass A clarifications from build: validation ranges (season 1999-2100, week 1-22); players first_name/last_name nullable, no name splitting; FKs ON DELETE RESTRICT; `--trigger` default `local`.

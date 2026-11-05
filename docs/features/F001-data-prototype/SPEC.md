@@ -20,7 +20,7 @@ Get nflverse players, teams, games, and player weekly stats into Postgres, keep 
 
 ### Loader (CLI)
 
-Input: `python -m loader --seasons 2015-2026 [--datasets teams,players,games,player_week_stats] [--trigger local|manual|schedule]`. Default: current season, all four datasets. Current season = this calendar year from March on, last year in January-February (so playoff weeks land in the right season). `DATABASE_URL` from the environment.
+Input: `python -m loader --seasons 2015-2026 [--datasets teams,players,games,player_week_stats] [--trigger local|manual|schedule]`. Default: current season, all four datasets. Current season = this calendar year from March on, last year in January-February (so playoff weeks land in the right season). `DATABASE_URL` from the environment. `--trigger` defaults to `local`; the refresh workflow always passes `schedule` or `manual`.
 
 Output: tables in [data-dictionary.md](../../data-dictionary.md) filled; one `load_runs` row per dataset+season; exit code 0 if all succeeded, 1 if any failed.
 
@@ -29,9 +29,10 @@ Behavior (rules in [ADR 0002](../../adr/0002-nflverse-load-and-refresh.md)):
 - Order: teams, players, games, player_week_stats.
 - Per dataset+season, one transaction: upsert on the natural key, then delete that season's rows not in the batch. Teams and players are upsert-only.
 - Skips stats placeholder rows (null `player_id`), counted in `rows_skipped`.
-- Creates a stub player (`is_stub = true`) when a stats row names a gsis_id missing from players; counted in `notes`.
+- Creates a stub player (`is_stub = true`) when a stats row names a gsis_id missing from players; counted in `notes`. The loader never derives `first_name` and `last_name` by splitting `display_name` (it breaks on suffixes like 'Jr.' and multi-word surnames).
 - Derives `games.season_type`: `REG` if `game_type = REG`, else `POST`.
 - Edge cases: unplayed games load with null scores; a season with no stats file yet (e.g. before week 1) is recorded `failed` with "source file not found", other datasets continue; source column missing or key duplicated → that dataset+season `failed`, nothing written for it; download retried 3 times.
+- Validation ranges: `season` 1999-2100, `week` 1-22 (same bounds as the API filters). Rows outside fail validation for that dataset+season.
 
 ### Refresh workflow
 
