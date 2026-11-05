@@ -15,3 +15,5 @@ Added (planning docs, Part 1 data prototype, all DRAFT):
 - Repo is public: Actions-minutes note updated; Secrets rule added to the F001 SPEC.
 - F001 split into build passes A (data) and B (API and pages).
 - F001 Pass A clarifications from build: validation ranges (season 1999-2100, week 1-22); players first_name/last_name nullable, no name splitting; FKs ON DELETE RESTRICT; `--trigger` default `local`.
+- F001 Pass B handoff: numbered requirements R1-R13 mapped to every AT; AT27 (public URL) added; web app layout, Render settings, and read-only role setup specified; data dictionary READY.
+- `docs/CONSTITUTION.md` drafted (separate PR, pending owner approval).
