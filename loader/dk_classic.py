@@ -216,7 +216,8 @@ def _parse_row(line: str, seen: set[int]) -> SalaryRow:
     week = _integer(week_s, "Week")
     season = _integer(year_s, "Year")
     gid = _integer(gid_s, "GID")
-    salary = _integer(salary_s, "DK salary")
+    # A trailing semicolon with nothing after it is a blank DK salary. Load it as 0.
+    salary = 0 if salary_s == "" else _integer(salary_s, "DK salary")
     if gid in seen:
         raise LoadError("duplicate key: rotoguru_gid")
     seen.add(gid)
