@@ -25,6 +25,7 @@ Added (planning docs, Part 1 data prototype, all DRAFT):
 - F004 Q1: Cosmo approved storing current-slate DK Classic CSV in Neon for personal/optimizer use; no public raw salary tables or CSV downloads; constitution Data section amended; ADR 0004 still Proposed until that amendment is on main.
 - F004 Q2: Cosmo chose slate key `(season, week, dk_id)` with CLI `--season` / `--week`.
 - F004 Q3: Cosmo chose CLI file path only this pass (no private upload UI).
+- F004 Q4: Cosmo accepted data-load only this pass (no read API / browse; skipped card → default).
 
 - F003 DRAFT: historical DraftKings Classic weekly salaries and points (2015–2021) via RotoGuru. SPEC, HANDOFF, ADR 0003 (Proposed), data-dictionary section, glossary terms. Blocked on Cosmo license/attribution and remaining open questions.
 - F003 Q1: Cosmo approved RotoGuru historical DK Classic data in Neon and on the public site; attribution line set; constitution Data section amended; ADR 0003 still Proposed until that amendment is on main.

@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1–Q3 answered; other open questions pending.
+Status: DRAFT (2026-11-06). Q1–Q4 answered; other open questions pending.
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -77,7 +77,7 @@ Dataset name in `load_runs`: `dk_classic_slate`.
 
 ### HTTP API and pages
 
-[NEEDS CLARIFICATION: Data-load only vs also read API / browse? Default: **data-load only** this pass (same pattern as F003).]
+**Data-load only** this pass: migration + `dk_classic_slate` + CLI loader + tests. No read API / browse page (Cosmo skipped card → default). Same pattern as F003. Still no public raw salary tables or CSV downloads.
 
 ### Attribution and license
 
@@ -110,7 +110,7 @@ Same secrets rule as F001/F003. No DraftKings credentials. Never commit live unr
 - Lineup optimizer / ILP (later feature).
 - Pinning `nfldfs`.
 - Private upload endpoint/page for the CSV (follow-up).
-- [If data-load only] Public API and HTML pages for current slate.
+- Public or private read API / browse page for current slate (follow-up).
 - Republishing DraftKings salary IP as a public downloadable dataset.
 
 ## Allowed dependencies
@@ -123,9 +123,10 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 2. ~~Slate identity.~~ Answered 2026-11-06: `--season` + `--week`; PK `(season, week, dk_id)`.
 3. ~~Ingest path.~~ Answered 2026-11-06: CLI file only; no upload UI this pass.
 4. **Unmapped skill policy + match-rate.**
-5. **Deliverable scope.** Data-load only vs API/pages?
-6. **Showdown detection / rejection rule.**
-7. **Constitution amendment** wording if storage is allowed.
+5. ~~Deliverable scope.~~ Answered 2026-11-06: data-load only (no read API / browse).
+6. **Refresh cadence** (manual vs scheduled).
+7. **Showdown detection / rejection rule.**
+8. ~~Constitution amendment.~~ Answered with Q1 on PR #12 (Data section amended; ADR 0004 stays Proposed until Cosmo merges).
 
 ## Decisions (from Cosmo via Groko, 2026-11-06)
 
@@ -135,6 +136,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - **Q1:** Yes — store in Neon for personal/optimizer use. Do not publish raw salary tables or CSV downloads on the public site. Keep "Not affiliated with DraftKings."
 - **Q2:** Slate key = Cosmo `--season` + `--week`; natural key `(season, week, dk_id)`.
 - **Q3:** CLI file path only this pass; no private upload endpoint/page (follow-up later).
+- **Q4:** Data-load only this pass (migration + table + CLI + tests); no read API / browse page.
 
 ## ADRs
 
