@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1–Q6 answered; Showdown detection still open.
+Status: DRAFT (2026-11-06). Q1–Q5 answered; Q6 schedule shape + Q7 Showdown still open.
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -73,7 +73,7 @@ Dataset name in `load_runs`: `dk_classic_slate`.
 - Thin in-repo CSV parse (stdlib / existing stack). Not `nfldfs`. Not draftkings.com.
 - One transaction per slate: validate header, map, upsert, delete-missing, `load_runs`.
 - Ingest path: **CLI file only** this pass (`python -m loader.dk_slate --csv path --season YYYY --week N`). No private upload endpoint/page in this pass.
-- Refresh: **manual / local only** this pass (Cosmo runs the CLI when a new CSV drops). No scheduled job.
+- Refresh: Cosmo wants a **schedule this pass** (not manual-only). [NEEDS CLARIFICATION: schedule shape — GHA reminder only vs load from a pre-staged CSV path vs other? Still never scrape draftkings.com.]
 
 ### HTTP API and pages
 
@@ -124,7 +124,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 3. ~~Ingest path.~~ Answered 2026-11-06: CLI file only; no upload UI this pass.
 4. ~~Unmapped skill policy + match-rate.~~ Answered 2026-11-06: keep null `gsis_id`; count in notes; ≥95% non-DST.
 5. ~~Deliverable scope.~~ Answered 2026-11-06: data-load only (no read API / browse).
-6. ~~Refresh cadence.~~ Answered 2026-11-06: manual/local only; no schedule. (Cosmo asked API vs CSV; confirmed user-supplied CSV via CLI.)
+6. **Refresh cadence / schedule shape.** Cosmo wants a schedule this pass (not manual-only). Detail pending: reminder vs pre-staged path vs other. Source remains user-supplied CSV (no DK API scrape).
 7. **Showdown detection / rejection rule.**
 8. ~~Constitution amendment.~~ Answered with Q1 on PR #12 (Data section amended; ADR 0004 stays Proposed until Cosmo merges).
 
@@ -138,7 +138,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - **Q3:** CLI file path only this pass; no private upload endpoint/page (follow-up later).
 - **Q4:** Data-load only this pass (migration + table + CLI + tests); no read API / browse page.
 - **Q5:** Keep unmapped rows with null `gsis_id`; count in notes; AT ≥95% match on non-DST (DST may stay unmapped).
-- **Q6:** Manual/local only refresh; no schedule. Source remains user-supplied `DKSalaries.csv` via CLI (not a DK API).
+- **Q6 (partial):** Schedule something this pass (not manual-only). Source remains user-supplied `DKSalaries.csv` via CLI (not a DK API). Schedule shape TBD.
 
 ## ADRs
 
