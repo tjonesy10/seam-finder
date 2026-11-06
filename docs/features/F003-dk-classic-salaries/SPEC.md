@@ -61,7 +61,7 @@ Dataset name in `load_runs`: `dk_classic_salaries` (one row per season+week).
 
 ### Mapping rules
 
-**Teams.** Maintain an explicit in-repo map from RotoGuru lowercase codes (`nwe`, `gnb`, `jac`, `sdg`, `stl`, `oak`, …) to nflverse `team_abbr` used in F001 for that season (including historical STL, SD, OAK). Unmapped team codes fail that week (previous data kept; `load_runs.status=failed`).
+**Teams.** Maintain an explicit in-repo map from RotoGuru lowercase codes (`nwe`, `gnb`, `jac`, `sdg`, `stl`, `oak`, …) to nflverse `team_abbr` used in F001 for that season (including historical STL, SD, OAK). Special case (built): `oak` → `OAK` for seasons ≤2019 and `LV` for seasons ≥2020. Unmapped team codes fail that week (previous data kept; `load_runs.status=failed`). Opponent code `-` is currently treated as unmapped and fails the week — Cosmo follow-up whether to treat as bye/unknown (null `opponent_abbr`) instead.
 
 **Skill players (Pos ≠ Def).** Match to `players` / `player_week_stats` using normalized name (`Last, First` → display form), team, position, season, and week. Prefer a row that already played that team-week in `player_week_stats`. On ambiguous or zero matches: leave `gsis_id` null, keep the row, and count unmapped in `load_runs.notes`. Do not invent stub players.
 

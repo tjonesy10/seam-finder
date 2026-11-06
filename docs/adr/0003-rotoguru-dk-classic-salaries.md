@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-06). License and attribution approved by Cosmo 2026-11-06. Becomes **Accepted** when the constitution amendment naming RotoGuru for this use is merged.
+Accepted (2026-11-06). License and attribution approved by Cosmo; constitution amendment merged via PR #10.
 
 ## Context
 
@@ -37,4 +37,5 @@ F001 loaded nflverse players, teams, games, and weekly stats. DFS backtests need
 - Constitution needs a short amendment naming RotoGuru historical Classic DK salaries as an allowed source under Cosmo's attribution rules.
 - Public exposure of this data still needs the attribution line somewhere once pages exist. F003 itself does not add pages.
 - Matching quality becomes a measured acceptance test; DST rows key by team only.
+- Opponent code `-` currently fails the week under the unmapped-team rule; Cosmo should confirm whether `-` means bye/unknown and should load with null `opponent_abbr` instead (F003 follow-up).
 - F004 (current slate) remains a separate feature with its own source decision.

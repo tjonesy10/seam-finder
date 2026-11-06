@@ -1,0 +1,1 @@
+[2026-11-06 13:53 ET] [blueprint] BLOCKED -> SPEC.md drafted DRAFT; ADR 0004 Proposed; constitution amendment pending Cosmo Q1 | Analyze: not handed off; NEEDS CLARIFICATION remain | next: Cosmo clarifications via Groko
