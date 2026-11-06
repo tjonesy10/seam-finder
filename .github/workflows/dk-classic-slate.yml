@@ -1,0 +1,100 @@
+name: dk classic slate
+
+# Cosmo stages a Classic DKSalaries.csv before this job runs.
+# Precedence: secret DK_SLATE_CSV (file contents), else a path in the
+# csv_path input or variable DK_SLATE_CSV_PATH when that file is already
+# on the runner, else the newest Actions artifact named by the artifact
+# input or variable DK_SLATE_ARTIFACT.
+# Season and week: workflow_dispatch inputs, otherwise variables
+# DK_SLATE_SEASON and DK_SLATE_WEEK.
+# A missing staged file fails the CLI (non-zero, load_runs status failed).
+# This job does not download a salary file from DraftKings.
+
+on:
+  schedule:
+    - cron: "0 15 * * 2"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season year, for example 2026. Blank uses variable DK_SLATE_SEASON."
+        required: false
+        default: ""
+        type: string
+      week:
+        description: "REG week from 1 to 18. Blank uses variable DK_SLATE_WEEK."
+        required: false
+        default: ""
+        type: string
+      csv_path:
+        description: "Path to a staged CSV already on the runner. Blank uses DK_SLATE_CSV_PATH."
+        required: false
+        default: ""
+        type: string
+      artifact:
+        description: "Actions artifact name that contains the staged CSV. Blank uses DK_SLATE_ARTIFACT."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install .
+
+      - name: Migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          READONLY_ROLE: ${{ vars.READONLY_ROLE }}
+        run: alembic upgrade head
+
+      - name: Load staged slate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DK_SLATE_CSV: ${{ secrets.DK_SLATE_CSV }}
+          SEASON: ${{ github.event_name == 'workflow_dispatch' && inputs.season || vars.DK_SLATE_SEASON }}
+          WEEK: ${{ github.event_name == 'workflow_dispatch' && inputs.week || vars.DK_SLATE_WEEK }}
+          CSV_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.csv_path || vars.DK_SLATE_CSV_PATH }}
+          ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact || vars.DK_SLATE_ARTIFACT }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SEASON:-}" ] || [ -z "${WEEK:-}" ]; then
+            echo "season and week are required (workflow inputs or DK_SLATE_SEASON and DK_SLATE_WEEK)" >&2
+            exit 1
+          fi
+          target="${RUNNER_TEMP}/DKSalaries.csv"
+          rm -f "$target"
+          if [ -n "${DK_SLATE_CSV:-}" ]; then
+            printf '%s' "$DK_SLATE_CSV" > "$target"
+          elif [ -n "${CSV_PATH:-}" ] && [ -f "${CSV_PATH}" ]; then
+            target="${CSV_PATH}"
+          else
+            if [ -n "${ARTIFACT:-}" ]; then
+              DEST="$target" python -c 'import os; from loader.dk_slate import fetch_staged_artifact; fetch_staged_artifact(os.environ.get("ARTIFACT", ""), os.environ["DEST"])'
+            fi
+            if [ ! -f "$target" ] && [ -n "${CSV_PATH:-}" ]; then
+              target="${CSV_PATH}"
+            fi
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            trigger="manual"
+          else
+            trigger="scheduled"
+          fi
+          python -m loader.dk_slate --csv "$target" --season "$SEASON" --week "$WEEK" --trigger "$trigger"

@@ -155,6 +155,29 @@ dk_classic_salaries = Table(
     Column("loaded_at", DateTime(timezone=True), nullable=False),
 )
 
+dk_classic_slate = Table(
+    "dk_classic_slate",
+    metadata,
+    Column("season", SmallInteger, primary_key=True),
+    Column("week", SmallInteger, primary_key=True),
+    Column("dk_id", Text, primary_key=True),
+    Column("name_raw", Text, nullable=False),
+    Column("position_raw", Text, nullable=False),
+    Column("roster_position_raw", Text, nullable=False),
+    Column("team_raw", Text, nullable=False),
+    Column("game_info_raw", Text),
+    Column("salary", Numeric(10, 2), nullable=False),
+    Column("avg_points_per_game", Numeric(8, 2)),
+    Column("gsis_id", Text),
+    Column("team_abbr", Text),
+    Column("opponent_abbr", Text),
+    Column("game_id", Text),
+    Column("source_name", Text, nullable=False),
+    Column("source_sha256", Text, nullable=False),
+    Column("source_loaded_at", DateTime(timezone=True), nullable=False),
+    Column("loaded_at", DateTime(timezone=True), nullable=False),
+)
+
 load_runs = Table(
     "load_runs",
     metadata,

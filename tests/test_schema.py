@@ -127,6 +127,26 @@ EXPECTED = {
         "source_sha256": ("text", False),
         "loaded_at": ("timestamp with time zone", False),
     },
+    "dk_classic_slate": {
+        "season": ("smallint", False),
+        "week": ("smallint", False),
+        "dk_id": ("text", False),
+        "name_raw": ("text", False),
+        "position_raw": ("text", False),
+        "roster_position_raw": ("text", False),
+        "team_raw": ("text", False),
+        "game_info_raw": ("text", True),
+        "salary": ("numeric", False),
+        "avg_points_per_game": ("numeric", True),
+        "gsis_id": ("text", True),
+        "team_abbr": ("text", True),
+        "opponent_abbr": ("text", True),
+        "game_id": ("text", True),
+        "source_name": ("text", False),
+        "source_sha256": ("text", False),
+        "source_loaded_at": ("timestamp with time zone", False),
+        "loaded_at": ("timestamp with time zone", False),
+    },
     "load_runs": {
         "id": ("bigint", False),
         "run_group": ("uuid", False),
@@ -187,6 +207,10 @@ def test_columns_match_data_dictionary(engine):
         assert (total_line["numeric_precision"], total_line["numeric_scale"]) == (4, 1)
         points = found["dk_classic_salaries"]["dk_points"]
         assert (points["numeric_precision"], points["numeric_scale"]) == (8, 2)
+        salary = found["dk_classic_slate"]["salary"]
+        assert (salary["numeric_precision"], salary["numeric_scale"]) == (10, 2)
+        average = found["dk_classic_slate"]["avg_points_per_game"]
+        assert (average["numeric_precision"], average["numeric_scale"]) == (8, 2)
         assert found["load_runs"]["id"]["identity_generation"] == "ALWAYS"
 
 
@@ -229,6 +253,10 @@ def test_keys_indexes_and_status_check(engine):
     assert "(season, week)" in indexdefs["ix_dk_classic_salaries_season_week"]
     assert "(gsis_id, season, week)" in indexdefs["ix_dk_classic_salaries_gsis_id_season_week"]
     assert "(team_abbr, season, week)" in indexdefs["ix_dk_classic_salaries_team_abbr_season_week"]
+    assert "PRIMARY KEY (season, week, dk_id)" in defs["dk_classic_slate_pkey"]
+    assert "(season, week)" in indexdefs["ix_dk_classic_slate_season_week"]
+    assert "(gsis_id, season, week)" in indexdefs["ix_dk_classic_slate_gsis_id_season_week"]
+    assert "(team_abbr, season, week)" in indexdefs["ix_dk_classic_slate_team_abbr_season_week"]
     assert "UNIQUE (gsis_id, game_id)" in defs["uq_player_week_stats_gsis_game"]
     fk_names = (
         "fk_games_away_team",
@@ -240,6 +268,9 @@ def test_keys_indexes_and_status_check(engine):
         "fk_dk_classic_salaries_gsis_id",
         "fk_dk_classic_salaries_team_abbr",
         "fk_dk_classic_salaries_game_id",
+        "fk_dk_classic_slate_gsis_id",
+        "fk_dk_classic_slate_team_abbr",
+        "fk_dk_classic_slate_game_id",
     )
     for name in fk_names:
         assert "FOREIGN KEY" in defs[name]
@@ -309,6 +340,7 @@ def test_readonly_role_is_select_only(engine, monkeypatch):
             conn.execute(text("SET ROLE seam_reader"))
             conn.execute(text("SELECT count(*) FROM teams"))
             conn.execute(text("SELECT count(*) FROM dk_classic_salaries"))
+            conn.execute(text("SELECT count(*) FROM dk_classic_slate"))
             conn.execute(text("RESET ROLE"))
             conn.commit()
         insert_team = (
