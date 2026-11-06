@@ -209,3 +209,30 @@ Historical DraftKings NFL Classic weekly salaries and points from RotoGuru. PK `
 
 Indexes: `(season, week)`, `(gsis_id, season, week)`, `(team_abbr, season, week)`.
 
+## dk_classic_slate (F004, DRAFT)
+
+Current-slate DraftKings NFL Classic salaries from Cosmo's `DKSalaries.csv` export. Proposed PK `(season, week, dk_id)` — confirm in F004 SPEC. Load rules: [ADR 0004](adr/0004-dk-current-slate-csv.md).
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| season | int | no | Season Cosmo assigns on load |
+| week | int | no | REG week Cosmo assigns on load |
+| dk_id | text | no | DraftKings ID |
+| name_raw | text | no | Name as exported |
+| position_raw | text | no | Position column |
+| roster_position_raw | text | no | Roster Position column |
+| team_raw | text | no | TeamAbbrev |
+| game_info_raw | text | yes | Game Info |
+| salary | numeric | no | Salary |
+| avg_points_per_game | numeric | yes | AvgPointsPerGame |
+| gsis_id | text | yes | FK → players |
+| team_abbr | text | yes | FK → teams when mapped |
+| opponent_abbr | text | yes | Parsed when possible |
+| game_id | text | yes | FK → games when unique |
+| source_name | text | no | Filename or upload label |
+| source_sha256 | text | no | Content hash |
+| source_loaded_at | timestamptz | no | Load time |
+| loaded_at | timestamptz | no | Row write time |
+
+Readonly grants: same pattern as other tables (`READONLY_ROLE`).
+
