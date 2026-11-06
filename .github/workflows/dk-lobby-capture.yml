@@ -1,0 +1,102 @@
+name: dk lobby capture
+
+# Approved schedule text. Capture stays off until a later rollout sets the
+# repository variable DK_LOBBY_CAPTURE_ENABLED to the exact value true.
+# Merging this file does not run a live capture.
+
+on:
+  schedule:
+    - cron: '0 10 * * 3'
+      timezone: 'America/New_York'
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "REG season year. Required for a manual dispatch."
+        required: false
+        type: string
+        default: ""
+      week:
+        description: "REG week 1-18. Required for a manual dispatch."
+        required: false
+        type: string
+        default: ""
+      draft_group_id:
+        description: "Explicit positive draft group id. Not labeled Sunday main."
+        required: false
+        type: string
+        default: ""
+      selection:
+        description: "sunday-afternoon, or blank when draft_group_id is set."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dk-lobby-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    if: ${{ vars.DK_LOBBY_CAPTURE_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install .
+
+      - name: Migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          READONLY_ROLE: ${{ vars.READONLY_ROLE }}
+        run: alembic upgrade head
+
+      - name: Capture
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EVENT_NAME: ${{ github.event_name }}
+          SEASON: ${{ github.event_name == 'workflow_dispatch' && inputs.season || '' }}
+          WEEK: ${{ github.event_name == 'workflow_dispatch' && inputs.week || '' }}
+          DRAFT_GROUP_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.draft_group_id || '' }}
+          SELECTION: ${{ github.event_name == 'workflow_dispatch' && inputs.selection || '' }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            case "${SEASON}" in
+              ''|*[!0-9]*) echo "invalid_season" >&2; exit 1 ;;
+            esac
+            case "${WEEK}" in
+              ''|*[!0-9]*) echo "invalid_week" >&2; exit 1 ;;
+            esac
+            if [ -n "${DRAFT_GROUP_ID}" ] && [ -n "${SELECTION}" ]; then
+              echo "invalid_selector" >&2
+              exit 1
+            fi
+            if [ -z "${DRAFT_GROUP_ID}" ] && [ "${SELECTION}" != "sunday-afternoon" ]; then
+              echo "invalid_selector" >&2
+              exit 1
+            fi
+            if [ -n "${DRAFT_GROUP_ID}" ]; then
+              case "${DRAFT_GROUP_ID}" in
+                ''|*[!0-9]*) echo "invalid_draft_group" >&2; exit 1 ;;
+              esac
+              python -m loader.dk_lobby \
+                --season "${SEASON}" --week "${WEEK}" \
+                --draft-group-id "${DRAFT_GROUP_ID}" --trigger manual
+            else
+              python -m loader.dk_lobby \
+                --season "${SEASON}" --week "${WEEK}" \
+                --selection sunday-afternoon --trigger manual
+            fi
+          else
+            python -m loader.dk_lobby --selection sunday-afternoon --trigger schedule
+          fi
