@@ -29,3 +29,8 @@ Status: PROPOSED (2026-11-05). The non-negotiables every SPEC and ADR is checked
 
 ## Out of scope until planned
 - Auth, user accounts, write APIs, live in-game data, and parts 2-5 (projections, valuation, DFS, live data) until each has its own SPEC.
+
+## Pending amendment (not in force)
+
+F003 proposes allowing RotoGuru historical DraftKings NFL Classic weekly salaries and points (2015–2021 REG) as a second data source, with owner-approved attribution, stored in Neon and readable on the public site. Not active until Cosmo answers the license question and this section is replaced by a real amendment PR.
+

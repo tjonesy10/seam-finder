@@ -182,3 +182,30 @@ The load_runs row is written in its own transaction (so a failure is recorded ev
 - Adding stat columns later: one migration adds nullable columns, the loader column map adds the source names, and the next backfill fills them.
 - Foreign keys use `ON DELETE RESTRICT`: `player_week_stats.game_id` -> `games.game_id`, `player_week_stats` -> `players` and -> `teams`, and `games` -> `teams`.
 - No down-migrations needed for part 1 beyond Alembic's generated drop of `0001`.
+
+## dk_classic_salaries (F003, DRAFT)
+
+Historical DraftKings NFL Classic weekly salaries and points from RotoGuru. PK `(season, week, rotoguru_gid)`. Load rules: [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md).
+
+| Column | Type | Null | Source |
+|---|---|---|---|
+| season | smallint | PK | Year |
+| week | smallint | PK | Week |
+| rotoguru_gid | integer | PK | GID |
+| name_raw | text | no | Name |
+| pos_raw | text | no | Pos |
+| team_raw | text | no | Team (RotoGuru code) |
+| home_away | text | no | h/a |
+| opponent_raw | text | no | Oppt |
+| dk_points | numeric(8,2) | no | DK points |
+| dk_salary | integer | no | DK salary (may be 0) |
+| gsis_id | text | yes | mapped; FK players ON DELETE RESTRICT; null for Def and unmatched |
+| team_abbr | text | yes | mapped; FK teams ON DELETE RESTRICT when set |
+| opponent_abbr | text | yes | mapped opponent |
+| game_id | text | yes | mapped REG game; FK games ON DELETE RESTRICT when set |
+| source_url | text | no | fetch URL |
+| source_fetched_at | timestamptz | no | fetch time |
+| source_sha256 | text | no | hex digest of raw body |
+
+Indexes: `(season, week)`, `(gsis_id, season, week)`, `(team_abbr, season, week)`.
+

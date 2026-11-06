@@ -1,6 +1,6 @@
 # Architecture: Seam Finder, Part 1 (data prototype)
 
-Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md).
+Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md), [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) (Proposed).
 
 ## Components
 
@@ -52,3 +52,8 @@ Load order inside one run: teams, players, games, player_week_stats (foreign key
 ## Future extension points (parts 2-5)
 
 New tables key on the same `gsis_id`, `team_abbr`, `game_id`, and `(season, week)`: e.g. projections per (gsis_id, season, week, model), valuations per (gsis_id, season), DFS salaries per (slate, gsis_id), injuries per (gsis_id, season, week). Cross-site IDs already kept on `players` (`pfr_id`, `espn_id`, `pff_id`, ...) help match outside salary and injury feeds. None of this is built in part 1.
+
+## F003 addition (Proposed)
+
+RotoGuru → loader module for `dk_classic_salaries` → same Neon database. No new host. Details in [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) and [F003 SPEC](features/F003-dk-classic-salaries/SPEC.md).
+

@@ -29,3 +29,7 @@
 | replacement level | Value of a freely available player at a position; used in part 3, not part 1. | (future) |
 | DFS | Daily fantasy sports: pick a lineup under a salary cap for one slate; part 4, not part 1. | (future) |
 | slate | The set of games one DFS contest covers; part 4, not part 1. | (future) |
+| RotoGuru | Site publishing historical DFS weekly salary and points SCSV files. | rotoguru1.com |
+| GID | RotoGuru player/defense identifier, unique within their files. | `dk_classic_salaries.rotoguru_gid` |
+| DK Classic | DraftKings multi-game weekly salary-cap contest (not Showdown). | F003 / F004 |
+| DST | Defense/special teams lineup slot; RotoGuru `Pos=Def`. | `pos_raw=Def` |
