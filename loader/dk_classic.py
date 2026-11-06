@@ -136,6 +136,17 @@ def team_abbr_for(code: str, season: int) -> str:
     return abbr
 
 
+def _is_opponent_dash(code: str) -> bool:
+    # RotoGuru writes Oppt=- for a bye or an unscheduled game. It is not a team code.
+    return code.strip() == "-"
+
+
+def _opponent_abbr(code: str, season: int) -> str | None:
+    if _is_opponent_dash(code):
+        return None
+    return team_abbr_for(code, season)
+
+
 def is_dst(pos_raw: str) -> bool:
     return pos_raw.strip().lower() == "def"
 
@@ -269,10 +280,13 @@ def parse_scsv(body: bytes) -> list[SalaryRow]:
     return rows
 
 
-def _notes(week: int, unmapped: int) -> str:
+def _notes(week: int, unmapped: int, opponent_dash: int) -> str:
+    parts = [f"week={week}"]
     if unmapped:
-        return f"week={week}; unmapped_skill={unmapped}"
-    return f"week={week}"
+        parts.append(f"unmapped_skill={unmapped}")
+    if opponent_dash:
+        parts.append(f"opponent_dash={opponent_dash}")
+    return "; ".join(parts)
 
 
 def _skipped(week: int) -> dict:
@@ -388,7 +402,8 @@ def _load_week_data(engine, source, season: int, week: int) -> dict:
     url = week_url(season, week)
     fetched_at = datetime.now(UTC)
     team_of = {row.rotoguru_gid: team_abbr_for(row.team_raw, season) for row in parsed}
-    opponent_of = {row.rotoguru_gid: team_abbr_for(row.opponent_raw, season) for row in parsed}
+    opponent_dash = sum(_is_opponent_dash(row.opponent_raw) for row in parsed)
+    opponent_of = {row.rotoguru_gid: _opponent_abbr(row.opponent_raw, season) for row in parsed}
     loaded_at = datetime.now(UTC)
     with engine.begin() as conn:
         missing = _missing_team_abbrs(conn, set(team_of.values()))
@@ -434,7 +449,7 @@ def _load_week_data(engine, source, season: int, week: int) -> dict:
         "rows_upserted": upserted,
         "rows_deleted": deleted,
         "rows_skipped": 0,
-        "notes": _notes(week, unmapped),
+        "notes": _notes(week, unmapped, opponent_dash),
     }
 
 
