@@ -2,3 +2,4 @@
 [2026-11-06 13:56 ET] [blueprint] BLOCKED -> SPEC.md, ADR 0004, CONSTITUTION.md (Q1 recorded) -> next: Cosmo clarifications Q2+ | Decided: Neon store OK; no public raw salary tables/CSV; keep Not affiliated with DraftKings | Rejected: public salary dump
 [2026-11-06 13:58 ET] [blueprint] BLOCKED -> SPEC.md (Q2 recorded) -> next: Cosmo clarifications Q3+ | Decided: slate key season+week+dk_id via CLI | Rejected: derived slate_id; single current-only table
 [2026-11-06 13:59 ET] [blueprint] BLOCKED -> SPEC.md (Q3 recorded) -> next: Cosmo clarifications Q4+ | Decided: CLI file only this pass | Rejected: private upload UI in F004
+[2026-11-06 14:52 ET] [blueprint] BLOCKED -> SPEC.md (Q4 recorded) -> next: Cosmo clarifications Q5+ | Decided: data-load only this pass (Cosmo skipped card → default) | Rejected: read API / browse in F004
