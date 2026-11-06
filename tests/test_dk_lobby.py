@@ -1456,6 +1456,93 @@ def test_rules_hash_and_game_type_split_snapshots(engine):
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 2
 
 
+def test_deleted_interior_sunday_game_is_missing_evidence(engine):
+    """Endpoints stay. One interior Sunday game is gone. That is not a smaller slate."""
+    _seed(engine)
+    kicks = _kickoffs()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO games (
+                    game_id, season, game_type, season_type, week, gameday, weekday,
+                    gametime, away_team, home_team, location, loaded_at
+                ) VALUES (
+                    '2026_10_PHI_DAL', 2026, 'REG', 'REG', 10, DATE '2026-11-08', 'Sunday',
+                    '13:00', 'PHI', 'DAL', 'Home', now()
+                )
+                """
+            )
+        )
+        conn.execute(text("DELETE FROM games WHERE game_id = '2026_10_GB_CHI'"))
+    sun1 = _info("NYJ", "NE", kicks["sun1"])
+    extra = _info("PHI", "DAL", kicks["sun1"])
+    rows = [
+        f"QB,Synthetic Quarterback (900001),{CANARY_NAME},900001,QB,{CANARY_SALARY},{sun1},NYJ,1.5,Active",
+        f"RB,Synthetic Rusher (900003),Synthetic Rusher,900003,RB,4444,{extra},PHI,2,Active",
+    ]
+    reduced = [("NYJ", "NE", kicks["sun1"]), ("PHI", "DAL", kicks["sun1"])]
+    box = _box(csv=_csv(rows), groups=[_group(90001, reduced)])
+    assert _run(engine, ScriptTransport(_happy_handler(box))) == 1
+    observed = _rows(
+        engine, "SELECT status, reason_code FROM salary_private.salary_observations"
+    )[0]
+    assert observed["reason_code"] == "schedule_evidence_missing"
+    assert observed["status"] != "skipped"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_deleted_interior_week_is_missing_evidence(engine):
+    _seed(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM games WHERE season = 2026 AND week = 16"))
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 1
+    observed = _rows(
+        engine, "SELECT status, reason_code FROM salary_private.salary_observations"
+    )[0]
+    assert observed["reason_code"] == "schedule_evidence_missing"
+    assert observed["reason_code"] != "off_season"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_incomplete_prior_season_in_april_is_not_off_season(engine):
+    _seed(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO games (
+                    game_id, season, game_type, season_type, week, gameday, weekday,
+                    gametime, away_team, home_team, location, loaded_at
+                ) VALUES (
+                    '2026_18_BUF_MIA', 2026, 'REG', 'REG', 18, DATE '2027-01-10', 'Sunday',
+                    '13:00', 'BUF', 'MIA', 'Home', now()
+                )
+                """
+            )
+        )
+        conn.execute(text("DELETE FROM games WHERE season = 2026 AND week = 16"))
+        conn.execute(
+            text(
+                """
+                UPDATE load_runs
+                SET finished_at = TIMESTAMPTZ '2027-04-15 14:00:00+00',
+                    source_version = 'synthetic-schedule-v1'
+                WHERE dataset = 'games' AND season = 2026
+                """
+            )
+        )
+    transport = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, transport, clock=MutableClock(_et(2027, 4, 15, 10, 0))) == 1
+    observed = _rows(
+        engine, "SELECT status, reason_code FROM salary_private.salary_observations"
+    )[0]
+    assert observed["reason_code"] == "schedule_evidence_missing"
+    assert observed["status"] != "skipped"
+    assert transport.calls == []
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
 def test_stale_current_season_is_not_saved_by_fresh_history(engine):
     _seed(engine)
     with engine.begin() as conn:
@@ -1526,6 +1613,52 @@ def test_login_redirect_keeps_the_body(engine):
     assert _run(engine, ScriptTransport(handler)) == 1
     bodies = [bytes(row["body"]) for row in _rows(engine, "SELECT body FROM salary_private.salary_artifacts")]
     assert evidence in bodies
+
+
+def test_connect_with_one_second_left_stays_inside_budget():
+    from loader.dk_lobby import LOBBY_URL, BoundedClient, CaptureFailure
+
+    clock = MutableClock(NOW, 0)
+
+    class StallConnect(httpx.BaseTransport):
+        def handle_request(self, request):
+            connect = request.extensions.get("timeout", {}).get("connect", 10.0)
+            clock.mono_now += connect
+            raise httpx.ConnectTimeout("stall")
+
+    client = BoundedClient(StallConnect(), clock, lambda delay: setattr(clock, "mono_now", clock.mono_now + delay))
+    clock.mono_now = HTTP_BUDGET_S - 1
+    with pytest.raises(CaptureFailure):
+        client.get_json(LOBBY_URL)
+    assert clock.mono() - client.started <= HTTP_BUDGET_S
+
+
+def test_body_read_with_one_second_left_stays_inside_budget():
+    from loader.dk_lobby import LOBBY_URL, BoundedClient, CaptureFailure
+
+    clock = MutableClock(NOW, 0)
+
+    class StallRead(httpx.BaseTransport):
+        def handle_request(self, request):
+            class OneRead(httpx.SyncByteStream):
+                def __iter__(self):
+                    read_timeout = request.extensions.get("timeout", {}).get("read", 30.0)
+                    clock.mono_now += read_timeout
+                    raise httpx.ReadTimeout("stall")
+                    yield b""
+
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                stream=OneRead(),
+                request=request,
+            )
+
+    client = BoundedClient(StallRead(), clock, lambda delay: setattr(clock, "mono_now", clock.mono_now + delay))
+    clock.mono_now = HTTP_BUDGET_S - 1
+    with pytest.raises(CaptureFailure):
+        client.get_json(LOBBY_URL)
+    assert clock.mono() - client.started <= HTTP_BUDGET_S
 
 
 def test_trickled_stream_stops_at_the_deadline():
