@@ -57,6 +57,38 @@ New tables key on the same `gsis_id`, `team_abbr`, `game_id`, and `(season, week
 
 RotoGuru → loader module for `dk_classic_salaries` → same Neon database. No new host. This pass is data-load only (migration, loader, workflow, tests): no read API endpoints and no browse page. Details in [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) and [F003 SPEC](features/F003-dk-classic-salaries/SPEC.md).
 
-## F004 addition (Accepted)
+## F004 addition (implemented; ADR 0004 still Proposed)
 
 Cosmo-supplied DraftKings Classic `DKSalaries.csv` → loader module for `dk_classic_slate` → same Neon database. No draftkings.com fetch. Data-load only until Cosmo says otherwise. Details in [ADR 0004](adr/0004-dk-current-slate-csv.md) and [F004 SPEC](features/F004-dk-current-slate/SPEC.md).
+
+
+
+
+## Proposed F005–F008 private salary pipeline (DRAFT; not deployed)
+
+Decisions pending owner review: [ADR 0005](adr/0005-private-salary-capture-and-archives.md) and [ADR 0006](adr/0006-slate-safe-salary-unification.md), plus the explicit [constitution amendment](CONSTITUTION.md#proposed-amendment-private-salary-capture-archives-and-unification-pending-owner-approval). Existing READY labels above describe prior features only. F005–F008 are SPEC READY / DOCS APPROVAL PENDING: product questions are closed, ADR 0005/0006 remain Proposed, and the constitution amendment is not effective until owner merge. That status is not a build handoff. ADR 0004's status on main is Proposed, not Accepted; no accepted ADR substance is rewritten here.
+
+```mermaid
+flowchart LR
+  DK[Unauthenticated live DK Classic lobby/CSV] --> F5[F005 bounded capture]
+  DFF[Staged DFF extraction archive + evidence] --> F6[F006 offline importer]
+  DKN[Staged original DKNFL archive + manifest] --> F7[F007 offline importer]
+  F5 --> P[(Private Neon artifacts + observations + snapshots)]
+  F6 --> P
+  F7 --> P
+  P --> S[Three separate immutable source salary tables]
+  S --> F8[F008 evidence mappings + atomic selections]
+  OLD[F003 weekly / F004 current row-image adapters] --> F8
+  F8 --> V[One private dk_salary_unified view]
+  V --> FUT[Future approved private optimizer]
+```
+
+- **F005 foundation**: shared `salary_private` artifact, row ledger, observation and snapshot tables; new lobby salary table; bounded unauthenticated HTTP client; separate GHA workflow. F004 CLI and its Tuesday staged-file workflow remain unchanged and never consume live captures automatically.
+- **F006/F007**: each adds its own source table and offline re-runnable CLI, no source refresh cron. Input artifacts stay unmodified; exact raw bytes/rows and manifests/evidence are durable in private Neon, not public GitHub or expiring Actions artifacts.
+- **F008**: local rebuild CLI + append-only mapping/selection tables + one SQL view, not a materialized refresh service, API or optimizer. A snapshot-coherent anchor defines a pool; alternatives are comparable only after verified entity and exact game/kickoff/rules equivalence. Unknown/legacy/subset/incomplete/disagreement cases remain visible with readiness flags.
+- **Isolation**: new private schema is not granted to web or PUBLIC. Replace blanket public SELECT/default grants with explicit public allowlist and revoke web/PUBLIC F004 SELECT so future refreshes cannot undo privacy. Existing public nflverse/RotoGuru reads stay intact. Approved optimizer role has view SELECT only and no web-role membership. No new auth/product account system.
+- **Durability**: observation/artifact commit survives parse rejection; parseable raw ledger survives semantic validation failure; normalized file and published selection batch each commit atomically. Advisory locks enforce dedupe and byte budgets. Source repeats dedupe content/parsed rows but every capture attempt has its own timestamp, wall-clock start/finish, and private monotonic duration. Crash recovery uses recorded commit evidence, not assumptions, and does not invent a missing duration.
+- **Free-tier bounds**: bytea exact artifacts in Neon; no new account/storage service. Proposed 5 MiB/object, 64 MiB/invocation, 128 MiB cumulative raw artifacts, 512 MiB DB guards and verified free-allowance headroom checks halt writes without purging prior history. These are application guard proposals, not a current pricing statement.
+- **Scheduling**: Cosmo approved Wednesday 10:00 America/New_York during REG season on 2026-11-06 16:59 EST, and the Sunday-afternoon 1:00–4:30 PM America/New_York exact game-set rule, including holiday weeks, on 17:00 EST. Current GitHub Actions supports `timezone: America/New_York` alongside cron (`0 10 * * 3`); UTC is the default only if timezone is omitted. 10:00 is outside the DST spring-forward gap. Jobs can still delay or drop, and public-repo idle schedules disable after 60 days. This docs package does not add or activate the workflow. No Sunday refresh and no Grok Bot routine. See F005 for the documentation links and fail-closed selection.
+
+Implementation sequence after docs approval/clarification closure: F005 shared persistence/privacy + capture, independent F006 and F007 importers, then F008 view/adapters/selections. Each is a small separate build/migration PR. Tests use real Postgres, isolated roles, synthetic source fixtures and failure injection. Neither docs approval nor future build CI implicitly runs a production load or migration; owner approval remains required for production actions.
