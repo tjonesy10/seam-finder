@@ -37,3 +37,30 @@
 | dk_id | DraftKings player/defense identifier in `DKSalaries.csv`. | `dk_classic_slate.dk_id` |
 | Current slate | The live or upcoming Classic contest week Cosmo is entering, as opposed to historical RotoGuru weeks. | F004 |
 | Staged slate CSV | Cosmo-dropped `DKSalaries.csv` at the agreed path/secret/artifact the scheduled job loads; not fetched from DraftKings. | F004 schedule |
+
+
+
+
+## Proposed F005–F008 terms (DRAFT)
+
+| Term | Definition | Code / data name |
+|---|---|---|
+| Live lobby capture | Unauthenticated bounded private DK Classic CSV retrieval; unofficial private experiment, not owner export or historical endpoint. | F005 / dk_lobby |
+| Draft group | Native DK contest player-pool identifier; retains game/rules context, not equal to season/week or stable player identity. | draft_group_id |
+| Artifact | Exact private bytes with source-specific SHA; BOM/CRLF and rejected evidence preserved, not only parsed values. | salary_artifacts |
+| Observation | One capture/ingestion attempt and its timestamps, even when bytes are unchanged. | salary_observations |
+| Capture runtime | Wall-clock `started_at`/`finished_at` and monotonic `duration_ms` for one private capture attempt. Not derived by subtracting clocks. | `salary_observations.duration_ms` |
+| Source snapshot | One immutable source/path/group + artifact + parser/identity-metadata revision, not a union of weekly players. | salary_snapshots |
+| Slate revision | Verified exact game/kickoff set plus roster/rules/cap identity; changed evidence yields another revision. Native groups need explicit equivalence evidence. | canonical_slate_key / slate_revision_sha256 |
+| DFF | Daily Fantasy Fuel; acquired files are dated HTML-row-extraction salary/projection-player subsets, not complete DK exports. | dff_salaries |
+| DFF player ID | Vendor-specific identifier, never presumed DK ID or GSIS ID. | dff_player_id |
+| ppg_proj | DFF projected fantasy points, not actual realized points. | dff_salaries.ppg_proj |
+| DKNFL archive | pureslurp/DKNFL original salary-export files; contains duplicate, holiday, alternate and mislabeled-path exports. | dknfl_salaries |
+| Anchor snapshot | One coherent source snapshot defining a chosen pool's membership/salaries; never supplemented from other pools/snapshots. | anchor_snapshot_id |
+| Alternative | A separately attributed equivalent source candidate, never a missing-player pool filler. | alternative_refs |
+| Legacy unknown slate | F003 weekly evidence lacking verified exact slate fidelity; never a wildcard known-slate match. | legacy_unknown |
+| Current adapter | F004 row-image copy of only currently retained rows, not recovered historical CSV snapshots. | adapter_current / raw_retained=false |
+| Mapping version | Immutable interpretation/evidence version linking source entities/slates to verified canonical keys; does not mutate originals. | salary_interpretations.mapping_version |
+| Selection batch | Atomic, reproducible private read selection at a cutoff; old batches remain pinned/queryable. | selection_id |
+| Optimizer-ready | Row and entire anchor pool satisfy verified identity/slate/completeness and resolved-conflict checks, not merely a non-null GSIS ID. | optimizer_ready / pool_ready |
+| Private salary surface | Single proposed read-only SQL view with provenance and flags; not an API or public table. | salary_private.dk_salary_unified |

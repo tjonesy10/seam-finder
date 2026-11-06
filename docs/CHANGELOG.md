@@ -36,3 +36,19 @@ Added (planning docs, Part 1 data prototype, all DRAFT):
 - F003 Q1: Cosmo approved RotoGuru historical DK Classic data in Neon and on the public site; attribution line set; constitution Data section amended; ADR 0003 still Proposed until that amendment is on main.
 - F003 Q2: Cosmo chose data-load only for this pass (no read API / browse page); remaining open questions still block forge handoff.
 - F003 Q3–Q7: Cosmo accepted defaults (keep null gsis_id + AT8 ≥98%; explicit team map; SCSV week discovery; workflow_dispatch only; keep salary=0). SPEC READY; analyze pass done; forge handoff.
+
+
+
+
+### F005–F008 docs package (2026-11-06; SPEC READY / DOCS APPROVAL PENDING)
+
+- Added F005 live private DK capture, F006 offline DFF archive, F007 offline DKNFL archive and F008 slate-safe unified surface SPECs. The 16:56 EST HANDOFF lines remain BLOCKED history; later lines record decisions. No implementation, migration files, TEST_REPORT/run-log edits, schedule activation, or production actions.
+- Proposed ADR 0005 for bounded unauthenticated capture/new attributed sources, partial supersession only of ADR 0004's blanket auto-download ban; F004 official-export CLI/staged workflow preserved. Added explicit pending constitution amendment, not an implied exception.
+- Proposed ADR 0006 for verified entity+exact-slate equivalence, coherent anchor snapshots, retained alternatives/disagreement, source-specific attribution and conservative legacy/subset/current adapters.
+- Added private bytea artifact/row/attempt retention, idempotence, failure atomicity, storage guards and grants contracts; minimal product stories, architecture and glossary updates. Each F005 capture attempt also stores private wall-clock `started_at`/`finished_at` and monotonic `duration_ms`. Elapsed time is not wall-clock subtraction.
+- 2026-11-06 16:59 EST: Cosmo approved Wednesday 10:00 America/New_York during REG season, DST-correct, with the GitHub delay/drop caveat. Planned schedule only; not activated. No Sunday refresh.
+- 2026-11-06 17:00 EST: Cosmo approved automatic capture of only the upcoming Sunday-afternoon Classic slate whose game set is exactly all REG games kicking off 1:00–4:30 PM America/New_York, including holiday weeks. No Saturday or holiday substitution. Missing or ambiguous candidates fail closed.
+- ADR 0005/0006 remain Proposed. The constitution amendment is not effective until owner merge. Handoff is held for Cosmo docs approval. No forge handoff.
+- ADR 0004 live status is Proposed despite prior merged amendment; status-only cleanup flagged, not silently reported as Accepted. Accepted ADR substance unchanged.
+- Existing F003 build correction already on main via PR #16 treats opponent '-' as null; older historical changelog entries above remain historical and are not current implementation claims. No F003 source behavior changes in this package.
+- Wording fix: the shared dictionary is an evidence-retention superset, and per-source rules govern promotion. F005 publishes no usable snapshot when any salary is invalid; raw artifact and parseable ledger remain. F006/F007 may keep parsed non-ready snapshots and rejected rows under their own contracts. Successful parsing is not optimizer-ready, and F008 cannot bypass that gate. No new requirement or acceptance-test numbers.

@@ -67,3 +67,17 @@ As Cosmo, I want the site at a public URL, so that I can send it to friends.
 ## Open questions
 
 None. Answers recorded in the F001 SPEC Decisions section.
+
+
+
+
+## Proposed private salary workstream F005–F008 (DRAFT)
+
+This extends the original Part 1 scope above, not its public-table/API commitments. Cadence and the Sunday-afternoon slate rule are answered. ADR 0005/0006 and the explicit constitution amendment still await owner merge. No forge handoff, no schedule activation, and no production migrations.
+
+- As Cosmo, I want automatic unauthenticated DK Classic salary capture into a new private append-only snapshot source, so I retain contemporaneous evidence without replacing my F004 official-export CLI/staged-path workflow ([F005](features/F005-dk-lobby-capture/SPEC.md)). Approved cadence is Wednesday 10:00 America/New_York during REG season (planned only; not activated; no Sunday refresh). Approved automatic slate is only the upcoming Sunday-afternoon Classic set of all REG games kicking off 1:00–4:30 PM America/New_York, including holiday weeks. Each capture attempt records private monotonic runtime in Neon.
+- As Cosmo, I want the acquired Daily Fantasy Fuel historical salary/projection subsets loaded into their own private table, so I can use actual available gap coverage without claiming complete main slates or actual points ([F006](features/F006-dff-historical-archive/SPEC.md)).
+- As Cosmo, I want original pureslurp/DKNFL archived DKSalaries loaded separately with corrected game-derived metadata and original paths, so holiday/alternate/mislabeled exports remain attributable ([F007](features/F007-dknfl-historical-archive/SPEC.md)).
+- As a future optimizer consumer, I want one private, pinned salary surface with verified entity+exact-slate mappings, coherent anchor snapshots and flagged alternatives/disagreements, so unrelated slates/revisions never silently form a player pool ([F008](features/F008-unified-salary-surface/SPEC.md)).
+
+Acceptance is in each SPEC's requirement-to-AT matrix. Sources/bytes/rows stay intact; current/raw salaries and the unified view are not public APIs/pages/downloads. Optimizer code, projections/scoring, APIs/UI, auth, broad scraping and production changes are non-goals. Data permissions and conservative merge choices require [ADR 0005](adr/0005-private-salary-capture-and-archives.md), [ADR 0006](adr/0006-slate-safe-salary-unification.md) and the explicit constitution amendment, all pending review. Existing F003 RotoGuru attribution/public allowance is unchanged; new sources are never credited to RotoGuru.
