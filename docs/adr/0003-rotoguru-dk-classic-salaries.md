@@ -16,13 +16,14 @@ F001 loaded nflverse players, teams, games, and weekly stats. DFS backtests need
 4. **Load.** Idempotent per week (upsert + delete-missing) recorded in `load_runs` under dataset `dk_classic_salaries`.
 5. **License / attribution.** Cosmo approved storing and publicly exposing this data (2026-11-06). Attribution exact: "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings." ADR becomes Accepted when the constitution amendment is on main.
 6. **Deliverable this pass.** Data-load only (schema, migration, loader, workflow, tests). Read API and browse pages are out of scope for F003; follow-up later.
+7. **Mapping policy.** Explicit RotoGuru→nflverse team map (unmapped team fails the week). Unmapped skill rows keep null `gsis_id` and count in `load_runs.notes`; AT8 requires ≥98% match on non-Def rows with salary>0. DST keys by team only. Load `dk_salary=0` rows. Weeks: load 1–18 when SCSV returns; skip missing. Refresh: `workflow_dispatch` / manual only.
 
 ## Reasoning
 
 - RotoGuru is the widely used free historical Classic salary archive; Cosmo verified the endpoint.
 - A thin parser avoids an unmaintained pin (`nfldfs==0.0.5`) and keeps behavior in-repo.
 - Keeping `rotoguru_gid` plus raw name/team preserves provenance when name matching is imperfect.
-- Owner license approval unblocks the constitution amendment; remaining SPEC open questions still block forge handoff.
+- Owner license approval unblocks the constitution amendment; F003 clarifications are closed and the SPEC is READY for forge (ADR stays Proposed until the amendment is on main).
 
 ## Rejected alternatives and why
 

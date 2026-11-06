@@ -183,7 +183,7 @@ The load_runs row is written in its own transaction (so a failure is recorded ev
 - Foreign keys use `ON DELETE RESTRICT`: `player_week_stats.game_id` -> `games.game_id`, `player_week_stats` -> `players` and -> `teams`, and `games` -> `teams`.
 - No down-migrations needed for part 1 beyond Alembic's generated drop of `0001`.
 
-## dk_classic_salaries (F003, DRAFT)
+## dk_classic_salaries (F003, READY)
 
 Historical DraftKings NFL Classic weekly salaries and points from RotoGuru. PK `(season, week, rotoguru_gid)`. Load rules: [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md).
 
