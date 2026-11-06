@@ -15,9 +15,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from loader.dk_lobby import (
+    assess_rows,
     capture_schedule_enabled,
     main,
     next_wednesday_10_et,
+    parse_csv_bytes,
+    parse_draftables,
+    reconcile_draftables,
     reconcile_open_attempts,
 )
 from loader.dk_slate import TRIGGERS as SLATE_TRIGGERS
@@ -1094,6 +1098,74 @@ def test_at16_unreachable_database_claims_nothing(engine):
     assert result.stderr.strip() == "database_unreachable"
     assert "postgresql://" not in result.stderr
     assert _scalar(engine, "SELECT count(*) FROM load_runs") == before
+
+
+def _synthetic_draftables():
+    kicks = _kickoffs()
+    sun1 = kicks["sun1"].astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+    sun2 = kicks["sun2"].astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+    player = {
+        "playerId": 501,
+        "playerDkId": 9001,
+        "displayName": "Synthetic Quarterback",
+        "position": "QB",
+        "teamAbbreviation": "NYJ",
+        "salary": 4242,
+    }
+    other = {
+        "playerId": 502,
+        "playerDkId": 9002,
+        "displayName": "Synthetic Rusher",
+        "position": "RB",
+        "teamAbbreviation": "GB",
+        "salary": 4444,
+    }
+    return {
+        "draftables": [
+            {"draftableId": 900001, "rosterSlotId": 66, **player},
+            {"draftableId": 900099, "rosterSlotId": 70, **player},
+            {"draftableId": 900003, "rosterSlotId": 67, **other},
+        ],
+        "competitions": [
+            {
+                "competitionId": 1,
+                "sport": "NFL",
+                "name": "NYJ @ NE",
+                "startTime": sun1,
+                "awayTeam": {"abbreviation": "NYJ", "teamId": 1},
+                "homeTeam": {"abbreviation": "NE", "teamId": 2},
+            },
+            {
+                "competitionId": 2,
+                "sport": "NFL",
+                "name": "GB @ CHI",
+                "startTime": sun2,
+                "awayTeam": {"abbreviation": "GB", "teamId": 3},
+                "homeTeam": {"abbreviation": "CHI", "teamId": 4},
+            },
+        ],
+    }
+
+
+def test_draftables_contract_uses_csv_players_not_slot_rows():
+    document = _synthetic_draftables()
+    parsed = parse_draftables(json.dumps(document).encode())
+    assert parsed.draftables is not None
+    assert parsed.draftables.slot_count == 3
+    assert parsed.draftables.player_count == 2
+    assert len(parsed.games) == 2
+    salary_rows = [_classic_rows()[0], _classic_rows()[2]]
+    assessed, file_reasons = assess_rows(parse_csv_bytes(_csv(salary_rows)))
+    assert file_reasons == []
+    assert reconcile_draftables(parsed.draftables, assessed) == []
+    csv_games = {(row["game"].away, row["game"].home, row["game"].kickoff_at) for row in assessed}
+    parsed_games = {(game.away, game.home, game.kickoff_at) for game in parsed.games}
+    assert csv_games == parsed_games
+    shifted = _csv(
+        [row.replace(",4242,", ",4243,") if "900001" in row else row for row in salary_rows]
+    )
+    changed, _ignored = assess_rows(parse_csv_bytes(shifted))
+    assert reconcile_draftables(parsed.draftables, changed) == ["draftables_mismatch"]
 
 
 def test_cli_help_and_scheduled_alias(engine):

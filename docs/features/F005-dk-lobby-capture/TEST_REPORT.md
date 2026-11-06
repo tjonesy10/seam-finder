@@ -61,11 +61,42 @@ Alembic head is `0004`, down revision `0003`. `0004` creates schema `salary_priv
 
 Web SELECT is an allowlist: `teams`, `players`, `games`, `player_week_stats`, `load_runs`, `dk_classic_salaries`. `public.dk_classic_slate` is revoked from the web role and from `PUBLIC` on each grant pass. `salary_private` has no web or `PUBLIC` usage. Optimizer SELECT is applied only to `salary_private.dk_salary_unified` when that view exists and `OPTIMIZER_ROLE` is set. The workflow does not set `OPTIMIZER_ROLE`. No production optimizer grant was made.
 
+## Offline real contract
+
+`parse_draftables` reads `draftables` and `competitions`. Slot rows stay out of `dk_lobby_salaries`. CSV `ID` is `draftableId`. The same `playerId` may have a second slot row. `reproduce.sh` was not executed.
+
+```text
+draftables_slots 1077
+draftables_players 586
+competitions 11
+csv_rows 586
+csv_file_reasons []
+game_set_equal True
+reconcile ok
+showdown_rows 5
+showdown_file_reasons ['one_game']
+showdown_row_reasons ['captain_slot']
+```
+
+`game_set_equal` compares competition `awayTeam`/`homeTeam`/`startTime` with CSV Game Info. `reconcile ok` means every CSV id, salary, position, team, and display name matches a draftable, and the CSV row count is the player count rather than 1077. The Showdown head is one game and its rows include `captain_slot`, so it does not become a usable snapshot.
+
+Follow-up local run after the parser change:
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ python3 -m pytest -q --tb=line
+154 passed, 2 skipped, 1 warning in 10.18s
+```
+
+The new test is `tests/test_dk_lobby.py::test_draftables_contract_uses_csv_players_not_slot_rows`. Its fixture has three synthetic slot rows and two salary rows, using the real field names.
+
 ## What this run did not verify
 
 | Item | Result | Reason |
 |---|---|---|
-| Live DraftKings JSON field names | UNKNOWN | `/workspace/dk-experiment/reproduce.sh`, the sample lobby/draftables JSON, and `DKSalaries-classic-dg155994.csv` are on Cosmo's computer, not this VM. The parser fail-closes unless the synthetic contract fields are present. No live GET was sent. |
+| Draftables JSON contract vs Classic CSV | PASS | Offline read of the uploaded draftables document and matching CSV. No network. Output below. The private files were not committed. |
 | GitHub's hosted evaluation of the skipped job | UNKNOWN | AT4 forbids a live dispatch. The file gate and the local predicate are tested. |
 | Uncle Bob mutator | UNKNOWN | `mutator` is not on `PATH`. `../crapper` is not present. Go is installed. The mutator tool was not installed. This is not a pass. |
 | Pull request CI | PASS | Both checks on `6c54c870ac284c7d9734fa005b23a0c809d3ab9f` succeeded: [run 42306824279](https://github.com/tjonesy10/seam-finder/actions/runs/42306824279) and [run 42306805264](https://github.com/tjonesy10/seam-finder/actions/runs/42306805264). |

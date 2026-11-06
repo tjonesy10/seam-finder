@@ -146,11 +146,31 @@ class RegGame:
 
 
 @dataclass(frozen=True)
+class DraftableFact:
+    draftable_id: int
+    player_id: int
+    salary: Decimal
+    position: str
+    team: str
+    name: str
+
+
+@dataclass(frozen=True)
+class DraftablesEvidence:
+    """Slot-expanded draftables. Salary rows come from the CSV, not this count."""
+
+    by_id: dict[int, DraftableFact]
+    slot_count: int
+    player_count: int
+
+
+@dataclass(frozen=True)
 class DraftGroup:
     draft_group_id: int
-    contest_type_id: int
+    contest_type_id: int | None
     game_type_id: int | None
     games: tuple[GameEvidence, ...] | None
+    draftables: DraftablesEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -494,11 +514,145 @@ def parse_lobby(body: bytes) -> tuple[DraftGroup, ...]:
     return tuple(_parse_group(item) for item in payload["DraftGroups"])
 
 
-def parse_group_document(body: bytes) -> DraftGroup:
+def _json_object(body: bytes) -> dict:
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CaptureFailure("metadata_incomplete") from exc
+    if not isinstance(payload, dict):
+        raise CaptureFailure("metadata_incomplete")
+    return payload
+
+
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _money(value: object) -> Decimal | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return _decimal(str(value), 10, 2)
+    if isinstance(value, float) and value.is_integer():
+        return _decimal(str(int(value)), 10, 2)
+    if isinstance(value, str):
+        return _decimal(value, 10, 2)
+    return None
+
+
+def _team_abbr(team: object) -> str | None:
+    if not isinstance(team, dict):
+        return None
+    abbr = team.get("abbreviation")
+    if not isinstance(abbr, str) or not abbr.strip():
+        return None
+    return abbr.strip().upper()
+
+
+def parse_draftables(body: bytes) -> DraftGroup:
+    """Parse a real draftables document. Slot rows are not salary rows."""
+    payload = _json_object(body)
+    competitions = payload.get("competitions")
+    rows = payload.get("draftables")
+    if not isinstance(competitions, list) or not competitions:
+        raise CaptureFailure("metadata_incomplete")
+    if not isinstance(rows, list) or not rows:
+        raise CaptureFailure("metadata_incomplete")
+    games: list[GameEvidence] = []
+    for item in competitions:
+        if not isinstance(item, dict):
+            raise CaptureFailure("metadata_incomplete")
+        sport = item.get("sport")
+        if sport is not None and sport != "NFL":
+            raise CaptureFailure("metadata_incomplete")
+        away = _team_abbr(item.get("awayTeam"))
+        home = _team_abbr(item.get("homeTeam"))
+        start = item.get("startTime")
+        kickoff = parse_iso(start) if isinstance(start, str) else None
+        if away is None or home is None or kickoff is None:
+            raise CaptureFailure("metadata_incomplete")
+        games.append(GameEvidence(away, home, kickoff))
+    by_id: dict[int, DraftableFact] = {}
+    by_player: dict[int, DraftableFact] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            raise CaptureFailure("metadata_incomplete")
+        draftable_id = _positive_int(item.get("draftableId"))
+        player_id = _positive_int(item.get("playerId"))
+        salary = _money(item.get("salary"))
+        position = item.get("position")
+        team = item.get("teamAbbreviation")
+        name = item.get("displayName")
+        if (
+            draftable_id is None
+            or player_id is None
+            or salary is None
+            or not isinstance(position, str)
+            or not position.strip()
+            or not isinstance(team, str)
+            or not team.strip()
+            or not isinstance(name, str)
+            or not name.strip()
+        ):
+            raise CaptureFailure("metadata_incomplete")
+        fact = DraftableFact(
+            draftable_id,
+            player_id,
+            salary,
+            position.strip().upper(),
+            team.strip().upper(),
+            name.strip(),
+        )
+        prior = by_id.get(draftable_id)
+        if prior is not None and prior != fact:
+            raise CaptureFailure("draftables_mismatch")
+        by_id[draftable_id] = fact
+        same_player = by_player.get(player_id)
+        if same_player is not None and (
+            same_player.salary != fact.salary
+            or same_player.position != fact.position
+            or same_player.team != fact.team
+            or same_player.name != fact.name
+        ):
+            raise CaptureFailure("draftables_mismatch")
+        by_player[player_id] = fact
+    evidence = DraftablesEvidence(by_id, len(rows), len(by_player))
+    return DraftGroup(0, None, None, tuple(games), evidence)
+
+
+def reconcile_draftables(evidence: DraftablesEvidence, assessed: list[dict]) -> list[str]:
+    """CSV is the salary authority. Draftables slot count must not replace it."""
+    reasons: list[str] = []
+    if len(assessed) != evidence.player_count:
+        reasons.append("draftables_mismatch")
+    if evidence.slot_count != evidence.player_count and len(assessed) == evidence.slot_count:
+        reasons.append("draftables_mismatch")
+    seen: set[int] = set()
+    for row in assessed:
+        token = str(row.get("dk_id") or "")
+        fact = evidence.by_id.get(int(token)) if token.isdigit() else None
+        if fact is None or fact.player_id in seen:
+            reasons.append("draftables_mismatch")
+            continue
+        seen.add(fact.player_id)
+        if (
+            fact.salary != row.get("salary")
+            or fact.position != str(row.get("position") or "").upper()
+            or fact.team != str(row.get("team") or "").upper()
+            or fact.name != str(row.get("name") or "").strip()
+        ):
+            reasons.append("draftables_mismatch")
+    if not reasons:
+        return []
+    return ["draftables_mismatch"]
+
+
+def parse_group_document(body: bytes) -> DraftGroup:
+    payload = _json_object(body)
+    if "draftables" in payload and "competitions" in payload:
+        return parse_draftables(body)
     return _parse_group(payload)
 
 
@@ -708,6 +862,7 @@ def _priority(reasons: list[str]) -> str:
         "inexact_game_set",
         "wrong_season_week",
         "missing_rules",
+        "draftables_mismatch",
         "ambiguous_slate",
         "slate_unavailable",
         "metadata_incomplete",
@@ -1092,6 +1247,8 @@ def _capture_body(state: _State, plan: dict, games: tuple[RegGame, ...]) -> None
         csv_keys.discard(None)
         if _keys(group.games or ()) != csv_keys:
             reasons.append("mismatched_metadata")
+        if group.draftables is not None:
+            reasons.extend(reconcile_draftables(group.draftables, assessed))
         if reasons:
             raise CaptureFailure(_priority(reasons))
         _publish(state, group, verdict, assessed, games)
@@ -1127,8 +1284,16 @@ def _select_explicit(state: _State, plan: dict, games: tuple[RegGame, ...]) -> D
     group = parse_group_document(fetched.body)
     if group.games is None:
         raise CaptureFailure("metadata_incomplete")
-    if group.contest_type_id != 21:
+    if group.draftables is None and group.contest_type_id != 21:
         raise CaptureFailure("not_classic")
+    if group.draftables is not None:
+        group = DraftGroup(
+            plan["draft_group_id"],
+            group.contest_type_id,
+            group.game_type_id,
+            group.games,
+            group.draftables,
+        )
     if len(group.games) <= 1:
         raise CaptureFailure("one_game")
     week_games = [
@@ -1147,9 +1312,10 @@ def _hydrate(state: _State, group: DraftGroup) -> DraftGroup:
     loaded = parse_group_document(fetched.body)
     return DraftGroup(
         group.draft_group_id,
-        loaded.contest_type_id,
+        loaded.contest_type_id if loaded.contest_type_id is not None else group.contest_type_id,
         loaded.game_type_id or group.game_type_id,
         loaded.games if loaded.games is not None else group.games,
+        loaded.draftables if loaded.draftables is not None else group.draftables,
     )
 
 
@@ -1257,6 +1423,12 @@ def _publish(state: _State, group: DraftGroup, verdict: RulesVerdict, assessed, 
                 "raw_retained": True,
                 "slate_label": state.label,
                 "parser_version": PARSER_VERSION,
+                "draftables_slot_count": None
+                if group.draftables is None
+                else group.draftables.slot_count,
+                "draftables_player_count": None
+                if group.draftables is None
+                else group.draftables.player_count,
             }
         ),
         "created_at": now,
