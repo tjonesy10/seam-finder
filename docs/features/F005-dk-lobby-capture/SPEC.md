@@ -1,8 +1,8 @@
 # F005: Scheduled private DraftKings NFL Classic lobby snapshots
 
-Status: **SPEC READY / DOCS APPROVAL PENDING** (2026-11-06). Q1 cadence and Q2 Sunday-afternoon slate rule are answered. ADR 0005/0006 remain Proposed and the constitution amendment is not effective until Cosmo merges this docs PR. Handoff is held for that docs approval. No forge handoff and no schedule activation.
+Status: **READY** (2026-11-06). Docs approval is the owner merge of PR #17. Q1 cadence and Q2 Sunday-afternoon slate rule are answered. ADR 0005 and ADR 0006 are Accepted, and the constitution amendment is operative. This status sync is not another build gate. Forge handoff for F005 was delivered. Build this feature first, in its own PR, with every acceptance test and a Mutator report. F006, F007, and F008 wait until the PRs they depend on merge. Schedule activation and production migration or deploy remain unapproved.
 
-Related: [constitution](../../CONSTITUTION.md), [architecture](../../architecture.md), [data dictionary](../../data-dictionary.md#proposed-f005f008-private-salary-contract-draft-not-deployed), [glossary](../../GLOSSARY.md), [F004](../F004-dk-current-slate/SPEC.md).
+Related: [constitution](../../CONSTITUTION.md), [architecture](../../architecture.md), [data dictionary](../../data-dictionary.md#f005f008-private-salary-contract-approved-not-deployed), [glossary](../../GLOSSARY.md), [F004](../F004-dk-current-slate/SPEC.md).
 
 ## Problem / job to be done
 
@@ -108,7 +108,7 @@ Existing Python 3.12, SQLAlchemy Core/psycopg, Alembic, existing HTTP client, st
 
 ## Open questions
 
-None. ADR 0005/0006 stay Proposed, and the constitution amendment is not in force until Cosmo merges this docs PR. That approval gate is not a product question. No forge handoff. Production changes need a later, separate approval.
+None. Docs approval is already recorded by PR #17. Production migration, deploy, and schedule activation remain unapproved. That is not a new product question and not a second docs gate.
 
 ## Analyze matrix
 
@@ -124,8 +124,8 @@ None. ADR 0005/0006 stay Proposed, and the constitution amendment is not in forc
 | R8 | AT14 |
 | R9 | AT15, AT16 |
 
-R1–R9 all covered; AT1–AT16 none orphaned. ADR 0005/0006 remain Proposed and the constitution amendment is pending owner merge. SPEC READY / DOCS APPROVAL PENDING is not a forge handoff and does not activate the schedule.
+R1–R9 all covered; AT1–AT16 none orphaned. ADR 0005 and ADR 0006 are Accepted. The constitution amendment is operative. READY does not activate the schedule or approve production migration or deploy.
 
 ## ADRs
 
-[0001](../../adr/0001-stack-and-hosting.md), [0002](../../adr/0002-nflverse-load-and-refresh.md), [0003](../../adr/0003-rotoguru-dk-classic-salaries.md), [0004 (live Proposed, preserved)](../../adr/0004-dk-current-slate-csv.md), [0005 (Proposed)](../../adr/0005-private-salary-capture-and-archives.md), [0006 (Proposed)](../../adr/0006-slate-safe-salary-unification.md).
+[0001](../../adr/0001-stack-and-hosting.md), [0002](../../adr/0002-nflverse-load-and-refresh.md), [0003](../../adr/0003-rotoguru-dk-classic-salaries.md), [0004 (Accepted; status only, substance preserved)](../../adr/0004-dk-current-slate-csv.md), [0005 (Accepted)](../../adr/0005-private-salary-capture-and-archives.md), [0006 (Accepted)](../../adr/0006-slate-safe-salary-unification.md).

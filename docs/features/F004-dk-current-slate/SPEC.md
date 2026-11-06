@@ -131,7 +131,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 5. ~~Deliverable scope.~~ Answered 2026-11-06: data-load only (no read API / browse).
 6. ~~Refresh / schedule shape.~~ Answered 2026-11-06: cron/`workflow_dispatch` loads from Cosmo-staged path/secret/artifact (not reminder-only; not DK auto-download).
 7. ~~Showdown detection.~~ Answered 2026-11-06: reject on CPT in Roster Position **or** distinct Game Info ≤ 1; clear Classic-only error.
-8. ~~Constitution amendment.~~ Answered with Q1 on PR #12 (Data section amended; ADR 0004 stays Proposed until Cosmo merges).
+8. ~~Constitution amendment.~~ Answered with Q1 on PR #12 (Data section amended). That merged amendment was ADR 0004's acceptance condition. ADR 0004 is Accepted on status only; its decision text is unchanged. ADR 0005 supersedes only the blanket auto-download ban.
 
 ## Decisions (from Cosmo via Groko, 2026-11-06)
 
@@ -151,4 +151,4 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - [ADR 0001: Stack and hosting](../../adr/0001-stack-and-hosting.md)
 - [ADR 0002: nflverse load and refresh](../../adr/0002-nflverse-load-and-refresh.md)
 - [ADR 0003: RotoGuru DK Classic salaries](../../adr/0003-rotoguru-dk-classic-salaries.md)
-- [ADR 0004: Current-slate DK Classic CSV](../../adr/0004-dk-current-slate-csv.md) (Proposed)
+- [ADR 0004: Current-slate DK Classic CSV](../../adr/0004-dk-current-slate-csv.md) (Accepted; status only, substance preserved)

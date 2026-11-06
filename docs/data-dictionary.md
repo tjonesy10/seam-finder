@@ -242,9 +242,9 @@ Readonly grants: same pattern as other tables (`READONLY_ROLE`).
 
 
 
-## Proposed F005–F008 private salary contract (DRAFT; not deployed)
+## F005–F008 private salary contract (approved; not deployed)
 
-Governed by [ADR 0005](adr/0005-private-salary-capture-and-archives.md) and [ADR 0006](adr/0006-slate-safe-salary-unification.md). The following is a **proposed** additive schema, not a statement that migrations ran. Specs own behavior; this section owns shared shapes. All new relations are qualified `salary_private.<name>`. Existing F003/F004 keys and replacement loaders do not change.
+Governed by [ADR 0005](adr/0005-private-salary-capture-and-archives.md) and [ADR 0006](adr/0006-slate-safe-salary-unification.md). The following is the approved additive schema. Migrations have not run. Specs own behavior; this section owns shared shapes. All new relations are qualified `salary_private.<name>`. Existing F003/F004 keys and replacement loaders do not change.
 
 ### Types, privacy, bounds, and ownership
 

@@ -41,7 +41,7 @@
 
 
 
-## Proposed F005–F008 terms (DRAFT)
+## F005–F008 terms
 
 | Term | Definition | Code / data name |
 |---|---|---|

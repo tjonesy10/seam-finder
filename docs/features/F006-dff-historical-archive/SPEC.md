@@ -1,8 +1,8 @@
 # F006: Re-runnable private Daily Fantasy Fuel historical archive load
 
-Status: **SPEC READY / DOCS APPROVAL PENDING** (2026-11-06). No open product questions. ADR 0005/0006 remain Proposed and the constitution amendment is not effective until Cosmo merges this docs PR. Implementation still waits on that docs approval and on the F005 shared persistence foundation. No forge handoff.
+Status: **READY** (2026-11-06). Docs approval is the owner merge of PR #17. No open product questions. ADR 0005 and ADR 0006 are Accepted, and the constitution amendment is operative. This status sync is not another build gate. Build this feature in its own PR after the F005 foundation PR merges. Do not skip that merge. Include every acceptance test and a Mutator report. Schedule activation and production migration or deploy remain unapproved.
 
-Related: [constitution](../../CONSTITUTION.md), [architecture](../../architecture.md), [dictionary](../../data-dictionary.md#proposed-f005f008-private-salary-contract-draft-not-deployed), [glossary](../../GLOSSARY.md).
+Related: [constitution](../../CONSTITUTION.md), [architecture](../../architecture.md), [dictionary](../../data-dictionary.md#f005f008-private-salary-contract-approved-not-deployed), [glossary](../../GLOSSARY.md).
 
 ## Problem / job to be done
 
@@ -82,7 +82,7 @@ F005's approved shared persistence foundation, existing Python/SQLAlchemy Core/A
 
 ## Open questions
 
-No open product questions. F005 cadence and the Sunday-afternoon slate rule were answered 2026-11-06 and are not reopened here. ADR 0005/0006 and the constitution amendment still require Cosmo's docs merge before any build. Archive staging is an operational prerequisite, not a new product question. Missing evidence must be reported to the coordinator, never silently fetched. No forge handoff.
+No open product questions. F005 cadence and the Sunday-afternoon slate rule were answered 2026-11-06. Docs approval is PR #17. Archive staging is an operational prerequisite, not a new product question. Missing evidence must be reported to the coordinator, never silently fetched. Build after the F005 foundation PR merges. That dependency is not a new docs gate and is not permission to skip the merge. Production migration and deploy remain unapproved.
 
 ## Analyze matrix
 
@@ -95,8 +95,8 @@ No open product questions. F005 cadence and the Sunday-afternoon slate rule were
 | R5 | AT4, AT8, AT9 |
 | R6 | AT10, AT11, AT12 |
 
-R1–R6 all covered; AT1–AT12 none orphaned. ADR 0005/0006 remain Proposed and the constitution amendment is pending owner merge. SPEC READY / DOCS APPROVAL PENDING. No forge handoff.
+R1–R6 all covered; AT1–AT12 none orphaned. ADR 0005 and ADR 0006 are Accepted. The constitution amendment is operative. READY does not approve production migration, deploy, or schedule activation.
 
 ## ADRs
 
-[0001](../../adr/0001-stack-and-hosting.md), [0002](../../adr/0002-nflverse-load-and-refresh.md), [0003 (existing attribution separation)](../../adr/0003-rotoguru-dk-classic-salaries.md), [0004 (live Proposed; preserved)](../../adr/0004-dk-current-slate-csv.md), [0005 (Proposed)](../../adr/0005-private-salary-capture-and-archives.md), [0006 (Proposed)](../../adr/0006-slate-safe-salary-unification.md).
+[0001](../../adr/0001-stack-and-hosting.md), [0002](../../adr/0002-nflverse-load-and-refresh.md), [0003 (existing attribution separation)](../../adr/0003-rotoguru-dk-classic-salaries.md), [0004 (Accepted; status only, substance preserved)](../../adr/0004-dk-current-slate-csv.md), [0005 (Accepted)](../../adr/0005-private-salary-capture-and-archives.md), [0006 (Accepted)](../../adr/0006-slate-safe-salary-unification.md).
