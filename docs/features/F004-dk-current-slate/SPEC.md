@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1–Q2 answered; other open questions pending.
+Status: DRAFT (2026-11-06). Q1–Q3 answered; other open questions pending.
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -10,7 +10,7 @@ Load Cosmo's official DraftKings NFL Classic salary export (`DKSalaries.csv`) in
 
 ## Requirements
 
-- **R1** Ingest a user-supplied DraftKings Classic `DKSalaries.csv` (file path / Cosmo paste or upload — path TBD) into Postgres.
+- **R1** Ingest a user-supplied DraftKings Classic `DKSalaries.csv` via CLI file path into Postgres.
 - **R2** Map skill players to `gsis_id` and DST to `team_abbr`, keeping raw DK fields (including DraftKings `ID`) for provenance and lineup export later.
 - **R3** Loads are idempotent per `(season, week)`: upsert on `(season, week, dk_id)`, then delete that season/week's rows missing from the batch.
 - **R4** A failed load leaves previous data for that slate in place, records failure, and fails the run.
@@ -72,7 +72,7 @@ Dataset name in `load_runs`: `dk_classic_slate`.
 
 - Thin in-repo CSV parse (stdlib / existing stack). Not `nfldfs`. Not draftkings.com.
 - One transaction per slate: validate header, map, upsert, delete-missing, `load_runs`.
-- [NEEDS CLARIFICATION: Ingest path — CLI file only this pass, or also a private upload endpoint/page? Default: **CLI file only** (data-load); upload UI later.]
+- Ingest path: **CLI file only** this pass (`python -m loader.dk_slate --csv path --season YYYY --week N`). No private upload endpoint/page in this pass.
 - [NEEDS CLARIFICATION: Refresh — manual only vs anything scheduled? Default: manual / local only (Cosmo drops a new CSV).]
 
 ### HTTP API and pages
@@ -109,6 +109,7 @@ Same secrets rule as F001/F003. No DraftKings credentials. Never commit live unr
 - FanDuel / other sites.
 - Lineup optimizer / ILP (later feature).
 - Pinning `nfldfs`.
+- Private upload endpoint/page for the CSV (follow-up).
 - [If data-load only] Public API and HTML pages for current slate.
 - Republishing DraftKings salary IP as a public downloadable dataset.
 
@@ -120,7 +121,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 
 1. ~~License / public exposure (R9).~~ Answered 2026-11-06: store in Neon; no public raw tables/CSV downloads; keep "Not affiliated with DraftKings."
 2. ~~Slate identity.~~ Answered 2026-11-06: `--season` + `--week`; PK `(season, week, dk_id)`.
-3. **Ingest path.** CLI only vs upload UI/API?
+3. ~~Ingest path.~~ Answered 2026-11-06: CLI file only; no upload UI this pass.
 4. **Unmapped skill policy + match-rate.**
 5. **Deliverable scope.** Data-load only vs API/pages?
 6. **Showdown detection / rejection rule.**
@@ -133,6 +134,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - Optimizer is later (not this SPEC).
 - **Q1:** Yes — store in Neon for personal/optimizer use. Do not publish raw salary tables or CSV downloads on the public site. Keep "Not affiliated with DraftKings."
 - **Q2:** Slate key = Cosmo `--season` + `--week`; natural key `(season, week, dk_id)`.
+- **Q3:** CLI file path only this pass; no private upload endpoint/page (follow-up later).
 
 ## ADRs
 
