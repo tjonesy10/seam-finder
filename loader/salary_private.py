@@ -187,21 +187,26 @@ def budget_block(
     return None
 
 
-def reserve_budget(
-    conn,
-    *,
-    object_bytes: int,
-    invocation_bytes: int,
-    extra_bytes: int = 0,
-) -> None:
-    """Lock and reject before a write that would pass a storage ceiling."""
+# A payload-sized estimate does not bound Postgres growth. A 200-byte artifact
+# extended the real database by 24,576 bytes (page, index, and tuple overhead).
+# Publication therefore measures pg_database_size and pg_total_relation_size
+# after the writes and rolls back before commit when the ceiling is crossed.
+# AUDIT_HEADROOM stays free so a rolled-back attempt can still record failure.
+AUDIT_HEADROOM = 256 * 1024
+
+
+def actual_ceiling_block(conn) -> GuardBlock | None:
     conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": CAPTURE_LOCK})
-    block = budget_block(
-        conn,
-        object_bytes=object_bytes,
-        invocation_bytes=invocation_bytes,
-        extra_bytes=extra_bytes,
-    )
+    sizes = read_storage_sizes(conn)
+    if sizes.private_bytes > CUMULATIVE_LIMIT:
+        return GuardBlock.CUMULATIVE
+    if sizes.database_bytes + AUDIT_HEADROOM > DATABASE_LIMIT:
+        return GuardBlock.DATABASE
+    return None
+
+
+def assert_actual_ceiling(conn) -> None:
+    block = actual_ceiling_block(conn)
     if block is not None:
         raise PrivateWriteError(block.value)
 
@@ -339,16 +344,14 @@ def store_artifact(
             ),
             {"source": Source.DK_LOBBY.value, "sha256": digest},
         ).one_or_none()
-        incoming = 0 if existing is not None else len(body)
-        reserve_budget(
-            conn,
-            object_bytes=incoming,
-            invocation_bytes=invocation_bytes,
-            extra_bytes=0,
-        )
+        if len(body) > OBJECT_LIMIT:
+            raise PrivateWriteError(GuardBlock.OBJECT.value)
+        if invocation_bytes > INVOCATION_LIMIT:
+            raise PrivateWriteError(GuardBlock.INVOCATION.value)
         if existing is not None:
             if bytes(existing.body) != body:
                 raise PrivateWriteError("artifact_conflict")
+            assert_actual_ceiling(conn)
             return ArtifactRef(int(existing.artifact_id), digest, int(existing.byte_count), True)
         row = conn.execute(
             text(
@@ -376,6 +379,7 @@ def store_artifact(
         ).one()
         if bytes(row.body) != body or row.sha256 != digest or int(row.byte_count) != len(body):
             raise PrivateWriteError("artifact_readback")
+        assert_actual_ceiling(conn)
     return ArtifactRef(int(row.artifact_id), digest, len(body), False)
 
 
@@ -390,9 +394,7 @@ def store_ledger(
     rows: tuple[LedgerRow, ...],
     loaded_at: datetime,
 ) -> None:
-    payload_bytes = sum(len(json.dumps(list(map(list, row.raw_fields)))) for row in rows)
     with conn.begin():
-        reserve_budget(conn, object_bytes=0, invocation_bytes=0, extra_bytes=payload_bytes)
         existing = conn.execute(
             text(
                 """
@@ -416,6 +418,7 @@ def store_ledger(
                 )
                 if not same:
                     raise PrivateWriteError("ledger_conflict")
+            assert_actual_ceiling(conn)
             return
         for row in rows:
             conn.execute(
@@ -440,6 +443,7 @@ def store_ledger(
                     "loaded_at": loaded_at,
                 },
             )
+        assert_actual_ceiling(conn)
 
 
 def find_snapshot(

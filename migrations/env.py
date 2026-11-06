@@ -34,9 +34,11 @@ def run_migrations_online() -> None:
         context.configure(connection=connection)
         with context.begin_transaction():
             context.run_migrations()
-    # Re-apply after every upgrade so a role configured later still receives SELECT.
-    with connectable.begin() as connection:
-        apply_readonly_grant(connection)
+    # Grant changes ship with the salary-private migration. A flag-off refresh
+    # must not revoke or regrant anything, including on a no-op upgrade.
+    if os.environ.get("SALARY_PRIVATE_MIGRATION") == "true":
+        with connectable.begin() as connection:
+            apply_readonly_grant(connection)
 
 
 if context.is_offline_mode():

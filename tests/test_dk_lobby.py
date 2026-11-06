@@ -1348,32 +1348,56 @@ def test_challenge_on_5xx_is_not_retried(engine):
     )[0]["reason_code"] == "http_challenge"
 
 
-def test_concurrent_reserve_rejects_one_writer(engine, monkeypatch):
+def test_concurrent_actual_growth_rejects_one_writer(engine, monkeypatch):
     import threading
 
     import loader.salary_private as private
-    from loader.salary_private import reserve_budget
 
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text("DELETE FROM salary_private.salary_artifacts WHERE source = 'control'"))
+        conn.execute(text("VACUUM FULL salary_private.salary_artifacts"))
     with engine.connect() as conn:
-        size = private.read_storage_sizes(conn).database_bytes
+        before = private.read_storage_sizes(conn).private_bytes
         conn.rollback()
-    monkeypatch.setattr(private, "DATABASE_LIMIT", size + 3000)
-    monkeypatch.setattr(private, "CUMULATIVE_LIMIT", 10**15)
+    probe = b"p" * 500_000
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind, stored_at, loaded_at
+                ) VALUES (
+                    'control', :sha, :body, :count, 'text/plain', 'manifest', now(), now()
+                )
+                """
+            ),
+            {"sha": __import__("hashlib").sha256(probe).hexdigest(), "body": probe, "count": len(probe)},
+        )
+        grown = private.read_storage_sizes(conn).private_bytes
+    delta = grown - before
+    assert delta > 0
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text("DELETE FROM salary_private.salary_artifacts WHERE source = 'control'"))
+        conn.execute(text("VACUUM FULL salary_private.salary_artifacts"))
+    with engine.connect() as conn:
+        base = private.read_storage_sizes(conn).private_bytes
+        conn.rollback()
+    monkeypatch.setattr(private, "AUDIT_HEADROOM", 0)
+    monkeypatch.setattr(private, "DATABASE_LIMIT", 10**15)
+    monkeypatch.setattr(private, "CUMULATIVE_LIMIT", base + delta + delta // 2)
     start = threading.Barrier(2)
     outcomes: list[str] = []
 
     def attempt(label: bytes):
-        body = b"synthetic-budget-" + label
+        body = label * 500_000
         digest = __import__("hashlib").sha256(body).hexdigest()
         with engine.connect() as conn:
             start.wait(timeout=5)
             try:
                 with conn.begin():
-                    reserve_budget(
-                        conn,
-                        object_bytes=len(body),
-                        invocation_bytes=len(body),
-                        extra_bytes=2000,
+                    conn.execute(
+                        text("SELECT pg_advisory_xact_lock(:key)"),
+                        {"key": private.CAPTURE_LOCK},
                     )
                     conn.execute(
                         text(
@@ -1389,6 +1413,7 @@ def test_concurrent_reserve_rejects_one_writer(engine, monkeypatch):
                         ),
                         {"sha": digest, "body": body, "count": len(body)},
                     )
+                    private.assert_actual_ceiling(conn)
                 outcomes.append("ok")
             except private.PrivateWriteError:
                 outcomes.append("rejected")
@@ -1399,6 +1424,8 @@ def test_concurrent_reserve_rejects_one_writer(engine, monkeypatch):
     for thread in threads:
         thread.join()
     assert sorted(outcomes) == ["ok", "rejected"]
+    with engine.connect() as conn:
+        assert private.read_storage_sizes(conn).database_bytes <= private.DATABASE_LIMIT
 
 
 def test_rules_hash_and_game_type_split_snapshots(engine):
@@ -1427,6 +1454,212 @@ def test_rules_hash_and_game_type_split_snapshots(engine):
     assert _run(engine, ScriptTransport(rules_handler(first))) == 0
     assert _run(engine, ScriptTransport(rules_handler(second))) == 0
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 2
+
+
+def test_stale_current_season_is_not_saved_by_fresh_history(engine):
+    _seed(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE load_runs
+                SET finished_at = now() - interval '200 days'
+                WHERE dataset = 'games' AND season = 2026
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO games (
+                    game_id, season, game_type, season_type, week, gameday, weekday,
+                    gametime, away_team, home_team, location, loaded_at
+                ) VALUES (
+                    '2015_01_BUF_MIA', 2015, 'REG', 'REG', 1, DATE '2015-09-13', 'Sunday',
+                    '13:00', 'BUF', 'MIA', 'Home', now()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO load_runs (
+                    run_group, dataset, season, status, trigger, started_at, finished_at,
+                    source_url, source_version
+                ) VALUES (
+                    :run_group, 'games', 2015, 'succeeded', 'local', now(), now(),
+                    'https://example.test/2015', 'fresh-history'
+                )
+                """
+            ),
+            {"run_group": uuid4()},
+        )
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 1
+    assert _rows(
+        engine, "SELECT reason_code, status FROM salary_private.salary_observations"
+    )[0]["reason_code"] == "schedule_evidence_missing"
+
+
+def test_truncated_schedule_is_not_off_season(engine):
+    _seed(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM games WHERE season = 2026 AND week > 10"))
+    assert (
+        _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(_et(2026, 12, 23, 10, 0)))
+        == 1
+    )
+    reason = _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[0]["reason_code"]
+    assert reason == "schedule_evidence_missing"
+    assert reason != "off_season"
+
+
+def test_login_redirect_keeps_the_body(engine):
+    _seed(engine)
+    evidence = b"synthetic-login-body"
+
+    def handler(_request):
+        return 302, {"location": "https://www.draftkings.com/login", "content-type": "text/plain"}, evidence
+
+    assert _run(engine, ScriptTransport(handler)) == 1
+    bodies = [bytes(row["body"]) for row in _rows(engine, "SELECT body FROM salary_private.salary_artifacts")]
+    assert evidence in bodies
+
+
+def test_trickled_stream_stops_at_the_deadline():
+    from loader.dk_lobby import CaptureFailure, _read_capped
+
+    clock = MutableClock(NOW, 0)
+    produced = {"n": 0}
+
+    class Slow(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(6):
+                produced["n"] += 1
+                clock.mono_now += 40
+                yield b"abcdefghij"
+
+    response = httpx.Response(200, stream=Slow())
+    try:
+        with pytest.raises(CaptureFailure) as caught:
+            _read_capped(response, deadline=100, clock=clock)
+    finally:
+        response.close()
+    assert caught.value.reason == "http_budget_exhausted"
+    assert produced["n"] < 6
+
+
+def test_body_read_timeout_is_retried(engine):
+    _seed(engine)
+    state = {"n": 0}
+
+    class TimeoutOnce(httpx.SyncByteStream):
+        def __iter__(self):
+            raise httpx.ReadTimeout("synthetic read timeout")
+            yield b""
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            state["n"] += 1
+            if state["n"] < 3:
+                return httpx.Response(200, stream=TimeoutOnce())
+        status, headers, body = _happy_handler(_box())(request)
+        return status, headers, body
+
+    class Transport(httpx.BaseTransport):
+        def __init__(self):
+            self.calls = []
+
+        def handle_request(self, request):
+            self.calls.append(request)
+            result = handler(request)
+            if isinstance(result, httpx.Response):
+                return result
+            status, headers, body = result
+            return httpx.Response(status, headers=headers, content=body, request=request)
+
+    transport = Transport()
+    assert _run(engine, transport) == 0
+    assert state["n"] == 3
+
+
+def test_sunday_hydrate_rejects_a_different_group_id(engine):
+    _seed(engine)
+    lobby = _group(90001, _sunday_games())
+    lobby.pop("GameTypeId")
+    replacement = _group(99999, _sunday_games())
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": [lobby]})
+        if request.url.path.startswith("/draftgroups/v1/"):
+            return _json_response(replacement)
+        return _happy_handler(_box())(request)
+
+    assert _run(engine, ScriptTransport(handler)) == 1
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[0]["reason_code"] == "mismatched_metadata"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_capture_over_the_ceiling_records_failure(engine, monkeypatch):
+    import loader.salary_private as private
+
+    _seed(engine)
+    monkeypatch.setattr(private, "CUMULATIVE_LIMIT", 0)
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 1
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+    row = _rows(
+        engine,
+        """
+        SELECT status, reason_code, finished_at, duration_ms
+        FROM salary_private.salary_observations
+        """,
+    )[0]
+    assert row["status"] == "failed"
+    assert row["reason_code"] == "storage_guard_cumulative"
+    assert row["finished_at"] is not None
+    assert row["duration_ms"] is not None
+
+
+def test_flag_off_migrate_leaves_grants_unchanged(database_url, engine, monkeypatch):
+    from loader.migrate import migrate_production
+
+    role = "seam_grant_probe"
+    monkeypatch.delenv("SALARY_PRIVATE_MIGRATION", raising=False)
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+        conn.execute(text(f"CREATE ROLE {role}"))
+        conn.execute(text(f"GRANT SELECT ON dk_classic_slate TO {role}"))
+        conn.execute(text(f"REVOKE ALL ON TABLE teams FROM {role}"))
+    monkeypatch.setenv("READONLY_ROLE", role)
+
+    def privileges():
+        with engine.connect() as conn:
+            slate = conn.execute(
+                text("SELECT has_table_privilege(:role, 'public.dk_classic_slate', 'SELECT')"),
+                {"role": role},
+            ).scalar()
+            teams = conn.execute(
+                text("SELECT has_table_privilege(:role, 'public.teams', 'SELECT')"),
+                {"role": role},
+            ).scalar()
+        return slate, teams
+
+    before = privileges()
+    try:
+        migrate_production(database_url, None)
+        assert privileges() == before
+        assert before == (True, False)
+    finally:
+        monkeypatch.delenv("READONLY_ROLE", raising=False)
+        with engine.begin() as conn:
+            conn.execute(text(f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {role}"))
+            conn.execute(text(f"DROP OWNED BY {role}"))
+            conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
 
 
 def test_unexpected_database_error_stays_a_reason_code(engine, monkeypatch, capsys):

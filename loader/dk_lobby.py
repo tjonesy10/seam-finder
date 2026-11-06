@@ -35,6 +35,7 @@ from loader.salary_private import (
     PrivateWriteError,
     RowStatus,
     Source,
+    assert_actual_ceiling,
     canonical_sha256,
     find_snapshot,
     finish_load_run,
@@ -45,7 +46,6 @@ from loader.salary_private import (
     lock_capture,
     raise_private,
     reconcile,
-    reserve_budget,
     sha256_bytes,
     store_artifact,
     store_ledger,
@@ -322,21 +322,24 @@ class BoundedClient:
                 if self._elapsed() + delay > HTTP_BUDGET_S:
                     raise CaptureFailure("http_budget_exhausted")
                 self.sleeper(delay)
+            response = None
             try:
                 response = self._send(url, accept)
+                return self._accepted(response, accept, redirected=False)
             except httpx.TimeoutException:
                 last_reason = "http_timeout"
                 continue
             except httpx.TransportError:
                 last_reason = "http_server_error"
                 continue
-            try:
-                return self._accepted(response, accept, redirected=False)
             except _Retry as retry:
                 last_reason = retry.reason
                 last_body = retry.body
                 last_retry_after = retry.retry_after
                 continue
+            finally:
+                if response is not None:
+                    response.close()
         raise CaptureFailure(last_reason, body=last_body, retry_after=last_retry_after)
 
     def _over_budget(self) -> bool:
@@ -362,21 +365,20 @@ class BoundedClient:
 
     def _accepted(self, response: httpx.Response, accept: str, redirected: bool) -> FetchBody:
         status = response.status_code
+        deadline = self.started + HTTP_BUDGET_S
         if status in {301, 302, 303, 307, 308}:
             location = response.headers.get("location") or ""
             target = urljoin(str(response.request.url), location)
-            response.close()
+            body, truncated = _read_capped(response, deadline=deadline, clock=self.clock)
             if redirected or self._over_budget():
                 reason = "http_budget_exhausted" if self._over_budget() else "http_redirect_rejected"
-                raise CaptureFailure(reason)
+                raise CaptureFailure(reason, body=None if truncated else body, truncated=truncated)
             if _login(target) or not allowlisted(target):
                 reason = "http_login_redirect" if _login(target) else "http_redirect_rejected"
-                raise CaptureFailure(reason)
-            return self._accepted(self._send(target, accept), accept, redirected=True)
-        try:
-            body, truncated = _read_capped(response)
-        finally:
+                raise CaptureFailure(reason, body=None if truncated else body, truncated=truncated)
             response.close()
+            return self._accepted(self._send(target, accept), accept, redirected=True)
+        body, truncated = _read_capped(response, deadline=deadline, clock=self.clock)
         if self._over_budget():
             raise CaptureFailure("http_budget_exhausted")
         retry_after = response.headers.get("retry-after")
@@ -422,10 +424,18 @@ class _Retry(Exception):
         self.retry_after = retry_after
 
 
-def _read_capped(response: httpx.Response) -> tuple[bytes, bool]:
+def _read_capped(response: httpx.Response, *, deadline: float, clock: Clock) -> tuple[bytes, bool]:
+    """Stop at 5 MiB or when the capture's 180s deadline is crossed between chunks."""
     limit = 5 * 1024 * 1024
     buf = bytearray()
-    for chunk in response.iter_bytes():
+    chunks = response.iter_bytes()
+    while True:
+        if clock.mono() > deadline:
+            raise CaptureFailure("http_budget_exhausted")
+        try:
+            chunk = next(chunks)
+        except StopIteration:
+            break
         if not chunk:
             continue
         buf.extend(chunk)
@@ -959,19 +969,20 @@ def load_schedule(conn, now: datetime) -> tuple[str, tuple[RegGame, ...]]:
         if not _fresh_load(version, finished, now):
             continue
         verified[season] = tuple(rows)
-    for season in tainted:
-        if _season_might_contain(season, now):
-            return "schedule_evidence_missing", ()
-    moment = now.astimezone(UTC)
-    for season, rows in verified.items():
-        kickoffs = [game.kickoff_at for game in rows]
-        if min(kickoffs) <= moment <= max(kickoffs):
-            return "verified", rows
-    if not verified and tainted:
+    relevant = now.astimezone(ET).year if now.astimezone(ET).month >= 8 else now.astimezone(ET).year - 1
+    if not _season_might_contain(relevant, now):
+        return "verified", ()
+    if relevant in tainted or relevant not in verified:
         return "schedule_evidence_missing", ()
-    if verified:
-        return "verified", tuple(game for rows in verified.values() for game in rows)
-    return "schedule_evidence_missing", ()
+    rows = verified[relevant]
+    kickoffs = [game.kickoff_at for game in rows]
+    weeks = {game.week for game in rows}
+    moment = now.astimezone(UTC)
+    if moment < min(kickoffs) and 1 not in weeks:
+        return "schedule_evidence_missing", ()
+    if moment > max(kickoffs) and 18 not in weeks:
+        return "schedule_evidence_missing", ()
+    return "verified", rows
 
 
 def _gametime(gameday: date, gametime: str) -> datetime | None:
@@ -1363,6 +1374,8 @@ def _hydrate(state: _State, group: DraftGroup) -> DraftGroup:
     fetched = state.client.get_json(group_url(group.draft_group_id))
     _keep(state, fetched.body, ArtifactKind.LOBBY_JSON, fetched.media_type or "application/json")
     loaded = parse_group_document(fetched.body)
+    if loaded.draft_group_id not in (0, group.draft_group_id):
+        raise CaptureFailure("mismatched_metadata")
     return DraftGroup(
         group.draft_group_id,
         loaded.contest_type_id if loaded.contest_type_id is not None else group.contest_type_id,
@@ -1640,15 +1653,6 @@ def _write_terminal(
         metadata.update(state.truncated_meta)
     try:
         with state.conn.begin():
-            extra = 0
-            if publish:
-                extra = len(json.dumps(state._salary_rows, default=str))
-            reserve_budget(
-                state.conn,
-                object_bytes=0,
-                invocation_bytes=state.invocation_bytes,
-                extra_bytes=extra,
-            )
             if state.failpoint == "constraint":
                 state.failpoint = None
                 state.conn.execute(
@@ -1690,6 +1694,8 @@ def _write_terminal(
                 error_private=error_private,
                 metadata=metadata,
             )
+            if publish:
+                assert_actual_ceiling(state.conn)
     except Crash:
         raise
     except IntegrityError as exc:
