@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Open questions pending Cosmo (via Groko).
+Status: DRAFT (2026-11-06). Q1 answered; other open questions pending.
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -18,7 +18,7 @@ Load Cosmo's official DraftKings NFL Classic salary export (`DKSalaries.csv`) in
 - **R6** Provenance is stored (source filename or upload id, fetch/load time, content hash).
 - **R7** Never scrape or download from draftkings.com. Cosmo supplies the CSV.
 - **R8** No secrets in the repo or logs. Do not commit live salary CSVs with personal contest data unless Cosmo explicitly allows a redacted fixture.
-- **R9** [NEEDS CLARIFICATION: License / constitution — may F004 store Cosmo's DK export in Neon? May any of it appear on the public site, or is storage private/optimizer-only? Default if unanswered: store in Neon for Cosmo's personal use; do **not** publish raw salary tables or CSV contents on the public site; keep "Not affiliated with DraftKings." on any UI that mentions DK.]
+- **R9** Store Cosmo's official Classic `DKSalaries.csv` in Neon for personal/optimizer use. Do **not** publish raw salary tables or CSV downloads on the public site. Any UI that mentions DraftKings must include "Not affiliated with DraftKings."
 
 ## User stories
 
@@ -81,7 +81,7 @@ Dataset name in `load_runs`: `dk_classic_slate`.
 
 ### Attribution and license
 
-Historical public attribution remains the RotoGuru line (F003). Current-slate rows are Cosmo's own DK export — [NEEDS CLARIFICATION under R9]. Do not claim affiliation with DraftKings.
+Historical public attribution remains the RotoGuru line (F003). Current-slate rows may be stored in Neon but must not appear as raw salary tables or CSV downloads on the public site. Do not claim affiliation with DraftKings; keep "Not affiliated with DraftKings." on any UI that mentions DK.
 
 ### Security
 
@@ -118,7 +118,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 
 ## Open questions
 
-1. **License / public exposure (R9).** Store in Neon? Public site vs private/optimizer-only?
+1. ~~License / public exposure (R9).~~ Answered 2026-11-06: store in Neon; no public raw tables/CSV downloads; keep "Not affiliated with DraftKings."
 2. **Slate identity.** season+week CLI vs derived slate_id vs single current table?
 3. **Ingest path.** CLI only vs upload UI/API?
 4. **Unmapped skill policy + match-rate.**
@@ -131,6 +131,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - Feature next after F003: current-slate `DKSalaries.csv`.
 - Never scrape draftkings.com; Cosmo uploads or pastes the official export.
 - Optimizer is later (not this SPEC).
+- **Q1:** Yes — store in Neon for personal/optimizer use. Do not publish raw salary tables or CSV downloads on the public site. Keep "Not affiliated with DraftKings."
 
 ## ADRs
 

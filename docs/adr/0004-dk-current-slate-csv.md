@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-06). Blocked on Cosmo license / public-exposure answer and a constitution amendment if storage is approved.
+Proposed (2026-11-06). License/exposure approved by Cosmo 2026-11-06. Becomes **Accepted** when the constitution amendment naming current-slate DK export storage is merged.
 
 ## Context
 
@@ -14,7 +14,7 @@ F003 loaded historical Classic salaries (2015–2021) from RotoGuru. The product
 2. **Scope.** NFL Classic multi-game slates. Not Showdown. Not other DFS sites. Not the optimizer.
 3. **Storage.** A dedicated current-slate table (proposed `dk_classic_slate`) keyed so loads are idempotent per slate identity (exact key pending SPEC clarification).
 4. **Join.** Map to F001 `gsis_id` / `team_abbr`; keep DraftKings `ID` for later lineup export.
-5. **License / exposure.** Pending Cosmo (SPEC Q1). Recommendation: allow Neon storage for personal/optimizer use; do not publish raw salary grids or CSV downloads on the public site; retain "Not affiliated with DraftKings."
+5. **License / exposure.** Cosmo approved (2026-11-06): store in Neon for personal/optimizer use; do **not** publish raw salary tables or CSV downloads on the public site; retain "Not affiliated with DraftKings." ADR becomes Accepted when the constitution amendment is on main.
 
 ## Reasoning
 
@@ -31,6 +31,6 @@ F003 loaded historical Classic salaries (2015–2021) from RotoGuru. The product
 
 ## Consequences
 
-- Constitution Data section needs an amendment if Cosmo approves storing current DK export data.
-- Public site must not casually dump DK salary tables if Q1 says private/optimizer-only.
+- Constitution Data section is amended in the same docs PR to name current-slate owner-export storage rules.
+- Public site must not publish raw DK salary tables or CSV downloads.
 - Forge implements loader + migration + tests only after SPEC clarifications close.
