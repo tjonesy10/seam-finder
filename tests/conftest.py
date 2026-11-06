@@ -59,7 +59,7 @@ def clean_tables(engine):
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE load_runs, player_week_stats, games, players, teams "
+                "TRUNCATE load_runs, dk_classic_salaries, player_week_stats, games, players, teams "
                 "RESTART IDENTITY CASCADE"
             )
         )

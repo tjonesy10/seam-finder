@@ -7,6 +7,11 @@ ATTRIBUTION_TEXT = (
     "NFL data belong to their respective owners."
 )
 
+ROTOGURU_DK_CLASSIC_ATTRIBUTION = (
+    "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). "
+    "Not affiliated with DraftKings."
+)
+
 ATTRIBUTION_LINKS = (
     {"label": "nflverse-data", "url": "https://github.com/nflverse/nflverse-data"},
     {"label": "CC BY 4.0", "url": "https://creativecommons.org/licenses/by/4.0/"},

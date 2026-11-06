@@ -1,0 +1,51 @@
+name: dk classic salaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Season or range to load, for example 2015 or 2015-2021."
+        required: false
+        default: "2015-2021"
+        type: string
+      weeks:
+        description: "REG week or range from 1 to 18. Empty loads weeks 1-18."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install .
+
+      - name: Migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          READONLY_ROLE: ${{ vars.READONLY_ROLE }}
+        run: alembic upgrade head
+
+      - name: Load
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SEASONS: ${{ github.event.inputs.seasons }}
+          WEEKS: ${{ github.event.inputs.weeks }}
+        run: |
+          if [ -n "$WEEKS" ]; then
+            python -m loader.dk_classic --trigger manual --seasons "$SEASONS" --weeks "$WEEKS"
+          else
+            python -m loader.dk_classic --trigger manual --seasons "$SEASONS"
+          fi
