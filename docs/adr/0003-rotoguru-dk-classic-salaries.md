@@ -15,6 +15,7 @@ F001 loaded nflverse players, teams, games, and weekly stats. DFS backtests need
 3. **Storage.** Table `dk_classic_salaries` keyed by `(season, week, rotoguru_gid)`, with mapped `gsis_id` / `team_abbr` and raw provenance columns.
 4. **Load.** Idempotent per week (upsert + delete-missing) recorded in `load_runs` under dataset `dk_classic_salaries`.
 5. **License / attribution.** Cosmo approved storing and publicly exposing this data (2026-11-06). Attribution exact: "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings." ADR becomes Accepted when the constitution amendment is on main.
+6. **Deliverable this pass.** Data-load only (schema, migration, loader, workflow, tests). Read API and browse pages are out of scope for F003; follow-up later.
 
 ## Reasoning
 
@@ -33,6 +34,6 @@ F001 loaded nflverse players, teams, games, and weekly stats. DFS backtests need
 ## Consequences
 
 - Constitution needs a short amendment naming RotoGuru historical Classic DK salaries as an allowed source under Cosmo's attribution rules.
-- Footer/API attribution gains a RotoGuru line once wording is approved.
+- Public exposure of this data still needs the attribution line somewhere once pages exist. F003 itself does not add pages.
 - Matching quality becomes a measured acceptance test; DST rows key by team only.
 - F004 (current slate) remains a separate feature with its own source decision.

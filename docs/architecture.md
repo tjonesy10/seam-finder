@@ -55,5 +55,5 @@ New tables key on the same `gsis_id`, `team_abbr`, `game_id`, and `(season, week
 
 ## F003 addition (Proposed)
 
-RotoGuru → loader module for `dk_classic_salaries` → same Neon database. No new host. Details in [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) and [F003 SPEC](features/F003-dk-classic-salaries/SPEC.md).
+RotoGuru → loader module for `dk_classic_salaries` → same Neon database. No new host. This pass is data-load only (migration, loader, workflow, tests): no read API endpoints and no browse page. Details in [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) and [F003 SPEC](features/F003-dk-classic-salaries/SPEC.md).
 

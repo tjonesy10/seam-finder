@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1 answered; other open questions pending.
+Status: DRAFT (2026-11-06). Q1–Q2 answered; other open questions pending.
 
 # F003: Historical DraftKings NFL Classic weekly salaries and points (2015–2021)
 
@@ -81,7 +81,9 @@ Behavior:
 
 ### HTTP API and pages
 
-[NEEDS CLARIFICATION: Is F003 data-load only, with API/pages in a later pass, or does F003 include read endpoints and a browse page? Default if unanswered: **data-load only** (table, migration, loader, workflow, tests). API/pages follow in a small follow-up if Cosmo wants them before F004.]
+- F003 is **data-load only** (table, migration, loader, workflow, tests).
+- No read API endpoints and no browse page in this pass.
+- API/pages are a later follow-up if Cosmo wants them before F004.
 
 ### Attribution and license
 
@@ -119,7 +121,7 @@ Fixtures: committed SCSV snippets (at least 2015 week 1 excerpt including Def an
 - Scraping draftkings.com.
 - Playoff weeks.
 - Pinning `nfldfs`.
-- [If data-load only] Public API and HTML pages for this table.
+- Public API and HTML pages for this table.
 
 ## Allowed dependencies
 
@@ -128,7 +130,7 @@ Existing F001 stack plus `httpx` (already present). Stdlib CSV/semicolon parse. 
 ## Open questions
 
 1. ~~License / constitution (R9).~~ Answered 2026-11-06.
-2. **Deliverable scope.** Data-load only for F003, or also API + pages?
+2. ~~Deliverable scope.~~ Answered 2026-11-06: data-load only (no API/pages this pass).
 3. **Unmapped skill players.** Keep with null `gsis_id`, skip, or fail the week? Minimum match-rate for AT8?
 4. **Team map.** Confirm explicit RotoGuru→nflverse team_abbr map (recommended default: yes).
 5. **Weeks.** Confirm per-season week discovery (recommended default: load weeks that return SCSV).
@@ -143,6 +145,7 @@ Existing F001 stack plus `httpx` (already present). Stdlib CSV/semicolon parse. 
 - Not F004 (current slate) and not the optimizer.
 - Phase order remains 0→1→4→2→3→5→6→7; README methodologies stay aspirational.
 - **Q1:** Yes — store in Neon and expose on the public site. Attribution exact: "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings."
+- **Q2:** Data-load only — migration, tables, RotoGuru loader, workflow, tests. No read API or browse page in this pass (follow-up later).
 
 ## ADRs
 
