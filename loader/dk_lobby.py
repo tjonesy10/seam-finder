@@ -45,6 +45,7 @@ from loader.salary_private import (
     lock_capture,
     raise_private,
     reconcile,
+    reserve_budget,
     sha256_bytes,
     store_artifact,
     store_ledger,
@@ -54,6 +55,7 @@ from loader.url import normalize_database_url
 
 ET = ZoneInfo("America/New_York")
 HTTP_BUDGET_S = 180
+SCHEDULE_FRESH_DAYS = 120
 USER_AGENT = "seam-finder/0.1 (private DK Classic capture; github.com/tjonesy10/seam-finder)"
 LOBBY_URL = "https://www.draftkings.com/lobby/getcontests?sport=NFL"
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -337,40 +339,52 @@ class BoundedClient:
                 continue
         raise CaptureFailure(last_reason, body=last_body, retry_after=last_retry_after)
 
+    def _over_budget(self) -> bool:
+        return self._elapsed() > HTTP_BUDGET_S
+
     def _send(self, url: str, accept: str) -> httpx.Response:
+        if self._over_budget():
+            raise CaptureFailure("http_budget_exhausted")
         self.client.cookies.clear()
-        response = self.client.get(
+        request = self.client.build_request(
+            "GET",
             url,
             headers={"Accept": accept, "User-Agent": USER_AGENT},
         )
+        response = self.client.send(request, stream=True)
         self.client.cookies.clear()
         self.touched = True
-        self.wire.append((str(response.request.url), response.status_code))
-        if "authorization" in {key.lower() for key in response.request.headers}:
+        self.wire.append((str(request.url), response.status_code))
+        if "authorization" in {key.lower() for key in request.headers}:
+            response.close()
             raise CaptureFailure("http_unexpected_status")
         return response
 
     def _accepted(self, response: httpx.Response, accept: str, redirected: bool) -> FetchBody:
         status = response.status_code
         if status in {301, 302, 303, 307, 308}:
-            if redirected:
-                raise CaptureFailure("http_redirect_rejected", body=_read_capped(response)[0])
             location = response.headers.get("location") or ""
             target = urljoin(str(response.request.url), location)
-            if _login(target):
-                body, truncated = _read_capped(response)
-                raise CaptureFailure(
-                    "http_login_redirect",
-                    body=None if truncated else body,
-                    truncated=truncated,
-                )
-            if not allowlisted(target):
-                raise CaptureFailure("http_redirect_rejected")
+            response.close()
+            if redirected or self._over_budget():
+                reason = "http_budget_exhausted" if self._over_budget() else "http_redirect_rejected"
+                raise CaptureFailure(reason)
+            if _login(target) or not allowlisted(target):
+                reason = "http_login_redirect" if _login(target) else "http_redirect_rejected"
+                raise CaptureFailure(reason)
             return self._accepted(self._send(target, accept), accept, redirected=True)
-        body, truncated = _read_capped(response)
+        try:
+            body, truncated = _read_capped(response)
+        finally:
+            response.close()
+        if self._over_budget():
+            raise CaptureFailure("http_budget_exhausted")
         retry_after = response.headers.get("retry-after")
         if retry_after is not None:
             retry_after = retry_after.strip()[:80]
+        media = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        if _challenge(media, body):
+            raise CaptureFailure("http_challenge", body=None if truncated else body, truncated=truncated)
         if truncated:
             raise CaptureFailure(
                 "storage_guard_object",
@@ -395,9 +409,6 @@ class BoundedClient:
                 body=body,
                 private=f"http_status={status}",
             )
-        media = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
-        if _challenge(media, body):
-            raise CaptureFailure("http_challenge", body=body, private="http_status=200")
         if not _media_ok(media, accept):
             raise CaptureFailure("http_unexpected_media", body=body, private=f"media={media}")
         return FetchBody(body=body, media_type=media, fetched_at=self.clock.wall())
@@ -874,13 +885,26 @@ def _priority(reasons: list[str]) -> str:
     return reasons[0] if reasons else "rejected"
 
 
-def load_schedule(conn) -> tuple[str, tuple[RegGame, ...]]:
-    versions = {
-        int(row.season): row.source_version
+def _season_might_contain(season: int, now: datetime) -> bool:
+    local = now.astimezone(ET).date()
+    return date(season, 8, 1) <= local <= date(season + 1, 3, 1)
+
+
+def _fresh_load(version: str | None, finished_at: datetime | None, now: datetime) -> bool:
+    if not version or finished_at is None:
+        return False
+    finished = finished_at if finished_at.tzinfo is not None else finished_at.replace(tzinfo=UTC)
+    return finished >= now.astimezone(UTC) - timedelta(days=SCHEDULE_FRESH_DAYS)
+
+
+def load_schedule(conn, now: datetime) -> tuple[str, tuple[RegGame, ...]]:
+    """Judge one season. A bad historical season does not void a good current one."""
+    loads = {
+        int(row.season): (row.source_version, row.finished_at)
         for row in conn.execute(
             text(
                 """
-                SELECT DISTINCT ON (season) season, source_version
+                SELECT DISTINCT ON (season) season, source_version, finished_at
                 FROM load_runs
                 WHERE dataset = 'games' AND status = 'succeeded' AND season IS NOT NULL
                 ORDER BY season, finished_at DESC NULLS LAST, id DESC
@@ -900,23 +924,25 @@ def load_schedule(conn) -> tuple[str, tuple[RegGame, ...]]:
     ).all()
     if not raw_rows:
         return "schedule_evidence_missing", ()
-    seasons = {int(row.season) for row in raw_rows}
-    if any(not versions.get(season) for season in seasons):
-        return "schedule_evidence_missing", ()
-    games: list[RegGame] = []
+    good: dict[int, list[RegGame]] = {}
+    tainted: set[int] = set()
     for row in raw_rows:
-        if row.gametime is None or int(row.week) < WEEK_MIN or int(row.week) > WEEK_MAX:
-            return "schedule_evidence_missing", ()
-        kickoff = _gametime(row.gameday, row.gametime)
-        if kickoff is None:
-            return "schedule_evidence_missing", ()
-        local_name = WEEKDAYS[kickoff.astimezone(ET).weekday()]
-        if local_name.lower() != str(row.weekday).strip().lower():
-            return "schedule_evidence_missing", ()
-        games.append(
+        season = int(row.season)
+        kickoff = None if row.gametime is None else _gametime(row.gameday, row.gametime)
+        weekday_ok = False
+        if kickoff is not None:
+            weekday_ok = (
+                WEEKDAYS[kickoff.astimezone(ET).weekday()].lower()
+                == str(row.weekday).strip().lower()
+            )
+        week_ok = WEEK_MIN <= int(row.week) <= WEEK_MAX
+        if kickoff is None or not weekday_ok or not week_ok:
+            tainted.add(season)
+            continue
+        good.setdefault(season, []).append(
             RegGame(
                 str(row.game_id),
-                int(row.season),
+                season,
                 int(row.week),
                 row.gameday,
                 str(row.weekday),
@@ -925,7 +951,27 @@ def load_schedule(conn) -> tuple[str, tuple[RegGame, ...]]:
                 str(row.home_team).upper(),
             )
         )
-    return "verified", tuple(games)
+    verified: dict[int, tuple[RegGame, ...]] = {}
+    for season, rows in good.items():
+        if season in tainted or not rows:
+            continue
+        version, finished = loads.get(season, (None, None))
+        if not _fresh_load(version, finished, now):
+            continue
+        verified[season] = tuple(rows)
+    for season in tainted:
+        if _season_might_contain(season, now):
+            return "schedule_evidence_missing", ()
+    moment = now.astimezone(UTC)
+    for season, rows in verified.items():
+        kickoffs = [game.kickoff_at for game in rows]
+        if min(kickoffs) <= moment <= max(kickoffs):
+            return "verified", rows
+    if not verified and tainted:
+        return "schedule_evidence_missing", ()
+    if verified:
+        return "verified", tuple(game for rows in verified.values() for game in rows)
+    return "schedule_evidence_missing", ()
 
 
 def _gametime(gameday: date, gametime: str) -> datetime | None:
@@ -940,8 +986,13 @@ def _gametime(gameday: date, gametime: str) -> datetime | None:
 
 
 def _in_season(now: datetime, games: tuple[RegGame, ...]) -> bool:
-    kickoffs = [game.kickoff_at for game in games]
-    return min(kickoffs) <= now.astimezone(UTC) <= max(kickoffs)
+    if not games:
+        return False
+    moment = now.astimezone(UTC)
+    by_season: dict[int, list[datetime]] = {}
+    for game in games:
+        by_season.setdefault(game.season, []).append(game.kickoff_at)
+    return any(min(times) <= moment <= max(times) for times in by_season.values())
 
 
 def upcoming_sunday(now: datetime) -> date:
@@ -1080,7 +1131,7 @@ def _locked(conn, **kwargs) -> AttemptResult:
     reconcile(conn, finished_at=clock.wall())
     opened = clock.wall()
     started_mono = clock.mono()
-    evidence, games = load_schedule(conn)
+    evidence, games = load_schedule(conn, opened)
     _release(conn)
     plan = _plan(
         evidence=evidence,
@@ -1131,6 +1182,8 @@ def _locked(conn, **kwargs) -> AttemptResult:
     except IntegrityError as exc:
         failure = _integrity(exc)
         return _finish_failure(state, failure)
+    except Exception:  # noqa: BLE001 - public output stays a reason code
+        return _finish_failure(state, CaptureFailure("capture_failed"))
 
 
 @dataclass
@@ -1272,8 +1325,14 @@ def _select_sunday(state: _State, expected: tuple[RegGame, ...]) -> DraftGroup:
         raise CaptureFailure(reason)
     if chosen.game_type_id is None:
         chosen = _hydrate(state, chosen)
-    if chosen.game_type_id is None:
-        raise CaptureFailure("metadata_incomplete")
+        reason, again = _match_groups((chosen,), _keys(expected))
+        if again is None:
+            raise CaptureFailure(reason)
+        chosen = again
+    if chosen.game_type_id is None or chosen.contest_type_id != 21:
+        raise CaptureFailure("metadata_incomplete" if chosen.game_type_id is None else "not_classic")
+    if _keys(chosen.games or ()) != _keys(expected):
+        raise CaptureFailure("mismatched_metadata")
     return chosen
 
 
@@ -1284,16 +1343,10 @@ def _select_explicit(state: _State, plan: dict, games: tuple[RegGame, ...]) -> D
     group = parse_group_document(fetched.body)
     if group.games is None:
         raise CaptureFailure("metadata_incomplete")
+    if group.draft_group_id != plan["draft_group_id"]:
+        raise CaptureFailure("mismatched_metadata")
     if group.draftables is None and group.contest_type_id != 21:
         raise CaptureFailure("not_classic")
-    if group.draftables is not None:
-        group = DraftGroup(
-            plan["draft_group_id"],
-            group.contest_type_id,
-            group.game_type_id,
-            group.games,
-            group.draftables,
-        )
     if len(group.games) <= 1:
         raise CaptureFailure("one_game")
     week_games = [
@@ -1324,6 +1377,8 @@ def _verify_rules(state: _State, group: DraftGroup) -> RulesVerdict:
     ref = _keep(state, fetched.body, ArtifactKind.RULES_JSON, fetched.media_type or "application/json")
     verdict = parse_rules(fetched.body)
     state.rules_artifact = ref.artifact_id
+    state.rules_sha = ref.sha256
+    state.game_type_id = group.game_type_id
     state.rules = verdict
     return verdict
 
@@ -1386,6 +1441,8 @@ def _publish(state: _State, group: DraftGroup, verdict: RulesVerdict, assessed, 
         "games": game_rows,
         "parser_version": PARSER_VERSION,
         "rules": {"roster_slots": list(verdict.slots or ()), "salary_cap": 50000},
+        "rules_artifact_sha256": state.rules_sha,
+        "game_type_id": state.game_type_id,
         "season": state.season,
         "season_type": "REG",
         "week": state.week,
@@ -1510,9 +1567,18 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
         }
         else ObservationStatus.FAILED
     )
-    private = exc.private
-    if exc.retry_after:
-        private = (private + ";" if private else "") + f"retry_after={exc.retry_after}"
+    private = _bound_private(exc.private)
+    if exc.retry_after and _REASON.fullmatch(str(exc.retry_after).replace(" ", "")):
+        private = _bound_private(
+            ((private + ";") if private else "") + "retry_after=" + str(exc.retry_after).strip()[:40]
+        )
+    exc = CaptureFailure(
+        _public_reason(exc.reason),
+        private=private or "",
+        body=exc.body,
+        truncated=exc.truncated,
+        retry_after=None,
+    )
     _write_terminal(
         state,
         status=status,
@@ -1574,6 +1640,15 @@ def _write_terminal(
         metadata.update(state.truncated_meta)
     try:
         with state.conn.begin():
+            extra = 0
+            if publish:
+                extra = len(json.dumps(state._salary_rows, default=str))
+            reserve_budget(
+                state.conn,
+                object_bytes=0,
+                invocation_bytes=state.invocation_bytes,
+                extra_bytes=extra,
+            )
             if state.failpoint == "constraint":
                 state.failpoint = None
                 state.conn.execute(
@@ -1656,19 +1731,33 @@ def reconcile_open_attempts(engine, *, clock: Clock | None = None) -> None:
         conn.close()
 
 
+def _public_reason(reason: str | None) -> str:
+    if reason and _REASON.fullmatch(reason):
+        return reason
+    return "capture_failed"
+
+
+def _bound_private(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = re.sub(r"[^A-Za-z0-9=_;:.-]", "", value)[:120]
+    return cleaned or None
+
+
 def _report(result: AttemptResult) -> None:
-    if not result.persisted and result.reason == "database_unreachable":
+    reason = _public_reason(result.reason)
+    if not result.persisted and reason == "database_unreachable":
         print("database_unreachable", file=sys.stderr)
         return
     season = "-" if result.season is None else str(result.season)
     week = "-" if result.week is None else str(result.week)
     print(
         f"dk_lobby_salaries season={season} week={week} "
-        f"status={result.status} reason={result.reason} rows={result.rows}",
+        f"status={result.status} reason={reason} rows={result.rows}",
         flush=True,
     )
     if result.status == "failed":
-        print(result.reason, file=sys.stderr)
+        print(reason, file=sys.stderr)
 
 
 def main(
@@ -1731,6 +1820,9 @@ def main(
             before_terminal=before_terminal,
         )
     except Crash:
+        return 1
+    except Exception:  # noqa: BLE001 - never print SQL or bound parameters
+        print("capture_failed", file=sys.stderr)
         return 1
     finally:
         if own_engine:

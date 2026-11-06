@@ -54,11 +54,17 @@ jobs:
       - name: Install
         run: pip install .
 
+      - name: Confirm capture gate
+        env:
+          DK_LOBBY_CAPTURE_ENABLED: ${{ vars.DK_LOBBY_CAPTURE_ENABLED }}
+        run: python -c "import os, sys; from loader.dk_lobby import capture_schedule_enabled; sys.exit(0 if capture_schedule_enabled(os.environ.get('DK_LOBBY_CAPTURE_ENABLED')) else 1)"
+
       - name: Migrate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           READONLY_ROLE: ${{ vars.READONLY_ROLE }}
-        run: alembic upgrade head
+          SALARY_PRIVATE_MIGRATION: ${{ vars.SALARY_PRIVATE_MIGRATION }}
+        run: python -m loader.migrate
 
       - name: Capture
         env:

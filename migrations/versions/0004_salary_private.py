@@ -315,4 +315,41 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP SCHEMA IF EXISTS salary_private CASCADE")
+    op.drop_index(
+        "ix_dk_lobby_salaries_dk_id",
+        table_name="dk_lobby_salaries",
+        schema="salary_private",
+    )
+    op.drop_index(
+        "ix_dk_lobby_salaries_status",
+        table_name="dk_lobby_salaries",
+        schema="salary_private",
+    )
+    op.drop_table("dk_lobby_salaries", schema="salary_private")
+    op.drop_index(
+        "ix_salary_observations_load_run",
+        table_name="salary_observations",
+        schema="salary_private",
+    )
+    op.execute("DROP INDEX IF EXISTS salary_private.ix_salary_observations_snapshot_observed")
+    op.execute("DROP INDEX IF EXISTS salary_private.ix_salary_observations_source_observed")
+    op.drop_table("salary_observations", schema="salary_private")
+    op.drop_table("salary_source_rows", schema="salary_private")
+    op.drop_index(
+        "ix_salary_snapshots_game_rules",
+        table_name="salary_snapshots",
+        schema="salary_private",
+    )
+    op.drop_index(
+        "ix_salary_snapshots_draft_group",
+        table_name="salary_snapshots",
+        schema="salary_private",
+    )
+    op.drop_index(
+        "ix_salary_snapshots_season_week",
+        table_name="salary_snapshots",
+        schema="salary_private",
+    )
+    op.drop_table("salary_snapshots", schema="salary_private")
+    op.drop_table("salary_artifacts", schema="salary_private")
+    op.execute("DROP SCHEMA IF EXISTS salary_private RESTRICT")

@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from loader.dk_lobby import (
+    HTTP_BUDGET_S,
     assess_rows,
     capture_schedule_enabled,
     main,
@@ -472,6 +473,8 @@ def test_at4_schedule_text_and_disabled_gate():
     assert "cron: '0 10 * * 3'" in text_value
     assert "timezone: 'America/New_York'" in text_value
     assert "vars.DK_LOBBY_CAPTURE_ENABLED == 'true'" in text_value
+    assert "capture_schedule_enabled" in text_value
+    assert text_value.index("capture_schedule_enabled") < text_value.index("python -m loader.migrate")
     assert 'DK_LOBBY_CAPTURE_ENABLED: "true"' not in text_value
     assert "cancel-in-progress: false" in text_value
     assert text_value.count("cron:") == 1
@@ -1166,6 +1169,278 @@ def test_draftables_contract_uses_csv_players_not_slot_rows():
     )
     changed, _ignored = assess_rows(parse_csv_bytes(shifted))
     assert reconcile_draftables(parsed.draftables, changed) == ["draftables_mismatch"]
+
+
+def test_production_migrate_stops_before_0004(database_url):
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    from loader.migrate import current_revision, migrate_production, upgrade_target
+
+    assert upgrade_target(None, None) == "0003"
+    assert upgrade_target("0002", "") == "0003"
+    assert upgrade_target("0004", None) == "0004"
+    assert upgrade_target("0003", "TRUE") == "0003"
+    assert upgrade_target("0003", "true") == "head"
+    for name in (
+        "refresh.yml",
+        "dk-classic-salaries.yml",
+        "dk-classic-slate.yml",
+        "dk-lobby-capture.yml",
+    ):
+        workflow = (ROOT / ".github" / "workflows" / name).read_text()
+        assert "alembic upgrade head" not in workflow
+        assert "python -m loader.migrate" in workflow
+    admin = create_engine(database_url)
+    name = "seam_f005_gate"
+    previous = os.environ.get("DATABASE_URL")
+    try:
+        with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS {name}"))
+            conn.execute(text(f"CREATE DATABASE {name}"))
+        gated = make_url(database_url).set(database=name).render_as_string(hide_password=False)
+        assert migrate_production(gated, None) == "0003"
+        check = create_engine(gated)
+        with check.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0003"
+            assert conn.execute(text("SELECT to_regclass('public.games')")).scalar() is not None
+            assert (
+                conn.execute(text("SELECT to_regclass('salary_private.salary_artifacts')")).scalar()
+                is None
+            )
+        check.dispose()
+        assert current_revision(gated) == "0003"
+        assert migrate_production(gated, "true") == "head"
+        check = create_engine(gated)
+        with check.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+            assert (
+                conn.execute(text("SELECT to_regclass('salary_private.dk_lobby_salaries')")).scalar()
+                is not None
+            )
+        check.dispose()
+        assert migrate_production(gated, None) == "0004"
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+        with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :name AND pid <> pg_backend_pid()"
+                ),
+                {"name": name},
+            )
+            conn.execute(text(f"DROP DATABASE IF EXISTS {name}"))
+        admin.dispose()
+
+
+def test_hydrate_is_rechecked_and_explicit_id_must_match(engine):
+    _seed(engine)
+    lobby = _group(90001, _sunday_games())
+    lobby.pop("GameTypeId")
+    replacement = _group(90001, _saturday_games())
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": [lobby]})
+        if request.url.path.startswith("/draftgroups/v1/"):
+            return _json_response(replacement)
+        return _happy_handler(_box())(request)
+
+    transport = ScriptTransport(handler)
+    assert _run(engine, transport) == 1
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[-1]["reason_code"] in {"mismatched_metadata", "slate_unavailable", "inexact_game_set"}
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+    wrong = _group(111, _saturday_games())
+
+    def explicit(request):
+        if request.url.path.startswith("/draftgroups/v1/"):
+            return _json_response(wrong)
+        return _happy_handler(_box())(request)
+
+    assert (
+        _run(
+            engine,
+            ScriptTransport(explicit),
+            argv=["--season", "2026", "--week", "10", "--draft-group-id", "90002"],
+        )
+        == 1
+    )
+    assert _rows(
+        engine,
+        "SELECT reason_code FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["reason_code"] == "mismatched_metadata"
+
+
+def test_historical_hole_does_not_block_the_current_season(engine):
+    _seed(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO games (
+                    game_id, season, game_type, season_type, week, gameday, weekday,
+                    gametime, away_team, home_team, location, loaded_at
+                ) VALUES (
+                    '2015_01_NE_KC', 2015, 'REG', 'REG', 1, DATE '2015-09-13', 'Sunday',
+                    NULL, 'NE', 'KC', 'Home', now()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO load_runs (
+                    run_group, dataset, season, status, trigger, started_at, finished_at,
+                    source_url, source_version
+                ) VALUES (
+                    :run_group, 'games', 2015, 'succeeded', 'local', now(), NULL,
+                    'https://example.test/old', NULL
+                )
+                """
+            ),
+            {"run_group": uuid4()},
+        )
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 0
+
+
+def test_redirect_stops_when_the_budget_is_spent(engine):
+    _seed(engine)
+    clock = MutableClock(NOW + timedelta(days=2), 0)
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            clock.mono_now = HTTP_BUDGET_S + 1
+            return (
+                302,
+                {"location": "https://www.draftkings.com/lobby/getcontests?sport=NFL"},
+                b"",
+            )
+        return _happy_handler(_box())(request)
+
+    transport = ScriptTransport(handler)
+    assert _run(engine, transport, clock=clock) == 1
+    assert len(transport.calls) == 1
+    assert _rows(
+        engine,
+        "SELECT reason_code FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["reason_code"] == "http_budget_exhausted"
+
+
+def test_challenge_on_5xx_is_not_retried(engine):
+    _seed(engine)
+
+    def handler(_request):
+        return 500, {"content-type": "text/html"}, b"<html>captcha</html>"
+
+    transport = ScriptTransport(handler)
+    assert _run(engine, transport) == 1
+    assert len(transport.calls) == 1
+    assert _rows(
+        engine,
+        "SELECT reason_code FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["reason_code"] == "http_challenge"
+
+
+def test_concurrent_reserve_rejects_one_writer(engine, monkeypatch):
+    import threading
+
+    import loader.salary_private as private
+    from loader.salary_private import reserve_budget
+
+    with engine.connect() as conn:
+        size = private.read_storage_sizes(conn).database_bytes
+        conn.rollback()
+    monkeypatch.setattr(private, "DATABASE_LIMIT", size + 3000)
+    monkeypatch.setattr(private, "CUMULATIVE_LIMIT", 10**15)
+    start = threading.Barrier(2)
+    outcomes: list[str] = []
+
+    def attempt(label: bytes):
+        body = b"synthetic-budget-" + label
+        digest = __import__("hashlib").sha256(body).hexdigest()
+        with engine.connect() as conn:
+            start.wait(timeout=5)
+            try:
+                with conn.begin():
+                    reserve_budget(
+                        conn,
+                        object_bytes=len(body),
+                        invocation_bytes=len(body),
+                        extra_bytes=2000,
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO salary_private.salary_artifacts (
+                                source, sha256, body, byte_count, media_type,
+                                artifact_kind, stored_at, loaded_at
+                            ) VALUES (
+                                'control', :sha, :body, :count, 'text/plain',
+                                'manifest', now(), now()
+                            )
+                            """
+                        ),
+                        {"sha": digest, "body": body, "count": len(body)},
+                    )
+                outcomes.append("ok")
+            except private.PrivateWriteError:
+                outcomes.append("rejected")
+
+    threads = [threading.Thread(target=attempt, args=(label,)) for label in (b"a", b"b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == ["ok", "rejected"]
+
+
+def test_rules_hash_and_game_type_split_snapshots(engine):
+    _seed(engine)
+    first = _box()
+    first["note"] = "alpha"
+    second = _box()
+    second["note"] = "beta"
+
+    def rules_handler(box):
+        base = _happy_handler(box)
+
+        def handler(request):
+            if "/rules" in request.url.path:
+                payload = {
+                    "salaryCap": 50000,
+                    "rosterSlots": box["slots"],
+                    "note": box["note"],
+                    "gameTypeId": 7,
+                }
+                return _json_response(payload)
+            return base(request)
+
+        return handler
+
+    assert _run(engine, ScriptTransport(rules_handler(first))) == 0
+    assert _run(engine, ScriptTransport(rules_handler(second))) == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 2
+
+
+def test_unexpected_database_error_stays_a_reason_code(engine, monkeypatch, capsys):
+    _seed(engine)
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("INSERT INTO salary_private VALUES (4242, 'Synthetic Quarterback')")
+
+    monkeypatch.setattr("loader.dk_lobby.insert_running_load_run", explode)
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 1
+    captured = capsys.readouterr()
+    assert "4242" not in captured.out + captured.err
+    assert "Synthetic" not in captured.out + captured.err
+    assert "capture_failed" in captured.err
 
 
 def test_cli_help_and_scheduled_alias(engine):

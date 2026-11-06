@@ -168,16 +168,42 @@ def database_would_exceed(conn, incoming: int) -> bool:
     )
 
 
-def budget_block(conn, *, object_bytes: int, invocation_bytes: int) -> GuardBlock | None:
+def budget_block(
+    conn,
+    *,
+    object_bytes: int,
+    invocation_bytes: int,
+    extra_bytes: int = 0,
+) -> GuardBlock | None:
+    growth = object_bytes + extra_bytes
     if object_bytes > OBJECT_LIMIT:
         return GuardBlock.OBJECT
     if invocation_bytes > INVOCATION_LIMIT:
         return GuardBlock.INVOCATION
-    if cumulative_would_exceed(conn, object_bytes):
+    if cumulative_would_exceed(conn, growth):
         return GuardBlock.CUMULATIVE
-    if database_would_exceed(conn, object_bytes):
+    if database_would_exceed(conn, growth):
         return GuardBlock.DATABASE
     return None
+
+
+def reserve_budget(
+    conn,
+    *,
+    object_bytes: int,
+    invocation_bytes: int,
+    extra_bytes: int = 0,
+) -> None:
+    """Lock and reject before a write that would pass a storage ceiling."""
+    conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": CAPTURE_LOCK})
+    block = budget_block(
+        conn,
+        object_bytes=object_bytes,
+        invocation_bytes=invocation_bytes,
+        extra_bytes=extra_bytes,
+    )
+    if block is not None:
+        raise PrivateWriteError(block.value)
 
 
 def insert_running_load_run(
@@ -313,17 +339,17 @@ def store_artifact(
             ),
             {"source": Source.DK_LOBBY.value, "sha256": digest},
         ).one_or_none()
+        incoming = 0 if existing is not None else len(body)
+        reserve_budget(
+            conn,
+            object_bytes=incoming,
+            invocation_bytes=invocation_bytes,
+            extra_bytes=0,
+        )
         if existing is not None:
             if bytes(existing.body) != body:
                 raise PrivateWriteError("artifact_conflict")
             return ArtifactRef(int(existing.artifact_id), digest, int(existing.byte_count), True)
-        block = budget_block(
-            conn,
-            object_bytes=len(body),
-            invocation_bytes=invocation_bytes,
-        )
-        if block is not None:
-            raise PrivateWriteError(block.value)
         row = conn.execute(
             text(
                 """
@@ -364,7 +390,9 @@ def store_ledger(
     rows: tuple[LedgerRow, ...],
     loaded_at: datetime,
 ) -> None:
+    payload_bytes = sum(len(json.dumps(list(map(list, row.raw_fields)))) for row in rows)
     with conn.begin():
+        reserve_budget(conn, object_bytes=0, invocation_bytes=0, extra_bytes=payload_bytes)
         existing = conn.execute(
             text(
                 """
