@@ -27,6 +27,7 @@ from web.attribution import ROTOGURU_DK_CLASSIC_ATTRIBUTION
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "rotoguru" / "2015" / "week_01.scsv"
+BLANK_SALARY = ROOT / "tests" / "fixtures" / "rotoguru" / "2015" / "week_06_blank_salary.scsv"
 WORKFLOW = ROOT / ".github" / "workflows" / "dk-classic-salaries.yml"
 BRADY = "00-0019596"
 EXACT_ATTRIBUTION = (
@@ -589,6 +590,35 @@ def test_at12_zero_salary_is_loaded(database_url, engine):
     assert zero["dk_points"] == Decimal(0)
     assert zero["gsis_id"] is None
     assert zero["name_raw"] == "Fictional, Zero"
+
+
+def test_blank_dk_salary_is_loaded_as_zero(database_url, engine):
+    body = BLANK_SALARY.read_bytes()
+    assert b"6;2015;5295;Grant, Ryan;WR;was;a;nyj;4.2;" in body
+    parsed = parse_scsv(body)
+    assert len(parsed) == 1
+    assert parsed[0].rotoguru_gid == 5295
+    assert parsed[0].name_raw == "Grant, Ryan"
+    assert parsed[0].week == 6
+    assert parsed[0].dk_points == Decimal("4.2")
+    assert parsed[0].dk_salary == 0
+    with engine.begin() as conn:
+        for abbr in ("WAS", "NYJ"):
+            _team(conn, abbr)
+    assert _load(database_url, MapSource({(2015, 6): body}), weeks=(6,)) is True
+    stored = _salaries(engine)[0]
+    assert stored["rotoguru_gid"] == 5295
+    assert stored["dk_salary"] == 0
+    assert stored["dk_points"] == Decimal("4.2")
+    assert stored["team_abbr"] == "WAS"
+    assert stored["opponent_abbr"] == "NYJ"
+    assert stored["gsis_id"] is None
+    run = _runs(engine)[-1]
+    assert run["status"] == "succeeded"
+    assert run["rows_read"] == 1
+    assert run["rows_upserted"] == 1
+    with pytest.raises(LoadError, match="invalid scsv integer: DK salary"):
+        parse_scsv(_scsv(_line(5295, "Grant, Ryan", "WR", "was", "nyj", "4.2", "nope", week=6)))
 
 
 def test_at13_attribution_constant_is_exact():

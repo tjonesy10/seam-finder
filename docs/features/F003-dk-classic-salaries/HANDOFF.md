@@ -6,3 +6,4 @@
 [2026-11-06 12:42 ET] forge DONE -> TEST_REPORT.md -> next: review with or after PR #10 | Decided: loaded_at column; week in load_runs.notes; HTML pre SCSV; header-only week is skipped; oak→LV from 2020; Oppt "-" fails the week | Rejected: read API; cron; nfldfs; drop salary 0; count DST as unmapped
 [2026-11-06 13:53 ET] [blueprint] DONE -> ADR 0003 Accepted (constitution on main via PR #10); SPEC teams note oak→LV from 2020 | next: Cosmo on opponent "-" (bye vs fail) | Decided: oak→OAK≤2019 / LV≥2020 per forge build | Rejected: none
 [2026-11-06 13:53 ET] [blueprint] BLOCKED -> opponent "-" fails live weeks (2016w5, 2017w11, 2020w5/w7) | next: Cosmo via Groko — treat "-" as null opponent or keep fail?
+[2026-11-06 14:02 ET] forge DONE -> blank DK salary loads as 0; TEST_REPORT.md | next: review | Decided: empty DK salary field is 0 (Q7); fixture 2015 week 6 GID 5295 Grant, Ryan | Rejected: fail the week on a blank salary; change unmapped team code "-"

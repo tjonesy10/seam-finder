@@ -1,6 +1,6 @@
 # F003 test report
 
-Date: 2026-11-06. Scope: `dk_classic_salaries` migration, RotoGuru SCSV loader, `workflow_dispatch` workflow, and AT1–AT15. No read API and no browse page.
+Date: 2026-11-06. Scope: `dk_classic_salaries` migration, RotoGuru SCSV loader, `workflow_dispatch` workflow, AT1–AT15, and the blank DK salary regression. No read API and no browse page.
 
 ## Results
 
@@ -21,6 +21,7 @@ Date: 2026-11-06. Scope: `dk_classic_salaries` migration, RotoGuru SCSV loader, 
 | AT13 | PASS | `test_at13_attribution_constant_is_exact`. `web.attribution.ROTOGURU_DK_CLASSIC_ATTRIBUTION` is the exact Cosmo line. |
 | AT14 | PASS | `test_at14_unmapped_team_keeps_previous_rows`. Team code `zzz` fails the week, `load_runs.status=failed`, previous rows unchanged. |
 | AT15 | PASS | `test_at15_workflow_is_dispatch_only`. `.github/workflows/dk-classic-salaries.yml` has `workflow_dispatch` and no `schedule` or `cron`. |
+| Blank DK salary | PASS | `tests/test_dk_classic.py::test_blank_dk_salary_is_loaded_as_zero`. Fixture `tests/fixtures/rotoguru/2015/week_06_blank_salary.scsv` is the live 2015 week 6 line `6;2015;5295;Grant, Ryan;WR;was;a;nyj;4.2;`. Parse and load store GID 5295 with `dk_points=4.2` and `dk_salary=0` (`team_abbr=WAS`, `opponent_abbr=NYJ`), and the week succeeds. A non-numeric salary still raises `invalid scsv integer: DK salary`. |
 
 ## Commands
 
@@ -29,8 +30,10 @@ ruff check loader web tests migrations
 All checks passed!
 
 pytest -q
-116 passed, 2 skipped, 1 warning in 7.08s
+117 passed, 2 skipped, 1 warning in 6.73s
 ```
+
+The earlier forge run, before the blank-salary test, was `116 passed, 2 skipped, 1 warning in 7.08s`. The extra pass is `test_blank_dk_salary_is_loaded_as_zero`.
 
 The skips are the nflverse network test and `test_live_2015_week_1_scsv_contains_brady_and_carolina` unless `RUN_NETWORK_TESTS=1`. With that set, the live test passed (`1 passed in 0.49s`): the public 2015 week 1 body parses Brady 27.62/7700 and Carolina Defense 21/3100.
 
@@ -86,6 +89,7 @@ The 16 migration mutants were not run. Coverage did not attribute `upgrade()`. `
 - A header with no data rows is a missing week (2015 week 18 is that shape). It is skipped. It does not delete rows already stored for that week. An empty body is the same. A non-empty body with no header fails the week.
 - `oak` maps to `OAK` through 2019 and to `LV` from 2020. RotoGuru still writes `Oppt=oak` for the Raiders in 2021 while `Team=lvr`.
 - Opponent `-` is not in the team map, so that week fails (Q4). Live weeks: 2016 week 5 (1 of 356 rows), 2017 week 11 (26 of 380), 2020 week 5 (1 of 374), 2020 week 7 (1 of 377). A mapped code whose `team_abbr` is missing from `teams` also fails that week (`unresolved team_abbr`).
+- A blank `DK salary` (the field is present and empty, as in a trailing `;`) loads as `0` (Q7). Production run [42274838604](https://github.com/tjonesy10/seam-finder/actions/runs/42274838604) failed those weeks with `invalid scsv integer: DK salary`. A 2015–2021 SCSV scan on 2026-11-06 found only empty salary fields for that error (for example 2015 week 6 GID 5295 `Grant, Ryan`). A non-numeric salary still fails the week. Weeks whose only problem is `Oppt=-` are unchanged. 2017 week 11 has both a blank salary and `Oppt=-`, so that week still fails on the unmapped team code after this fix.
 - Skill match prefers the `player_week_stats` row for that team-week (name and position). An ambiguous set stays null. An empty set uses the one player with that name and position tied to the team by `latest_team` or any REG stat that season. DST is not an unmapped skill.
 
 ## Not run
