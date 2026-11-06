@@ -42,6 +42,16 @@ def test_season_type_must_be_reg_or_post():
         ensure_season_type(pl.DataFrame({"season_type": [None]}))
 
 
+def test_field_scale_stays_absent_when_the_tuple_stops_at_precision():
+    from loader.tables import fields
+
+    five = fields(("dk_points", "dk_points", "numeric", False, 8))
+    assert five[0].precision == 8
+    assert five[0].scale is None
+    six = fields(("dk_points", "dk_points", "numeric", False, 8, 2))
+    assert (six[0].precision, six[0].scale) == (8, 2)
+
+
 def test_release_file_names():
     assert file_name("teams", None) == "teams_colors_logos.parquet"
     assert file_name("players", None) == "players.parquet"

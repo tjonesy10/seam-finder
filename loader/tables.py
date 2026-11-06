@@ -132,6 +132,29 @@ player_week_stats = Table(
     Column("loaded_at", DateTime(timezone=True), nullable=False),
 )
 
+dk_classic_salaries = Table(
+    "dk_classic_salaries",
+    metadata,
+    Column("season", SmallInteger, primary_key=True),
+    Column("week", SmallInteger, primary_key=True),
+    Column("rotoguru_gid", Integer, primary_key=True),
+    Column("name_raw", Text, nullable=False),
+    Column("pos_raw", Text, nullable=False),
+    Column("team_raw", Text, nullable=False),
+    Column("home_away", Text, nullable=False),
+    Column("opponent_raw", Text, nullable=False),
+    Column("dk_points", Numeric(8, 2), nullable=False),
+    Column("dk_salary", Integer, nullable=False),
+    Column("gsis_id", Text),
+    Column("team_abbr", Text),
+    Column("opponent_abbr", Text),
+    Column("game_id", Text),
+    Column("source_url", Text, nullable=False),
+    Column("source_fetched_at", DateTime(timezone=True), nullable=False),
+    Column("source_sha256", Text, nullable=False),
+    Column("loaded_at", DateTime(timezone=True), nullable=False),
+)
+
 load_runs = Table(
     "load_runs",
     metadata,
