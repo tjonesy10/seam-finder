@@ -28,6 +28,7 @@ from web.attribution import ROTOGURU_DK_CLASSIC_ATTRIBUTION
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "rotoguru" / "2015" / "week_01.scsv"
 BLANK_SALARY = ROOT / "tests" / "fixtures" / "rotoguru" / "2015" / "week_06_blank_salary.scsv"
+OPPONENT_DASH = ROOT / "tests" / "fixtures" / "rotoguru" / "2017" / "week_11_opponent_dash.scsv"
 WORKFLOW = ROOT / ".github" / "workflows" / "dk-classic-salaries.yml"
 BRADY = "00-0019596"
 EXACT_ATTRIBUTION = (
@@ -619,6 +620,69 @@ def test_blank_dk_salary_is_loaded_as_zero(database_url, engine):
     assert run["rows_upserted"] == 1
     with pytest.raises(LoadError, match="invalid scsv integer: DK salary"):
         parse_scsv(_scsv(_line(5295, "Grant, Ryan", "WR", "was", "nyj", "4.2", "nope", week=6)))
+
+
+def test_opponent_dash_is_null_and_week_succeeds(database_url, engine, monkeypatch, tmp_path):
+    assert "-" not in TEAM_MAP
+    with pytest.raises(LoadError, match="unmapped team code: -"):
+        team_abbr_for("-", 2017)
+    body = OPPONENT_DASH.read_bytes()
+    parsed = {row.rotoguru_gid: row for row in parse_scsv(body)}
+    assert len(parsed) == 3
+    assert parsed[1242].opponent_raw == "-"
+    assert parsed[1298].opponent_raw == "-"
+    assert parsed[1412].opponent_raw == "atl"
+    with engine.begin() as conn:
+        for abbr in ("TB", "MIA", "SEA", "ATL"):
+            _team(conn, abbr)
+    week_dir = tmp_path / "2017"
+    week_dir.mkdir()
+    (week_dir / "week_11.scsv").write_bytes(body)
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("SEAM_ROTOGURU_DIR", str(tmp_path))
+    assert main(["--seasons", "2017", "--weeks", "11", "--trigger", "local"]) == 0
+    by_gid = {row["rotoguru_gid"]: row for row in _salaries(engine)}
+    assert set(by_gid) == {1242, 1298, 1412}
+    assert by_gid[1242]["name_raw"] == "Fitzpatrick, Ryan"
+    assert by_gid[1242]["team_abbr"] == "TB"
+    assert by_gid[1242]["opponent_raw"] == "-"
+    assert by_gid[1242]["opponent_abbr"] is None
+    assert by_gid[1242]["dk_points"] == Decimal("19.9")
+    assert by_gid[1242]["dk_salary"] == 5300
+    assert by_gid[1298]["team_abbr"] == "MIA"
+    assert by_gid[1298]["opponent_abbr"] is None
+    assert by_gid[1412]["team_abbr"] == "SEA"
+    assert by_gid[1412]["opponent_abbr"] == "ATL"
+    run = _runs(engine)[-1]
+    assert run["status"] == "succeeded"
+    assert run["rows_read"] == 3
+    assert run["rows_upserted"] == 3
+    assert run["rows_skipped"] == 0
+    assert run["notes"] == "week=11; unmapped_skill=3; opponent_dash=2"
+    kept = _salaries(engine)
+    bad_opponent = _scsv(
+        _line(1, "Bad, Opp", "QB", "mia", "zzz", "1", "1000", week=11, season=2017)
+    )
+    assert _load(database_url, MapSource({(2017, 11): bad_opponent}), seasons=(2017,), weeks=(11,)) is False
+    assert _salaries(engine) == kept
+    failed = _runs(engine)[-1]
+    assert failed["status"] == "failed"
+    assert "unmapped team code: zzz" in failed["error"]
+    bad_team = _scsv(_line(1, "Dash, Team", "QB", "-", "atl", "1", "1000", week=11, season=2017))
+    assert _load(database_url, MapSource({(2017, 11): bad_team}), seasons=(2017,), weeks=(11,)) is False
+    assert _salaries(engine) == kept
+    assert "unmapped team code: -" in _runs(engine)[-1]["error"]
+    dash_dst = _scsv(
+        _line(7001, "Miami Defense", "Def", "mia", "-", "5", "3000", week=12, season=2017)
+    )
+    assert _load(database_url, MapSource({(2017, 12): dash_dst}), seasons=(2017,), weeks=(12,)) is True
+    dst = next(row for row in _salaries(engine) if row["rotoguru_gid"] == 7001)
+    assert dst["opponent_abbr"] is None
+    assert dst["opponent_raw"] == "-"
+    assert dst["team_abbr"] == "MIA"
+    assert dst["gsis_id"] is None
+    assert _runs(engine)[-1]["status"] == "succeeded"
+    assert _runs(engine)[-1]["notes"] == "week=12; opponent_dash=1"
 
 
 def test_at13_attribution_constant_is_exact():

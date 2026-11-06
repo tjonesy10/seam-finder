@@ -1,6 +1,6 @@
 # F003 test report
 
-Date: 2026-11-06. Scope: `dk_classic_salaries` migration, RotoGuru SCSV loader, `workflow_dispatch` workflow, AT1–AT15, and the blank DK salary regression. No read API and no browse page.
+Date: 2026-11-06. Scope: `dk_classic_salaries` migration, RotoGuru SCSV loader, `workflow_dispatch` workflow, AT1–AT15, the blank DK salary regression, and `Oppt=-` stored with a null `opponent_abbr`. No read API and no browse page.
 
 ## Results
 
@@ -22,6 +22,7 @@ Date: 2026-11-06. Scope: `dk_classic_salaries` migration, RotoGuru SCSV loader, 
 | AT14 | PASS | `test_at14_unmapped_team_keeps_previous_rows`. Team code `zzz` fails the week, `load_runs.status=failed`, previous rows unchanged. |
 | AT15 | PASS | `test_at15_workflow_is_dispatch_only`. `.github/workflows/dk-classic-salaries.yml` has `workflow_dispatch` and no `schedule` or `cron`. |
 | Blank DK salary | PASS | `tests/test_dk_classic.py::test_blank_dk_salary_is_loaded_as_zero`. Fixture `tests/fixtures/rotoguru/2015/week_06_blank_salary.scsv` is the live 2015 week 6 line `6;2015;5295;Grant, Ryan;WR;was;a;nyj;4.2;`. Parse and load store GID 5295 with `dk_points=4.2` and `dk_salary=0` (`team_abbr=WAS`, `opponent_abbr=NYJ`), and the week succeeds. A non-numeric salary still raises `invalid scsv integer: DK salary`. |
+| Opponent dash | PASS | `tests/test_dk_classic.py::test_opponent_dash_is_null_and_week_succeeds`. Fixture `tests/fixtures/rotoguru/2017/week_11_opponent_dash.scsv` is a live 2017 week 11 excerpt: Fitzpatrick GID 1242 and Moore GID 1298 have `Oppt=-`; Wilson GID 1412 has `Oppt=atl`. `python -m loader.dk_classic --seasons 2017 --weeks 11` returns 0. Both dash rows stay, with `opponent_raw='-'` and `opponent_abbr` null. Wilson keeps team abbreviation `SEA` and `opponent_abbr=ATL`. Fitzpatrick's team abbreviation is `TB`. The load run notes are `week=11; unmapped_skill=3; opponent_dash=2`. `'-'` is not in `TEAM_MAP`. `team_abbr_for('-')` still raises `unmapped team code: -`. An `Oppt=zzz` row and a `Team=-` row each fail that week and leave the previous rows. A DST-only dash week succeeds with notes `week=12; opponent_dash=1` and null `gsis_id`. |
 
 ## Commands
 
@@ -30,10 +31,10 @@ ruff check loader web tests migrations
 All checks passed!
 
 pytest -q
-117 passed, 2 skipped, 1 warning in 6.73s
+118 passed, 2 skipped, 1 warning in 6.54s
 ```
 
-The earlier forge run, before the blank-salary test, was `116 passed, 2 skipped, 1 warning in 7.08s`. The extra pass is `test_blank_dk_salary_is_loaded_as_zero`.
+The blank-salary run was `117 passed, 2 skipped, 1 warning in 6.73s`. The extra pass is `test_opponent_dash_is_null_and_week_succeeds`. The run before that blank-salary test was `116 passed, 2 skipped, 1 warning in 7.08s`.
 
 The skips are the nflverse network test and `test_live_2015_week_1_scsv_contains_brady_and_carolina` unless `RUN_NETWORK_TESTS=1`. With that set, the live test passed (`1 passed in 0.49s`): the public 2015 week 1 body parses Brady 27.62/7700 and Carolina Defense 21/3100.
 
@@ -81,6 +82,28 @@ Survivors, left in place because they do not change a result the tests can see:
 
 The 16 migration mutants were not run. Coverage did not attribute `upgrade()`. `tests/test_schema.py` still checks the column types, the numeric(8,2) scale, the primary key, the three indexes, and `ON DELETE RESTRICT`.
 
+### Opponent dash (2026-11-06)
+
+Same tool, crapper checked out beside mutator. Command: `mutator --changed --max-workers 1 --test-command "python3 -m pytest -q" loader/dk_classic.py`. One worker, because the suite shares one Postgres. `--changed` selects `loader/dk_classic.py`. Exit 3 because survivors remain. Advisory only.
+
+A first pass survived one new site: `_notes` default `opponent_dash=0` changed to `1`. Every caller passes the count, so that default was removed and the argument is required. The numbers below are the pass after that edit.
+
+| File | Killed | Survived | Uncovered | Sites |
+|---|---:|---:|---:|---:|
+| `loader/dk_classic.py` | 101 | 9 | 4 | 114 |
+
+Score on executed mutants: 101/110 (91.8%). `_is_opponent_dash` is 1/1 killed. `_load_week_data` is 9/9 killed. `_opponent_abbr` and `_notes` have no mutation sites.
+
+Survivors, left in place because they do not change a result the tests can see:
+
+- `gsis_for`: `len(hits) > 1` to `>=`, and `1` to `0`. The `len == 1` branch already returned.
+- `_points`: three `0` to `1` edits in the integer-digit count. None of them crosses the `> 6` overflow check for 0 or for `999999.99`.
+- `_player_indexes`: `week is not None and stat_team` to `or`. The query returns both or neither.
+- `_report`: both `flush=True` to `False`. The lines are still printed.
+- `run_dk_classic`: `pool_pre_ping=True` to `False`.
+
+Uncovered, not run (UNKNOWN): `follow_redirects=True` in `RotoGuruHttpSource` (tests pass a client), and three `return 1` lines in `main` (bad season or week, missing `DATABASE_URL`, unexpected exception). Coverage did not mark those lines.
+
 ## Decisions
 
 - `loaded_at` is on `dk_classic_salaries`. The SPEC schema and AT4 name it. The data-dictionary draft on PR #10 omitted it.
@@ -88,8 +111,8 @@ The 16 migration mutants were not run. Coverage did not attribute `upgrade()`. `
 - The live URL returns HTML. The SCSV header is on the same line as `<pre>`. The parser starts at that header. A committed fixture may be raw SCSV.
 - A header with no data rows is a missing week (2015 week 18 is that shape). It is skipped. It does not delete rows already stored for that week. An empty body is the same. A non-empty body with no header fails the week.
 - `oak` maps to `OAK` through 2019 and to `LV` from 2020. RotoGuru still writes `Oppt=oak` for the Raiders in 2021 while `Team=lvr`.
-- Opponent `-` is not in the team map, so that week fails (Q4). Live weeks: 2016 week 5 (1 of 356 rows), 2017 week 11 (26 of 380), 2020 week 5 (1 of 374), 2020 week 7 (1 of 377). A mapped code whose `team_abbr` is missing from `teams` also fails that week (`unresolved team_abbr`).
-- A blank `DK salary` (the field is present and empty, as in a trailing `;`) loads as `0` (Q7). Production run [42274838604](https://github.com/tjonesy10/seam-finder/actions/runs/42274838604) failed those weeks with `invalid scsv integer: DK salary`. A 2015–2021 SCSV scan on 2026-11-06 found only empty salary fields for that error (for example 2015 week 6 GID 5295 `Grant, Ryan`). A non-numeric salary still fails the week. Weeks whose only problem is `Oppt=-` are unchanged. 2017 week 11 has both a blank salary and `Oppt=-`, so that week still fails on the unmapped team code after this fix.
+- Opponent `-` is not a team code and is not in `TEAM_MAP`. `Oppt=-` stores a null `opponent_abbr`, keeps the salary row, and the week succeeds. `load_runs.notes` appends `opponent_dash=N` for that count, after `unmapped_skill` when that count is also non-zero. A dash in the Team field still fails the week (`unmapped team code: -`). Any other unmapped team code still fails the week. A mapped code whose team abbreviation is missing from `teams` still fails that week (`unresolved team_abbr`). Live weeks that failed only on `Oppt=-`: 2016 week 5 (1 of 356 rows), 2017 week 11 (26 of 380), 2020 week 5 (1 of 374), 2020 week 7 (1 of 377). Deriving the opponent from games is out of scope.
+- A blank `DK salary` (the field is present and empty, as in a trailing `;`) loads as `0` (Q7). Production run [42274838604](https://github.com/tjonesy10/seam-finder/actions/runs/42274838604) failed those weeks with `invalid scsv integer: DK salary`. A 2015–2021 SCSV scan on 2026-11-06 found only empty salary fields for that error (for example 2015 week 6 GID 5295 `Grant, Ryan`). A non-numeric salary still fails the week. 2017 week 11 has both a blank salary and `Oppt=-`. Blank salary loads as 0, and `Oppt=-` now loads with a null `opponent_abbr`.
 - Skill match prefers the `player_week_stats` row for that team-week (name and position). An ambiguous set stays null. An empty set uses the one player with that name and position tied to the team by `latest_team` or any REG stat that season. DST is not an unmapped skill.
 
 ## Not run
