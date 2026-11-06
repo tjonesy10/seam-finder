@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-06). Becomes Accepted only after Cosmo answers the license/attribution question and a constitution amendment covering this source is merged.
+Proposed (2026-11-06). License and attribution approved by Cosmo 2026-11-06. Becomes **Accepted** when the constitution amendment naming RotoGuru for this use is merged.
 
 ## Context
 
@@ -14,14 +14,14 @@ F001 loaded nflverse players, teams, games, and weekly stats. DFS backtests need
 2. **Scope.** Seasons 2015–2021, REG weeks only, Classic all-week slate salaries and points. No Showdown, no playoffs, no other DFS sites.
 3. **Storage.** Table `dk_classic_salaries` keyed by `(season, week, rotoguru_gid)`, with mapped `gsis_id` / `team_abbr` and raw provenance columns.
 4. **Load.** Idempotent per week (upsert + delete-missing) recorded in `load_runs` under dataset `dk_classic_salaries`.
-5. **License gate.** No Accepted status and no forge handoff until Cosmo confirms we may store and publicly expose this data, with agreed attribution, and the constitution lists RotoGuru for this use.
+5. **License / attribution.** Cosmo approved storing and publicly exposing this data (2026-11-06). Attribution exact: "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings." ADR becomes Accepted when the constitution amendment is on main.
 
 ## Reasoning
 
 - RotoGuru is the widely used free historical Classic salary archive; Cosmo verified the endpoint.
 - A thin parser avoids an unmaintained pin (`nfldfs==0.0.5`) and keeps behavior in-repo.
 - Keeping `rotoguru_gid` plus raw name/team preserves provenance when name matching is imperfect.
-- Blocking on license keeps the public repo aligned with the constitution.
+- Owner license approval unblocks the constitution amendment; remaining SPEC open questions still block forge handoff.
 
 ## Rejected alternatives and why
 

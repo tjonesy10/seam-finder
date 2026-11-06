@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Open questions pending Cosmo.
+Status: DRAFT (2026-11-06). Q1 answered; other open questions pending.
 
 # F003: Historical DraftKings NFL Classic weekly salaries and points (2015–2021)
 
@@ -18,7 +18,7 @@ Load DraftKings NFL Classic regular-season weekly salaries and actual fantasy po
 - **R6** Raw file provenance is stored (source URL, fetch time, content hash or byte length).
 - **R7** Never scrape draftkings.com. Prefer a thin in-repo parser; do not pin `nfldfs`.
 - **R8** No secrets in the repo or workflow logs.
-- **R9** [NEEDS CLARIFICATION: Cosmo approves RotoGuru as an allowed data source for this use (store in Neon; expose on the public site) and the attribution wording.] Constitution and ADR 0003 stay Proposed until answered.
+- **R9** RotoGuru historical Classic DK salaries/points (2015–2021 REG) may be stored in Neon and exposed on the public site. Attribution (exact): "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings."
 
 ## User stories
 
@@ -85,7 +85,10 @@ Behavior:
 
 ### Attribution and license
 
-[NEEDS CLARIFICATION: Exact footer/API attribution text for RotoGuru, and whether the public site may list salary rows.] Until answered, do not merge a constitution change that allows the source, and do not hand off to forge.
+Public site and API attribution for this dataset (exact, Cosmo 2026-11-06):
+"Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings."
+
+Keep the existing nflverse footer line as well. Do not claim affiliation with DraftKings or RotoGuru.
 
 ### Security
 
@@ -124,7 +127,7 @@ Existing F001 stack plus `httpx` (already present). Stdlib CSV/semicolon parse. 
 
 ## Open questions
 
-1. **License / constitution (R9).** May we store RotoGuru historical Classic DK salaries and points in Neon and expose them on the public site? What attribution text? (Blocks ADR 0003 Accepted and constitution amendment.)
+1. ~~License / constitution (R9).~~ Answered 2026-11-06.
 2. **Deliverable scope.** Data-load only for F003, or also API + pages?
 3. **Unmapped skill players.** Keep with null `gsis_id`, skip, or fail the week? Minimum match-rate for AT8?
 4. **Team map.** Confirm explicit RotoGuru→nflverse team_abbr map (recommended default: yes).
@@ -139,9 +142,10 @@ Existing F001 stack plus `httpx` (already present). Stdlib CSV/semicolon parse. 
 - Never scrape draftkings.com.
 - Not F004 (current slate) and not the optimizer.
 - Phase order remains 0→1→4→2→3→5→6→7; README methodologies stay aspirational.
+- **Q1:** Yes — store in Neon and expose on the public site. Attribution exact: "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings."
 
 ## ADRs
 
 - [ADR 0001: Stack and hosting](../../adr/0001-stack-and-hosting.md)
 - [ADR 0002: nflverse load and refresh](../../adr/0002-nflverse-load-and-refresh.md)
-- [ADR 0003: RotoGuru DK Classic salaries](../../adr/0003-rotoguru-dk-classic-salaries.md) (Proposed until Q1)
+- [ADR 0003: RotoGuru DK Classic salaries](../../adr/0003-rotoguru-dk-classic-salaries.md) (Proposed → Accepted once constitution amendment merges)
