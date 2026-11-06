@@ -34,6 +34,6 @@
 | DK Classic | DraftKings multi-game weekly salary-cap contest (not Showdown). | F003 / F004 |
 | DST | Defense/special teams lineup slot; RotoGuru `Pos=Def`. | `pos_raw=Def` |
 | DKSalaries.csv | Official DraftKings Classic salary export Cosmo downloads for a contest slate. | F004 source |
-| dk_id | DraftKings player/defense identifier in `DKSalaries.csv`. | `dk_classic_slate.dk_id` (proposed) |
+| dk_id | DraftKings player/defense identifier in `DKSalaries.csv`. | `dk_classic_slate.dk_id` |
 | Current slate | The live or upcoming Classic contest week Cosmo is entering, as opposed to historical RotoGuru weeks. | F004 |
 | Staged slate CSV | Cosmo-dropped `DKSalaries.csv` at the agreed path/secret/artifact the scheduled job loads; not fetched from DraftKings. | F004 schedule |

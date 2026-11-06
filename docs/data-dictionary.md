@@ -215,16 +215,16 @@ Current-slate DraftKings NFL Classic salaries from Cosmo's `DKSalaries.csv` expo
 
 | Column | Type | Null | Notes |
 |---|---|---|---|
-| season | int | no | Season Cosmo assigns on load |
-| week | int | no | REG week Cosmo assigns on load |
+| season | smallint | no | Season Cosmo assigns on load |
+| week | smallint | no | REG week Cosmo assigns on load |
 | dk_id | text | no | DraftKings ID |
 | name_raw | text | no | Name as exported |
 | position_raw | text | no | Position column |
 | roster_position_raw | text | no | Roster Position column |
 | team_raw | text | no | TeamAbbrev |
 | game_info_raw | text | yes | Game Info |
-| salary | numeric | no | Salary |
-| avg_points_per_game | numeric | yes | AvgPointsPerGame |
+| salary | numeric(10,2) | no | Salary |
+| avg_points_per_game | numeric(8,2) | yes | AvgPointsPerGame |
 | gsis_id | text | yes | FK → players |
 | team_abbr | text | yes | FK → teams when mapped |
 | opponent_abbr | text | yes | Parsed when possible |
@@ -233,6 +233,8 @@ Current-slate DraftKings NFL Classic salaries from Cosmo's `DKSalaries.csv` expo
 | source_sha256 | text | no | Content hash |
 | source_loaded_at | timestamptz | no | Load time |
 | loaded_at | timestamptz | no | Row write time |
+
+Indexes: `(season, week)`, `(gsis_id, season, week)`, `(team_abbr, season, week)`.
 
 Readonly grants: same pattern as other tables (`READONLY_ROLE`).
 

@@ -1,0 +1,5 @@
+Position,Name + ID,Name,ID,Roster Position,Salary,Game Info,TeamAbbrev,AvgPointsPerGame,Ignored
+QB,Pat Sample (1001),Pat Sample,1001,QB,7000,NE@KC 10/12/2026 04:20PM ET,ne,21.5,extra
+dst,Chiefs (1003),Chiefs,1003,dst,3000,NE@KC 10/12/2026 04:20PM ET,kc,8.1,extra
+RB,Fallback Sample (1004),Fallback Sample,1004,RB/FLEX,5500,DAL@PHI 10/12/2026 01:00PM ET,dal,9,extra
+WR,Run Sample (1002),Run Sample,1002,WR/FLEX,6500,DAL@PHI 10/12/2026 01:00PM ET,phi,,extra

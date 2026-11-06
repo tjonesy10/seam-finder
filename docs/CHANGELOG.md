@@ -30,6 +30,7 @@ Added (planning docs, Part 1 data prototype, all DRAFT):
 - F004 Q6 (partial): Cosmo chose schedule something this pass (not manual-only); asked API vs CSV — source still user-supplied CSV via CLI. Schedule shape TBD.
 - F004 Q7: Cosmo chose Showdown reject (c) — CPT in Roster Position or distinct Game Info ≤ 1; Classic-only error.
 - F004 Q6b: Cosmo chose scheduled load from staged path/secret/artifact (not reminder-only; not DK auto-download). SPEC marked READY.
+- F004 data-load: `dk_classic_slate` migration, `python -m loader.dk_slate`, and a Tuesday cron plus `workflow_dispatch` that loads a Cosmo-staged CSV. No read API and no public salary download.
 
 - F003 DRAFT: historical DraftKings Classic weekly salaries and points (2015–2021) via RotoGuru. SPEC, HANDOFF, ADR 0003 (Proposed), data-dictionary section, glossary terms. Blocked on Cosmo license/attribution and remaining open questions.
 - F003 Q1: Cosmo approved RotoGuru historical DK Classic data in Neon and on the public site; attribution line set; constitution Data section amended; ADR 0003 still Proposed until that amendment is on main.
