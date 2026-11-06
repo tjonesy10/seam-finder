@@ -68,4 +68,4 @@ Web SELECT is an allowlist: `teams`, `players`, `games`, `player_week_stats`, `l
 | Live DraftKings JSON field names | UNKNOWN | `/workspace/dk-experiment/reproduce.sh`, the sample lobby/draftables JSON, and `DKSalaries-classic-dg155994.csv` are on Cosmo's computer, not this VM. The parser fail-closes unless the synthetic contract fields are present. No live GET was sent. |
 | GitHub's hosted evaluation of the skipped job | UNKNOWN | AT4 forbids a live dispatch. The file gate and the local predicate are tested. |
 | Uncle Bob mutator | UNKNOWN | `mutator` is not on `PATH`. `../crapper` is not present. Go is installed. The mutator tool was not installed. This is not a pass. |
-| Pull request CI | UNKNOWN until the PR workflow finishes | Local `ruff`, `pytest`, and `gitleaks` passed. See the PR checks after push. |
+| Pull request CI | PASS | Both checks on `6c54c870ac284c7d9734fa005b23a0c809d3ab9f` succeeded: [run 42306824279](https://github.com/tjonesy10/seam-finder/actions/runs/42306824279) and [run 42306805264](https://github.com/tjonesy10/seam-finder/actions/runs/42306805264). |
