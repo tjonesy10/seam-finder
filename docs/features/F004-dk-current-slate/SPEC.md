@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1 answered; other open questions pending.
+Status: DRAFT (2026-11-06). Q1–Q2 answered; other open questions pending.
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -12,7 +12,7 @@ Load Cosmo's official DraftKings NFL Classic salary export (`DKSalaries.csv`) in
 
 - **R1** Ingest a user-supplied DraftKings Classic `DKSalaries.csv` (file path / Cosmo paste or upload — path TBD) into Postgres.
 - **R2** Map skill players to `gsis_id` and DST to `team_abbr`, keeping raw DK fields (including DraftKings `ID`) for provenance and lineup export later.
-- **R3** Loads are idempotent per slate identity (see open questions): upsert on the natural key, then delete that slate's rows missing from the batch.
+- **R3** Loads are idempotent per `(season, week)`: upsert on `(season, week, dk_id)`, then delete that season/week's rows missing from the batch.
 - **R4** A failed load leaves previous data for that slate in place, records failure, and fails the run.
 - **R5** Every load is recorded in `load_runs` (dataset name below).
 - **R6** Provenance is stored (source filename or upload id, fetch/load time, content hash).
@@ -38,7 +38,7 @@ Official DraftKings Classic "Export to CSV" columns (order may vary; extra colum
 - `Roster Position` may list multiple slots (e.g. `QB`, `RB/FLEX`, `DST`).
 - `Game Info` looks like `KC@DEN 10/12/2026 04:20PM ET` (or similar); used to derive opponent / kickoff when possible.
 - NFL Classic only this feature. Showdown / single-game is out of scope.
-- [NEEDS CLARIFICATION: Slate identity — key rows by (a) season+week Cosmo passes on the CLI, (b) a slate_id derived from Game Info / contest, or (c) replace a single "current" slate table each load? Default if unanswered: Cosmo passes `--season` and `--week`; natural key `(season, week, dk_id)`.]
+- Slate identity: Cosmo passes `--season` and `--week` on the CLI. Natural key `(season, week, dk_id)`.
 
 ### Schema (proposed)
 
@@ -46,7 +46,7 @@ New table `dk_classic_slate` (name TBD in data dictionary):
 
 | Column | Notes |
 |---|---|
-| season, week | REG week Cosmo intends; PK part (if that keying wins) |
+| season, week | REG week Cosmo passes on load; PK part |
 | dk_id | DraftKings ID; PK part |
 | name_raw, position_raw, roster_position_raw, team_raw, game_info_raw | as published |
 | salary, avg_points_per_game | numeric |
@@ -119,7 +119,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 ## Open questions
 
 1. ~~License / public exposure (R9).~~ Answered 2026-11-06: store in Neon; no public raw tables/CSV downloads; keep "Not affiliated with DraftKings."
-2. **Slate identity.** season+week CLI vs derived slate_id vs single current table?
+2. ~~Slate identity.~~ Answered 2026-11-06: `--season` + `--week`; PK `(season, week, dk_id)`.
 3. **Ingest path.** CLI only vs upload UI/API?
 4. **Unmapped skill policy + match-rate.**
 5. **Deliverable scope.** Data-load only vs API/pages?
@@ -132,6 +132,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - Never scrape draftkings.com; Cosmo uploads or pastes the official export.
 - Optimizer is later (not this SPEC).
 - **Q1:** Yes — store in Neon for personal/optimizer use. Do not publish raw salary tables or CSV downloads on the public site. Keep "Not affiliated with DraftKings."
+- **Q2:** Slate key = Cosmo `--season` + `--week`; natural key `(season, week, dk_id)`.
 
 ## ADRs
 

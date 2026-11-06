@@ -1,2 +1,3 @@
 [2026-11-06 13:53 ET] [blueprint] BLOCKED -> SPEC.md drafted DRAFT; ADR 0004 Proposed; constitution amendment pending Cosmo Q1 | Analyze: not handed off; NEEDS CLARIFICATION remain | next: Cosmo clarifications via Groko
 [2026-11-06 13:56 ET] [blueprint] BLOCKED -> SPEC.md, ADR 0004, CONSTITUTION.md (Q1 recorded) -> next: Cosmo clarifications Q2+ | Decided: Neon store OK; no public raw salary tables/CSV; keep Not affiliated with DraftKings | Rejected: public salary dump
+[2026-11-06 13:58 ET] [blueprint] BLOCKED -> SPEC.md (Q2 recorded) -> next: Cosmo clarifications Q3+ | Decided: slate key season+week+dk_id via CLI | Rejected: derived slate_id; single current-only table
