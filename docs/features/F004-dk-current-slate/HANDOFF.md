@@ -4,3 +4,4 @@
 [2026-11-06 13:59 ET] [blueprint] BLOCKED -> SPEC.md (Q3 recorded) -> next: Cosmo clarifications Q4+ | Decided: CLI file only this pass | Rejected: private upload UI in F004
 [2026-11-06 14:52 ET] [blueprint] BLOCKED -> SPEC.md (Q4 recorded) -> next: Cosmo clarifications Q5+ | Decided: data-load only this pass (Cosmo skipped card → default) | Rejected: read API / browse in F004
 [2026-11-06 14:54 ET] [blueprint] BLOCKED -> SPEC.md (Q5 recorded on PR #14) -> next: Cosmo clarifications Q6+ | Decided: keep null gsis_id + notes + ≥95% non-DST (Cosmo skipped card → default a) | Rejected: skip-row or fail-load for unmapped
+[2026-11-06 14:55 ET] [blueprint] BLOCKED -> SPEC.md (Q6 recorded on PR #14) -> next: Cosmo Q7 Showdown | Decided: manual/local only refresh (Cosmo asked API vs CSV; confirmed CLI CSV; treat as default) | Rejected: scheduled load this pass
