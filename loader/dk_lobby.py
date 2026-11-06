@@ -345,8 +345,18 @@ class BoundedClient:
     def _over_budget(self) -> bool:
         return self._elapsed() > HTTP_BUDGET_S
 
+    def _phase_timeouts(self) -> dict[str, float]:
+        """Each blocking phase waits at most the seconds still inside the 180s budget."""
+        left = max(0.0, HTTP_BUDGET_S - self._elapsed())
+        return {
+            "connect": min(10.0, left),
+            "read": min(30.0, left),
+            "write": min(30.0, left),
+            "pool": min(10.0, left),
+        }
+
     def _send(self, url: str, accept: str) -> httpx.Response:
-        if self._over_budget():
+        if self._elapsed() >= HTTP_BUDGET_S:
             raise CaptureFailure("http_budget_exhausted")
         self.client.cookies.clear()
         request = self.client.build_request(
@@ -354,6 +364,7 @@ class BoundedClient:
             url,
             headers={"Accept": accept, "User-Agent": USER_AGENT},
         )
+        request.extensions["timeout"] = self._phase_timeouts()
         response = self.client.send(request, stream=True)
         self.client.cookies.clear()
         self.touched = True
@@ -424,14 +435,46 @@ class _Retry(Exception):
         self.retry_after = retry_after
 
 
+def _arm_read_timeout(response: httpx.Response, read_timeout: float) -> None:
+    """Cap every later socket read. httpcore otherwise keeps the timeout it copied at the start."""
+    stream = getattr(response, "stream", None)
+    core = getattr(stream, "_httpcore_stream", None)
+    connection = getattr(core, "_connection", None)
+    network = getattr(connection, "_network_stream", None)
+    if network is None:
+        return
+    if getattr(network, "_budget_wrapped", False):
+        network._budget_cap = read_timeout
+        return
+    original = network.read
+
+    def read(max_bytes, timeout=None, _original=original, _network=network):
+        cap = _network._budget_cap
+        allowed = cap if timeout is None else min(float(timeout), cap)
+        return _original(max_bytes, allowed)
+
+    network._budget_cap = read_timeout
+    network._budget_wrapped = True
+    network.read = read
+
+
 def _read_capped(response: httpx.Response, *, deadline: float, clock: Clock) -> tuple[bytes, bool]:
-    """Stop at 5 MiB or when the capture's 180s deadline is crossed between chunks."""
+    """Stop at 5 MiB. Each chunk read waits at most the seconds left in the 180s budget."""
     limit = 5 * 1024 * 1024
     buf = bytearray()
-    chunks = response.iter_bytes()
+    chunks = None
     while True:
-        if clock.mono() > deadline:
+        left = deadline - clock.mono()
+        if left <= 0:
             raise CaptureFailure("http_budget_exhausted")
+        read_timeout = min(30.0, left)
+        request = getattr(response, "_request", None)
+        if request is not None:
+            timeout = request.extensions.setdefault("timeout", {})
+            timeout["read"] = read_timeout
+        _arm_read_timeout(response, read_timeout)
+        if chunks is None:
+            chunks = iter(response.iter_bytes())
         try:
             chunk = next(chunks)
         except StopIteration:
@@ -895,11 +938,6 @@ def _priority(reasons: list[str]) -> str:
     return reasons[0] if reasons else "rejected"
 
 
-def _season_might_contain(season: int, now: datetime) -> bool:
-    local = now.astimezone(ET).date()
-    return date(season, 8, 1) <= local <= date(season + 1, 3, 1)
-
-
 def _fresh_load(version: str | None, finished_at: datetime | None, now: datetime) -> bool:
     if not version or finished_at is None:
         return False
@@ -969,9 +1007,8 @@ def load_schedule(conn, now: datetime) -> tuple[str, tuple[RegGame, ...]]:
         if not _fresh_load(version, finished, now):
             continue
         verified[season] = tuple(rows)
-    relevant = now.astimezone(ET).year if now.astimezone(ET).month >= 8 else now.astimezone(ET).year - 1
-    if not _season_might_contain(relevant, now):
-        return "verified", ()
+    local = now.astimezone(ET)
+    relevant = local.year if local.month >= 8 else local.year - 1
     if relevant in tainted or relevant not in verified:
         return "schedule_evidence_missing", ()
     rows = verified[relevant]
