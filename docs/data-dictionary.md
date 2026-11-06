@@ -209,9 +209,9 @@ Historical DraftKings NFL Classic weekly salaries and points from RotoGuru. PK `
 
 Indexes: `(season, week)`, `(gsis_id, season, week)`, `(team_abbr, season, week)`.
 
-## dk_classic_slate (F004, DRAFT)
+## dk_classic_slate (F004, READY)
 
-Current-slate DraftKings NFL Classic salaries from Cosmo's `DKSalaries.csv` export. Proposed PK `(season, week, dk_id)` — confirm in F004 SPEC. Load rules: [ADR 0004](adr/0004-dk-current-slate-csv.md).
+Current-slate DraftKings NFL Classic salaries from Cosmo's `DKSalaries.csv` export. PK `(season, week, dk_id)`. Load rules: [ADR 0004](adr/0004-dk-current-slate-csv.md).
 
 | Column | Type | Null | Notes |
 |---|---|---|---|

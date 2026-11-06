@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1–Q5 + Q7 answered; Q6b schedule shape still open (not READY).
+Status: READY (2026-11-06). All clarifications closed. Analyze pass recorded in HANDOFF.md.
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -19,12 +19,14 @@ Load Cosmo's official DraftKings NFL Classic salary export (`DKSalaries.csv`) in
 - **R7** Never scrape or download from draftkings.com. Cosmo supplies the CSV.
 - **R8** No secrets in the repo or logs. Do not commit live salary CSVs with personal contest data unless Cosmo explicitly allows a redacted fixture.
 - **R9** Store Cosmo's official Classic `DKSalaries.csv` in Neon for personal/optimizer use. Do **not** publish raw salary tables or CSV downloads on the public site. Any UI that mentions DraftKings must include "Not affiliated with DraftKings."
+- **R10** A scheduled job (GitHub Actions cron and `workflow_dispatch`) invokes the same CLI loader against a **Cosmo-staged** CSV at a known path/secret/artifact Cosmo drops ahead of time. Never auto-download from DraftKings. Missing staged file fails clearly.
 
 ## User stories
 
 1. As Cosmo, I want this week's Classic salaries in the database from my DK export, so that an optimizer can use live prices.
 2. As an engineer, I want each row joined to `gsis_id` or `team_abbr`, so that projections and F001 stats join cleanly.
 3. As Cosmo, I want re-loading a corrected CSV to replace that slate safely, so that I can fix a bad export without manual deletes.
+4. As Cosmo, I want a scheduled job to load a CSV I staged ahead of time, so that I do not have to remember to run the CLI every week.
 
 ## Observable behavior
 
@@ -68,12 +70,12 @@ Dataset name in `load_runs`: `dk_classic_slate`.
 
 ### Loader (CLI) — proposed
 
-`python -m loader.dk_slate --csv path/to/DKSalaries.csv --season YYYY --week N [--trigger local|manual]`
+`python -m loader.dk_slate --csv path/to/DKSalaries.csv --season YYYY --week N [--trigger local|manual|scheduled]`
 
 - Thin in-repo CSV parse (stdlib / existing stack). Not `nfldfs`. Not draftkings.com.
 - One transaction per slate: validate header, map, upsert, delete-missing, `load_runs`.
 - Ingest path: **CLI file only** this pass (`python -m loader.dk_slate --csv path --season YYYY --week N`). No private upload endpoint/page in this pass.
-- Refresh: Cosmo wants a **schedule this pass** (not manual-only). [NEEDS CLARIFICATION: schedule shape — GHA reminder only vs load from a pre-staged CSV path vs other? Still never scrape draftkings.com.]
+- Refresh: **Scheduled load from a Cosmo-staged path** this pass (GitHub Actions cron + `workflow_dispatch`). Cosmo drops the CSV at an agreed path/secret/artifact ahead of time; the job runs the CLI loader. Not reminder-only. Never auto-download from DraftKings. Missing staged file → fail clearly (exit non-zero + `load_runs` failed). Season/week via workflow inputs (or documented env) on each run.
 
 ### HTTP API and pages
 
@@ -87,7 +89,7 @@ Historical public attribution remains the RotoGuru line (F003). Current-slate ro
 
 Same secrets rule as F001/F003. No DraftKings credentials. Never commit live unredacted contest CSVs without Cosmo's OK; committed fixtures must be tiny/synthetic or Cosmo-approved samples.
 
-## Acceptance tests (draft)
+## Acceptance tests
 
 - **AT1 (R1, R6)** Parse fixture CSV: required columns present; known player salary/id match.
 - **AT2 (R2)** DST maps to `team_abbr`, `gsis_id` null.
@@ -96,10 +98,12 @@ Same secrets rule as F001/F003. No DraftKings credentials. Never commit live unr
 - **AT5 (R3)** Removed `dk_id` deleted on re-load.
 - **AT6 (R4)** Bad header → prior slate rows unchanged, `load_runs.status=failed`, exit 1.
 - **AT7 (R5)** `load_runs` row for `dk_classic_slate` with counts/notes.
-- **AT8 (R2)** Match-rate AT (threshold from clarification).
+- **AT8 (R2)** On a Classic fixture with F001 players present, ≥95% of non-DST rows map to `gsis_id`; unmapped counted in notes; DST may stay unmapped.
 - **AT9 (R7)** No draftkings.com fetch; no `nfldfs`.
 - **AT10 (R8)** gitleaks clean; no passworded DB URLs; no live salary CSV secrets in repo.
 - **AT11 (R1)** Only Classic multi-game rows accepted; Showdown-shaped input fails clearly: reject if any `Roster Position` contains `CPT`, or if distinct `Game Info` values ≤ 1; error names Classic-only.
+- **AT12 (R10)** Scheduled workflow invokes the CLI against a staged path; missing staged file fails clearly; workflow does not fetch draftkings.com.
+- **AT13 (R9)** No public raw salary table or CSV download endpoint/page added this pass.
 
 ## Non-goals
 
@@ -109,6 +113,7 @@ Same secrets rule as F001/F003. No DraftKings credentials. Never commit live unr
 - FanDuel / other sites.
 - Lineup optimizer / ILP (later feature).
 - Pinning `nfldfs`.
+- Reminder-only schedule with no load attempt.
 - Private upload endpoint/page for the CSV (follow-up).
 - Public or private read API / browse page for current slate (follow-up).
 - Republishing DraftKings salary IP as a public downloadable dataset.
@@ -124,7 +129,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 3. ~~Ingest path.~~ Answered 2026-11-06: CLI file only; no upload UI this pass.
 4. ~~Unmapped skill policy + match-rate.~~ Answered 2026-11-06: keep null `gsis_id`; count in notes; ≥95% non-DST.
 5. ~~Deliverable scope.~~ Answered 2026-11-06: data-load only (no read API / browse).
-6. **Refresh cadence / schedule shape.** Cosmo wants a schedule this pass (not manual-only). Detail pending: reminder vs pre-staged path vs other. Source remains user-supplied CSV (no DK API scrape).
+6. ~~Refresh / schedule shape.~~ Answered 2026-11-06: cron/`workflow_dispatch` loads from Cosmo-staged path/secret/artifact (not reminder-only; not DK auto-download).
 7. ~~Showdown detection.~~ Answered 2026-11-06: reject on CPT in Roster Position **or** distinct Game Info ≤ 1; clear Classic-only error.
 8. ~~Constitution amendment.~~ Answered with Q1 on PR #12 (Data section amended; ADR 0004 stays Proposed until Cosmo merges).
 
@@ -138,7 +143,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - **Q3:** CLI file path only this pass; no private upload endpoint/page (follow-up later).
 - **Q4:** Data-load only this pass (migration + table + CLI + tests); no read API / browse page.
 - **Q5:** Keep unmapped rows with null `gsis_id`; count in notes; AT ≥95% match on non-DST (DST may stay unmapped).
-- **Q6 (partial):** Schedule something this pass (not manual-only). Source remains user-supplied `DKSalaries.csv` via CLI (not a DK API). Schedule shape TBD.
+- **Q6:** Schedule this pass: GHA cron + `workflow_dispatch` loads from a Cosmo-staged path/secret/artifact. Not reminder-only. Not DK auto-download. Source remains user-supplied `DKSalaries.csv` via CLI.
 - **Q7:** Reject Showdown if any Roster Position contains CPT, or distinct Game Info ≤ 1; fail load with Classic-only error.
 
 ## ADRs
