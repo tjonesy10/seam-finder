@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1–Q5 answered; Q6 schedule shape + Q7 Showdown still open.
+Status: DRAFT (2026-11-06). Q1–Q5 + Q7 answered; Q6b schedule shape still open (not READY).
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -99,7 +99,7 @@ Same secrets rule as F001/F003. No DraftKings credentials. Never commit live unr
 - **AT8 (R2)** Match-rate AT (threshold from clarification).
 - **AT9 (R7)** No draftkings.com fetch; no `nfldfs`.
 - **AT10 (R8)** gitleaks clean; no passworded DB URLs; no live salary CSV secrets in repo.
-- **AT11 (R1)** Only Classic multi-game rows accepted; Showdown-shaped input fails or is rejected clearly. [NEEDS CLARIFICATION: how to detect Showdown — roster positions / game count?]
+- **AT11 (R1)** Only Classic multi-game rows accepted; Showdown-shaped input fails clearly: reject if any `Roster Position` contains `CPT`, or if distinct `Game Info` values ≤ 1; error names Classic-only.
 
 ## Non-goals
 
@@ -125,7 +125,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 4. ~~Unmapped skill policy + match-rate.~~ Answered 2026-11-06: keep null `gsis_id`; count in notes; ≥95% non-DST.
 5. ~~Deliverable scope.~~ Answered 2026-11-06: data-load only (no read API / browse).
 6. **Refresh cadence / schedule shape.** Cosmo wants a schedule this pass (not manual-only). Detail pending: reminder vs pre-staged path vs other. Source remains user-supplied CSV (no DK API scrape).
-7. **Showdown detection / rejection rule.**
+7. ~~Showdown detection.~~ Answered 2026-11-06: reject on CPT in Roster Position **or** distinct Game Info ≤ 1; clear Classic-only error.
 8. ~~Constitution amendment.~~ Answered with Q1 on PR #12 (Data section amended; ADR 0004 stays Proposed until Cosmo merges).
 
 ## Decisions (from Cosmo via Groko, 2026-11-06)
@@ -139,6 +139,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - **Q4:** Data-load only this pass (migration + table + CLI + tests); no read API / browse page.
 - **Q5:** Keep unmapped rows with null `gsis_id`; count in notes; AT ≥95% match on non-DST (DST may stay unmapped).
 - **Q6 (partial):** Schedule something this pass (not manual-only). Source remains user-supplied `DKSalaries.csv` via CLI (not a DK API). Schedule shape TBD.
+- **Q7:** Reject Showdown if any Roster Position contains CPT, or distinct Game Info ≤ 1; fail load with Classic-only error.
 
 ## ADRs
 

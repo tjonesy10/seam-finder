@@ -28,6 +28,7 @@ Added (planning docs, Part 1 data prototype, all DRAFT):
 - F004 Q4: Cosmo accepted data-load only this pass (no read API / browse; skipped card → default).
 - F004 Q5: Cosmo accepted keep null `gsis_id` + notes + ≥95% non-DST match (skipped card → default a).
 - F004 Q6 (partial): Cosmo chose schedule something this pass (not manual-only); asked API vs CSV — source still user-supplied CSV via CLI. Schedule shape TBD.
+- F004 Q7: Cosmo chose Showdown reject (c) — CPT in Roster Position or distinct Game Info ≤ 1; Classic-only error.
 
 - F003 DRAFT: historical DraftKings Classic weekly salaries and points (2015–2021) via RotoGuru. SPEC, HANDOFF, ADR 0003 (Proposed), data-dictionary section, glossary terms. Blocked on Cosmo license/attribution and remaining open questions.
 - F003 Q1: Cosmo approved RotoGuru historical DK Classic data in Neon and on the public site; attribution line set; constitution Data section amended; ADR 0003 still Proposed until that amendment is on main.

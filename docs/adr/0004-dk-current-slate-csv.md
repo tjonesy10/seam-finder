@@ -14,6 +14,7 @@ F003 loaded historical Classic salaries (2015–2021) from RotoGuru. The product
 2. **Pass scope.** Data-load only this pass (migration + table + CLI loader + tests). No read API or browse page.
 3. **Unmapped skill.** Keep row with null `gsis_id`; count in load notes; AT ≥95% match on non-DST (DST may stay unmapped).
 4. **Refresh.** Cosmo wants a schedule this pass (not manual-only). Shape TBD (reminder vs pre-staged path). Source remains user-supplied CSV via CLI; never scrape draftkings.com.
+5. **Showdown rejection.** Fail the load if any Roster Position contains CPT, or if distinct Game Info values ≤ 1; error names Classic-only.
 2. **Scope.** NFL Classic multi-game slates. Not Showdown. Not other DFS sites. Not the optimizer.
 3. **Storage.** A dedicated current-slate table (proposed `dk_classic_slate`) keyed by `(season, week, dk_id)`. Cosmo passes `--season` and `--week` on each load.
 4. **Join.** Map to F001 `gsis_id` / `team_abbr`; keep DraftKings `ID` for later lineup export.
