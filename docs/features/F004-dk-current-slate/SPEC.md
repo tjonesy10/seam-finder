@@ -1,4 +1,4 @@
-Status: DRAFT (2026-11-06). Q1–Q4 answered; other open questions pending.
+Status: DRAFT (2026-11-06). Q1–Q5 answered; other open questions pending.
 
 # F004: Current-slate DraftKings NFL Classic salaries (`DKSalaries.csv`)
 
@@ -63,7 +63,7 @@ Dataset name in `load_runs`: `dk_classic_slate`.
 
 - Reuse F001/`gsis_id` matching approach from F003 where it fits (name, team, position); DK `TeamAbbrev` is already nfl-like (KC, DEN, …).
 - DST: `Position`/`Roster Position` containing DST → `gsis_id` null; `team_abbr` from TeamAbbrev.
-- Unmapped skill: [NEEDS CLARIFICATION: keep null `gsis_id`, skip, or fail? Default: keep null; count in `notes`; match-rate AT ≥95% on non-DST rows.]
+- Unmapped skill: keep row with null `gsis_id`; count unmapped in load notes; AT ≥95% match rate on non-DST rows (DST may stay unmapped).
 - Do not invent stub players.
 
 ### Loader (CLI) — proposed
@@ -122,7 +122,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 1. ~~License / public exposure (R9).~~ Answered 2026-11-06: store in Neon; no public raw tables/CSV downloads; keep "Not affiliated with DraftKings."
 2. ~~Slate identity.~~ Answered 2026-11-06: `--season` + `--week`; PK `(season, week, dk_id)`.
 3. ~~Ingest path.~~ Answered 2026-11-06: CLI file only; no upload UI this pass.
-4. **Unmapped skill policy + match-rate.**
+4. ~~Unmapped skill policy + match-rate.~~ Answered 2026-11-06: keep null `gsis_id`; count in notes; ≥95% non-DST.
 5. ~~Deliverable scope.~~ Answered 2026-11-06: data-load only (no read API / browse).
 6. **Refresh cadence** (manual vs scheduled).
 7. **Showdown detection / rejection rule.**
@@ -137,6 +137,7 @@ Existing F001/F003 stack. Stdlib CSV. Not allowed without asking: `nfldfs`, pand
 - **Q2:** Slate key = Cosmo `--season` + `--week`; natural key `(season, week, dk_id)`.
 - **Q3:** CLI file path only this pass; no private upload endpoint/page (follow-up later).
 - **Q4:** Data-load only this pass (migration + table + CLI + tests); no read API / browse page.
+- **Q5:** Keep unmapped rows with null `gsis_id`; count in notes; AT ≥95% match on non-DST (DST may stay unmapped).
 
 ## ADRs
 
