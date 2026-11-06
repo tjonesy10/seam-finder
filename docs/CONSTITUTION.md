@@ -1,6 +1,6 @@
 # Seam Finder constitution
 
-Status: Accepted (2026-11-05); amended 2026-11-06 (RotoGuru / F003). The non-negotiables every SPEC and ADR is checked against. Changed only through a PR the owner approves.
+Status: Accepted (2026-11-05); amended 2026-11-06 (RotoGuru / F003; current-slate DK export / F004). The non-negotiables every SPEC and ADR is checked against. Changed only through a PR the owner approves.
 
 ## Stack
 - Python 3.12, FastAPI with Jinja2 pages, SQLAlchemy Core, Alembic, Postgres. Decided in [ADR 0001](adr/0001-stack-and-hosting.md).
@@ -12,7 +12,8 @@ Status: Accepted (2026-11-05); amended 2026-11-06 (RotoGuru / F003). The non-neg
 ## Data and licensing
 - Primary football data comes from nflverse-data under CC BY 4.0, with the attribution footer from [ADR 0002](adr/0002-nflverse-load-and-refresh.md) on every page.
 - Historical DraftKings NFL Classic weekly salaries and points (REG, seasons 2015–2021) may be loaded from RotoGuru per [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md), stored in Neon, and shown on the public site with this exact attribution: "Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings."
-- No team logos, player headshots, or share-alike (CC BY-SA) datasets without a new ADR. No other third-party salary feeds without a new ADR.
+- Current-slate DraftKings NFL Classic salaries from the owner's official `DKSalaries.csv` export may be stored in Neon for personal/optimizer use per [ADR 0004](adr/0004-dk-current-slate-csv.md). Do **not** publish raw salary tables or CSV downloads on the public site. Any UI that mentions DraftKings must say "Not affiliated with DraftKings." Never scrape draftkings.com.
+- No team logos, player headshots, or share-alike (CC BY-SA) datasets without a new ADR. No other third-party salary feeds without a new ADR (F004 owner export is covered above).
 
 ## Security
 - The repo is public. Secrets live only in GitHub Actions secrets and Render environment variables, never in files, logs, or examples.
