@@ -1,6 +1,7 @@
 """Load nflverse release files into Postgres."""
 
 import argparse
+import inspect
 import math
 import os
 import re
@@ -283,7 +284,10 @@ def _run_one(engine, *, run_group, dataset, season, trigger, source_url, secret,
             trigger=trigger,
             source_url=source_url,
         )
-        counts = work()
+        if "run_id" in inspect.signature(work).parameters:
+            counts = work(run_id)
+        else:
+            counts = work()
     except Exception as exc:  # noqa: BLE001 - any failure is recorded and the data transaction rolls back
         message = str(exc)
         if run_id is not None:
@@ -538,7 +542,7 @@ def load_games(engine, source, seasons: list[int], run_group, trigger: str, secr
         return failed
 
     for season in seasons:
-        def work(season=season):
+        def work(run_id, season=season):
             sliced = frame.filter(pl.col("season") == season)
             ensure_unique(sliced, ["game_id"])
             ensure_season_week(sliced)
@@ -558,6 +562,18 @@ def load_games(engine, source, seasons: list[int], run_group, trigger: str, secr
                     raise LoadError("unresolved team_abbr: " + ", ".join(missing))
                 upserted = upsert(conn, games, rows, ["game_id"])
                 deleted = delete_games_missing(conn, season, [row["game_id"] for row in rows])
+                from loader.schedule_proof import maybe_emit_schedule_receipt
+
+                maybe_emit_schedule_receipt(
+                    conn,
+                    run_id=run_id,
+                    season=season,
+                    raw_body=payload,
+                    media_type="application/vnd.apache.parquet",
+                    source_url=source_url,
+                    source_version=version,
+                    retrieved_at=loaded_at,
+                )
             return {
                 "source_version": version,
                 "rows_read": sliced.height,

@@ -15,7 +15,9 @@ def test_refresh_workflow_schedule_and_dispatch():
     assert "workflow_dispatch" in text
     assert "seasons:" in text
     assert "secrets.DATABASE_URL" in text
-    assert "alembic upgrade head" in text
+    assert "python -m loader.migrate" in text
+    assert "alembic upgrade head" not in text
+    assert "SALARY_PRIVATE_MIGRATION" in text
     assert "--trigger schedule" in text
     assert "--trigger manual" in text
     assert "python -m loader" in text
