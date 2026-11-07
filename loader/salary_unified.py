@@ -660,26 +660,39 @@ def _game_identity(games) -> list:
     )
 
 
+def _known_whole_slate(games) -> bool:
+    return bool(games) and all(game.get("away") and game.get("home") and game.get("kickoff_at") for game in games)
+
+
+def _match_claim(known: dict, claims: list[dict], used: set[int]) -> int | None:
+    if known.get("game_id"):
+        for index, item in enumerate(claims):
+            if index not in used and item.get("game_id") == known.get("game_id"):
+                return index
+    for index, item in enumerate(claims):
+        if index in used:
+            continue
+        if item.get("away") == known.get("away") and item.get("home") == known.get("home"):
+            return index
+    return None
+
+
 def _known_game_conflict(snapshot_games, claim_games) -> bool:
-    """Known retained facts must agree. A null kickoff may be filled by the claim."""
+    """Known retained facts must agree. A null kickoff may be filled by the claim.
+
+    A snapshot that already records a whole slate, every matchup and kickoff
+    known, keeps that exact membership. Subset evidence may fill unknown fields.
+    """
     if not snapshot_games:
         return False
     claims = list(claim_games or [])
+    used: set[int] = set()
     for known in snapshot_games:
-        claim = None
-        if known.get("game_id"):
-            claim = next((item for item in claims if item.get("game_id") == known.get("game_id")), None)
-        if claim is None:
-            claim = next(
-                (
-                    item
-                    for item in claims
-                    if item.get("away") == known.get("away") and item.get("home") == known.get("home")
-                ),
-                None,
-            )
-        if claim is None:
+        index = _match_claim(known, claims, used)
+        if index is None:
             return True
+        used.add(index)
+        claim = claims[index]
         for field in ("away", "home", "game_id"):
             known_value = known.get(field)
             claim_value = claim.get(field)
@@ -689,7 +702,7 @@ def _known_game_conflict(snapshot_games, claim_games) -> bool:
         claim_kick = claim.get("kickoff_at")
         if known_kick and claim_kick and known_kick != claim_kick:
             return True
-    return False
+    return bool(_known_whole_slate(snapshot_games) and len(claims) != len(used))
 
 
 def _snapshot_context(conn) -> dict[str, dict]:

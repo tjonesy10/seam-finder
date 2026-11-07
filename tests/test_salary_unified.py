@@ -1703,6 +1703,46 @@ def test_null_kickoff_can_be_enriched_without_becoming_ready(engine, database_ur
         assert not any(row["optimizer_ready"] for row in rows)
 
 
+def test_known_lobby_set_rejects_an_extra_claimed_game(engine, database_url, tmp_path):
+    game_a = {"away": "BUF", "home": "KC", "game_id": "2024_01_BUF_KC", "kickoff_at": "2024-09-08T17:00:00Z"}
+    game_b = {"away": "DAL", "home": "PHI", "game_id": "2024_01_DAL_PHI", "kickoff_at": "2024-09-08T20:25:00Z"}
+    game_c = {"away": "NYJ", "home": "NE", "game_id": "2024_01_NYJ_NE", "kickoff_at": "2024-09-08T17:00:00Z"}
+    with engine.begin() as conn:
+        _world(conn)
+        _game(conn, "2024_01_DAL_PHI", "DAL", "PHI", "2024-09-08", 1)
+        _game(conn, "2024_01_NYJ_NE", "NYJ", "NE", "2024-09-08", 1)
+        snapshot, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"lobby-ab",
+            rows=[
+                {"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"},
+                {"status": "valid", "salary": "4500", "native": "222", "name": "Josh", "roster": "QB", "team": "PHI"},
+            ],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-ab", games=[game_a, game_b],
+        )
+    expanded = [game_a, game_b, game_c]
+    payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, expanded, group="dg-ab")],
+        "entities": [
+            _entity(snapshot, 1, gsis="00-0033873"),
+            _entity(snapshot, 2, gsis="00-0034857", team="PHI", game="2024_01_DAL_PHI"),
+        ],
+    }
+    assert _publish(database_url, _mapping(tmp_path, payload), scope="expanded") == 0
+    with engine.connect() as conn:
+        status = conn.execute(
+            text(
+                """
+                SELECT status FROM salary_private.salary_interpretations
+                WHERE snapshot_id = :snapshot AND row_number IS NULL
+                """
+            ),
+            {"snapshot": snapshot},
+        ).scalar_one()
+        assert status != "verified"
+        assert not any(row["optimizer_ready"] for row in _view(conn, "expanded"))
+
+
 def test_reconcile_waits_for_the_active_attempt(engine, database_url, tmp_path):
     import time
 

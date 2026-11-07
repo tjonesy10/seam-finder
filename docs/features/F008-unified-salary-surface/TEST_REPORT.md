@@ -95,3 +95,11 @@ On `8d734f14` these four tests failed:
 History is now one native draft group, or one snapshot when the group is null. The latest complete snapshot in that history can anchor; an older incomplete file does not block a later complete one, and a null group is not shared across unrelated archives. A known kickoff still contradicts a different claim. A null kickoff can be filled by a reviewed offset and the interpretation can be verified, while a DFF subset stays not optimizer-ready. Reconcile runs only after the capture lock is held, so a second invocation waits and does not finalize the active attempt early. An F004 snapshot matches the current cohort only when the row image and `mixed_hash_cohort` both match. The old single-hash snapshot is not ready once a second hash exists and the new adapter observation is after the cutoff.
 
 `DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication after this correction: `253 passed, 2 skipped`. `alembic heads` is `0008`. Previously closed checks were not reopened. Mutator remains UNKNOWN.
+
+## Known whole-slate membership
+
+On `19ffaede`, `test_known_lobby_set_rejects_an_extra_claimed_game` was red. A lobby snapshot storing games A and B, with kickoffs, was verified and `ready=2` when the claim recomputed its hash over A, B, and an extra game and set `complete_pool` true.
+
+A retained set whose matchups and kickoffs are already known now requires the same membership. Extra claimed games are a conflict, so that slate is not verified and not optimizer-ready. A DFF snapshot whose kickoff is null can still receive a reviewed offset on the same opponents and game id: the interpretation stays `verified`, and the row stays `subset` and not optimizer-ready. A known kickoff that disagrees with the claim is still rejected.
+
+`DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication: `254 passed, 2 skipped`. `alembic heads` is `0008`. Mutator remains UNKNOWN.
