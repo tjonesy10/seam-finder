@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-11-07) by owner merge of PR #20, commit `dc72cc544b575a35420dd1f550babcacb31a248f`, at 2026-11-07T01:10:55Z. Cosmo had approved the contract directly on 2026-11-06 19:14 EST: independent season-schedule verification, reviewed each season and when games change, fail closed without valid evidence. It refines F005's undefined “verified complete season schedule” prerequisite in Accepted ADR 0005 without editing ADR 0005 or ADR 0006 substance. It does not certify any season inventory, activate the schedule, approve production, merge the implementation, or reopen the cadence or Sunday slate rule. The open PR #19 head `6464faa7aa1e3956d6b00e1b54be5a0270f11d51` [test report](https://github.com/tjonesy10/seam-finder/blob/6464faa7aa1e3956d6b00e1b54be5a0270f11d51/docs/features/F005-dk-lobby-capture/TEST_REPORT.md) records AT5 PASS on synthetic fixtures only. The fixture reviewer there is `synthetic-operator`. That is not a certified season, and that pull request is not merged.
+Accepted (2026-11-07) by owner merge of PR #20, commit `dc72cc544b575a35420dd1f550babcacb31a248f`, at 2026-11-07T01:10:55Z. Cosmo had approved the contract directly on 2026-11-06 19:14 EST: independent season-schedule verification, reviewed each season and when games change, fail closed without valid evidence. It refines F005's undefined “verified complete season schedule” prerequisite in Accepted ADR 0005 without editing ADR 0005 or ADR 0006 substance. It does not certify any season inventory, activate the schedule, approve production, or reopen the cadence or Sunday slate rule. Acceptance is the contract only. It is not acceptance of an implementation.
 
 ## Context
 
@@ -62,7 +62,7 @@ The independent inventory detects missing rows regardless of where they disappea
 
 ## Consequences
 
-Cosmo accepted seasonal and change review, and fail-closed behavior when proof is missing, on 2026-11-06 19:14 EST. An operator must still onboard an actual full reference. Approving this text does not certify one. Implementation needs a small opt-in schedule provenance producer in the existing games refresh plus verification in F005. It does not add a production source crawler or automatic authority approval. Artifacts and receipts obey existing private storage guards and are retained without automatic purging. The three earlier strict-xfail counterexamples remain required ordinary regressions. On the open PR #19 head cited above they are ordinary tests, not xfails, inside a report that marks AT5 PASS for synthetic fixtures only. That report does not merge the implementation or certify a season. Production rollout remains unapproved.
+Cosmo accepted seasonal and change review, and fail-closed behavior when proof is missing, on 2026-11-06 19:14 EST. An operator must still onboard an actual full reference. Approving this text does not certify one. Implementation needs a small opt-in schedule provenance producer in the existing games refresh plus verification in F005. It does not add a production source crawler or automatic authority approval. Artifacts and receipts obey existing private storage guards and are retained without automatic purging. The three earlier strict-xfail counterexamples remain required ordinary regressions. Contract acceptance is not implementation acceptance. Production rollout remains unapproved.
 
 ## Evidence
 
