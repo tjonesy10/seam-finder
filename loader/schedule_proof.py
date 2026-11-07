@@ -173,6 +173,28 @@ def _document(conn, digest: str) -> tuple[int, dict] | None:
     return artifact_id, payload
 
 
+def _store_failure_evidence(conn, payload: dict) -> str | None:
+    """Private record of the full expected and observed sets. Not a public log."""
+    body = canonical_bytes(
+        {
+            "document_type": "schedule_verification_v1",
+            "schema_version": "schedule_verification_v1",
+            **payload,
+        }
+    )
+    try:
+        _insert_control(
+            conn,
+            body=body,
+            kind="manifest",
+            media_type="application/json",
+            stored_at=datetime.now(UTC),
+        )
+    except (OSError, TypeError, ValueError, SQLAlchemyError, PrivateWriteError, ProjectionError):
+        return None
+    return sha256_bytes(body)
+
+
 def _reject(subreason: str, **extra) -> ScheduleVerdict:
     metadata = {
         "schedule_verification_version": PROOF_VERSION,
@@ -341,6 +363,156 @@ def _gap_envelope(inventory: dict, records: list[dict], gap_start: datetime) -> 
     return None
 
 
+def _observed_ids(conn, season: int) -> list[str]:
+    rows = conn.execute(
+        text(
+            """
+            SELECT game_id FROM games
+            WHERE season = :season AND game_type = 'REG'
+            ORDER BY game_id
+            """
+        ),
+        {"season": season},
+    ).scalars().all()
+    return [str(row) for row in rows]
+
+
+def _assess_receipt(conn, body: bytes, root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool) -> dict:
+    """Judge one receipt. A Postgres miss is not fatal until every candidate is judged."""
+    try:
+        receipt = json.loads(bytes(body))
+    except json.JSONDecodeError:
+        return {"ok": False, "reason": "receipt_unreadable", "eligible": False}
+    if not isinstance(receipt, dict) or receipt.get("document_type") != "schedule_source_receipt_v1":
+        return {"ok": False, "reason": "ignored", "eligible": False}
+    if int(receipt.get("season", -1)) != season:
+        return {"ok": False, "reason": "ignored", "eligible": False}
+    if receipt.get("authority_root_sha256") != root_sha or receipt.get("inventory_sha256") != inventory_sha:
+        return {"ok": False, "reason": "ignored", "eligible": False}
+    receipt_sha = _sha(receipt)
+    observed = _observed_ids(conn, season)
+    base = {
+        "ok": False,
+        "eligible": True,
+        "receipt": receipt,
+        "receipt_sha": receipt_sha,
+        "observed_game_ids": observed,
+        "schedule_receipt_sha256s": [receipt_sha],
+    }
+    try:
+        version = receipt.get("source_version")
+        raw_sha = receipt.get("source_raw_sha256")
+        if not version or version == raw_sha:
+            return {**base, "reason": "publisher_version_missing"}
+        raw = _artifact(conn, raw_sha)
+        if raw is None or raw[2] != "schedule_raw":
+            return {**base, "reason": "raw_missing"}
+        base["raw_id"] = raw[0]
+        base["schedule_raw_artifact_ids"] = [raw[0]]
+        parsed = project_raw_season(raw[1], receipt.get("media_type") or "application/json", season)
+        records, projection_sha, ids, id_sha = projection_documents(parsed)
+        base["expected_game_ids"] = ids
+        base["expected_reg_count"] = len(ids)
+        base["observed_reg_count"] = len(observed)
+        if projection_sha != receipt.get("normalized_projection_sha256") or ids != receipt.get("source_reg_ids"):
+            return {**base, "reason": "receipt_projection_mismatch"}
+        if id_sha != receipt.get("source_reg_set_sha256"):
+            return {**base, "reason": "receipt_projection_mismatch"}
+        run = _load_run(conn, int(receipt["games_load_run_id"]), season)
+        if run is None or run.get("source_version") != version:
+            return {**base, "reason": "load_run_mismatch"}
+        retrieved = _parse_time(receipt["retrieved_at"])
+        stale = _retrieval_ok(retrieved, now, allow_historical=allow_historical)
+        if stale:
+            return {**base, "reason": stale, "retrieved_at": receipt["retrieved_at"]}
+        try:
+            pg_records, pg_sha, pg_ids, _pg_id_sha = projection_documents(
+                _pg_rows(conn, season),
+                from_raw=False,
+            )
+        except ProjectionError as exc:
+            return {**base, "reason": exc.reason, "observed_game_ids": observed}
+        if pg_sha != projection_sha or pg_ids != ids:
+            return {
+                **base,
+                "reason": "postgres_mismatch",
+                "records": records,
+                "pg_records": pg_records,
+                "retrieved_at": receipt["retrieved_at"],
+            }
+        return {
+            "ok": True,
+            "eligible": True,
+            "reason": "matched",
+            "receipt": receipt,
+            "receipt_sha": receipt_sha,
+            "records": records,
+            "raw_id": raw[0],
+            "retrieved_at": receipt["retrieved_at"],
+            "expected_game_ids": ids,
+            "observed_game_ids": pg_ids,
+        }
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, ProjectionError) as exc:
+        return {**base, "reason": getattr(exc, "reason", None) or "receipt_unreadable"}
+
+
+def choose_receipt(conn, bodies: list[bytes], root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool):
+    """Pick the latest eligible receipt that matches Postgres, independent of input order."""
+    matches = []
+    failures = []
+    for body in bodies:
+        outcome = _assess_receipt(conn, body, root_sha, inventory_sha, season, now, allow_historical)
+        if not outcome.get("eligible"):
+            continue
+        if outcome.get("ok"):
+            matches.append(outcome)
+        else:
+            failures.append(outcome)
+    if matches:
+        chosen = max(matches, key=lambda item: (_parse_time(item["retrieved_at"]), item["receipt_sha"]))
+        return ("ok", chosen["receipt"], chosen["records"], chosen["raw_id"])
+    detail = _aggregate_failures(failures)
+    reason = detail.pop("reason")
+    return ("fail", reason, detail)
+
+
+def _aggregate_failures(failures: list[dict]) -> dict:
+    if not failures:
+        return {"reason": "receipt_missing"}
+    raw_ids = []
+    receipt_shas = []
+    expected: list[str] = []
+    observed: list[str] = []
+    reasons = []
+    diffs = []
+    for item in failures:
+        reasons.append(item.get("reason") or "receipt_unreadable")
+        for raw_id in item.get("schedule_raw_artifact_ids") or []:
+            if raw_id not in raw_ids:
+                raw_ids.append(raw_id)
+        for digest in item.get("schedule_receipt_sha256s") or []:
+            if digest not in receipt_shas:
+                receipt_shas.append(digest)
+        if item.get("expected_game_ids"):
+            expected = item["expected_game_ids"]
+        if item.get("observed_game_ids"):
+            observed = item["observed_game_ids"]
+        if item.get("reason") == "postgres_mismatch":
+            diffs.extend(_field_differences(item.get("records") or [], item.get("pg_records") or []))
+    reason = reasons[0] if len(set(reasons)) == 1 else "receipt_not_matched"
+    return {
+        "reason": reason,
+        "schedule_raw_artifact_ids": raw_ids,
+        "schedule_receipt_sha256s": receipt_shas,
+        "expected_reg_count": len(expected),
+        "observed_reg_count": len(observed),
+        "expected_game_ids": expected,
+        "observed_game_ids": observed,
+        "schedule_field_differences": diffs[:20],
+        "attempted_subreasons": reasons,
+    }
+
+
 def _bind_receipt(conn, root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool):
     rows = conn.execute(
         text(
@@ -351,70 +523,15 @@ def _bind_receipt(conn, root_sha: str, inventory_sha: str, season: int, now: dat
             """
         )
     ).scalars().all()
-    failure = "receipt_missing"
-    for body in rows:
-        try:
-            receipt = json.loads(bytes(body))
-        except json.JSONDecodeError:
-            continue
-        if receipt.get("document_type") != "schedule_source_receipt_v1":
-            continue
-        try:
-            if int(receipt.get("season", -1)) != season:
-                continue
-            if receipt.get("authority_root_sha256") != root_sha or receipt.get("inventory_sha256") != inventory_sha:
-                continue
-            version = receipt.get("source_version")
-            raw_sha = receipt.get("source_raw_sha256")
-            if not version or version == raw_sha:
-                failure = "publisher_version_missing"
-                continue
-            raw = _artifact(conn, raw_sha)
-            if raw is None or raw[2] != "schedule_raw":
-                failure = "raw_missing"
-                continue
-            parsed = project_raw_season(
-                raw[1],
-                receipt.get("media_type") or "application/json",
-                season,
-            )
-            records, projection_sha, ids, id_sha = projection_documents(parsed)
-            if projection_sha != receipt.get("normalized_projection_sha256") or ids != receipt.get("source_reg_ids"):
-                failure = "receipt_projection_mismatch"
-                continue
-            if id_sha != receipt.get("source_reg_set_sha256"):
-                failure = "receipt_projection_mismatch"
-                continue
-            run = _load_run(conn, int(receipt["games_load_run_id"]), season)
-            if run is None or run.get("source_version") != version:
-                failure = "load_run_mismatch"
-                continue
-            retrieved = _parse_time(receipt["retrieved_at"])
-            stale = _retrieval_ok(retrieved, now, allow_historical=allow_historical)
-            if stale:
-                failure = stale
-                continue
-            pg_records, pg_sha, pg_ids, _pg_id_sha = projection_documents(
-                _pg_rows(conn, season),
-                from_raw=False,
-            )
-            if pg_sha != projection_sha or pg_ids != ids:
-                return (
-                    "fail",
-                    "postgres_mismatch",
-                    {
-                        "schedule_raw_artifact_ids": [raw[0]],
-                        "schedule_receipt_sha256s": [_sha(receipt)],
-                        "expected_reg_count": len(ids),
-                        "observed_reg_count": len(pg_ids),
-                        "schedule_field_differences": _field_differences(records, pg_records),
-                    },
-                )
-            return ("ok", receipt, records, raw[0])
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, ProjectionError) as exc:
-            failure = getattr(exc, "reason", None) or "receipt_unreadable"
-            continue
-    return ("fail", failure, {})
+    return choose_receipt(
+        conn,
+        [bytes(body) for body in rows],
+        root_sha,
+        inventory_sha,
+        season,
+        now,
+        allow_historical,
+    )
 
 
 def _field_differences(expected: list[dict], observed: list[dict]) -> list[dict]:
@@ -538,6 +655,21 @@ def _verify_in_snapshot(conn, now: datetime) -> ScheduleVerdict:
         )
         if status != "ok":
             detail = bound[1] if len(bound) > 1 and isinstance(bound[1], dict) else {}
+            evidence_sha = _store_failure_evidence(
+                conn,
+                {
+                    "subreason": bound[0],
+                    "authority_root_sha256": pin,
+                    "inventory_sha256": inventory_sha,
+                    "raw_artifact_ids": detail.get("schedule_raw_artifact_ids") or [],
+                    "receipt_sha256s": detail.get("schedule_receipt_sha256s") or [],
+                    "expected_game_ids": detail.get("expected_game_ids") or [],
+                    "observed_game_ids": detail.get("observed_game_ids") or [],
+                    "attempted_subreasons": detail.get("attempted_subreasons") or [bound[0]],
+                },
+            )
+            if evidence_sha:
+                detail = {**detail, "schedule_evidence_sha256": evidence_sha}
             return _reject(bound[0], schedule_inventory_sha256s=[inventory_sha], **seen, **detail)
         receipt, records, raw_id = bound
         if mode == "interseason_gap":
@@ -576,6 +708,7 @@ def _verify_in_snapshot(conn, now: datetime) -> ScheduleVerdict:
         "schedule_inventory_sha256s": inventory_shas,
         "schedule_raw_artifact_ids": raw_ids,
         "schedule_receipt_sha256s": receipt_shas,
+        "schedule_selected_receipt_sha256": receipt_shas[-1] if receipt_shas else None,
         "schedule_coverage_sha256": _sha(chosen),
         "schedule_verification_version": PROOF_VERSION,
         "schedule_verification_result": "verified_gap" if evidence == "gap" else "verified_active",

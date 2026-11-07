@@ -295,7 +295,30 @@ class BoundedClient:
         self.touched = False
 
     def close(self) -> None:
+        timer = getattr(self, "_budget_timer", None)
+        if timer is not None:
+            timer.cancel()
         self.client.close()
+
+    def _cancel_inflight(self) -> None:
+        try:
+            self.client.close()
+        except Exception:  # noqa: BLE001 - cancellation must not raise on the timer thread
+            return
+
+    def _arm_wall_deadline(self) -> float:
+        """One wall deadline for connect, headers, and body. Phases do not each get a fresh budget."""
+        if getattr(self, "_wall_deadline", None) is None:
+            left = HTTP_BUDGET_S - self._elapsed()
+            if left <= 0:
+                raise CaptureFailure("http_budget_exhausted")
+            self._wall_deadline = time.monotonic() + left
+            self._budget_timer = threading.Timer(left, self._cancel_inflight)
+            self._budget_timer.daemon = True
+            self._budget_timer.start()
+        if time.monotonic() >= self._wall_deadline:
+            raise CaptureFailure("http_budget_exhausted")
+        return self._wall_deadline - time.monotonic()
 
     def _elapsed(self) -> float:
         return self.clock.mono() - self.started
@@ -346,27 +369,25 @@ class BoundedClient:
     def _over_budget(self) -> bool:
         return self._elapsed() > HTTP_BUDGET_S
 
-    def _phase_timeouts(self) -> dict[str, float]:
-        """Each blocking phase waits at most the seconds still inside the 180s budget."""
-        left = max(0.0, HTTP_BUDGET_S - self._elapsed())
-        return {
-            "connect": min(10.0, left),
-            "read": min(30.0, left),
-            "write": min(30.0, left),
-            "pool": min(10.0, left),
-        }
-
     def _send(self, url: str, accept: str) -> httpx.Response:
         if self._elapsed() >= HTTP_BUDGET_S:
             raise CaptureFailure("http_budget_exhausted")
+        self._arm_wall_deadline()
         self.client.cookies.clear()
         request = self.client.build_request(
             "GET",
             url,
             headers={"Accept": accept, "User-Agent": USER_AGENT},
         )
-        request.extensions["timeout"] = self._phase_timeouts()
-        response = self.client.send(request, stream=True)
+        try:
+            response = send_for_budget(self.client, request, self._wall_deadline, self._cancel_inflight)
+        except CaptureFailure:
+            raise
+        except Exception as exc:
+            if time.monotonic() >= self._wall_deadline:
+                raise CaptureFailure("http_budget_exhausted") from exc
+            raise
+        response._seam_wall_deadline = self._wall_deadline
         self.client.cookies.clear()
         self.touched = True
         self.wire.append((str(request.url), response.status_code))
@@ -440,6 +461,30 @@ class _Retry(Exception):
         self.retry_after = retry_after
 
 
+def send_for_budget(client: httpx.Client, request: httpx.Request, wall_deadline: float, cancel) -> httpx.Response:
+    """Connect, headers, and the later body share one wall deadline."""
+    left = wall_deadline - time.monotonic()
+    if left <= 0:
+        raise CaptureFailure("http_budget_exhausted")
+    request.extensions["timeout"] = {
+        "connect": min(10.0, left),
+        "read": min(30.0, left),
+        "write": min(30.0, left),
+        "pool": min(10.0, left),
+    }
+    timer = threading.Timer(left, cancel)
+    timer.daemon = True
+    timer.start()
+    try:
+        return client.send(request, stream=True)
+    except (httpx.TransportError, OSError) as exc:
+        if time.monotonic() >= wall_deadline - 0.05:
+            raise CaptureFailure("http_budget_exhausted") from exc
+        raise
+    finally:
+        timer.cancel()
+
+
 def _response_socket(response: httpx.Response):
     """Socket published on the response extensions. Mock transports do not have one."""
     extensions = getattr(response, "extensions", None) or {}
@@ -492,6 +537,11 @@ def _read_capped(response: httpx.Response, *, deadline: float, clock: Clock) -> 
     chunks = None
     while True:
         left = deadline - clock.mono()
+        wall_left = None
+        wall_deadline = getattr(response, "_seam_wall_deadline", None)
+        if wall_deadline is not None:
+            wall_left = wall_deadline - time.monotonic()
+            left = wall_left if left is None else min(left, wall_left)
         if left <= 0:
             raise CaptureFailure("http_budget_exhausted")
         read_timeout = min(30.0, left)
