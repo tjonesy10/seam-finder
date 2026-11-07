@@ -146,6 +146,9 @@ def _install_schedule_proof(
         appearances[row["away_team"]] = appearances.get(row["away_team"], 0) + 1
         appearances[row["home_team"]] = appearances.get(row["home_team"], 0) + 1
     planned.extend(cancelled)
+    for fixture in cancelled:
+        appearances[fixture["away_team"]] = appearances.get(fixture["away_team"], 0) + 1
+        appearances[fixture["home_team"]] = appearances.get(fixture["home_team"], 0) + 1
     reference = b"synthetic league schedule reference fixture\n"
     reference_sha = sha256_bytes(reference)
     inventory = {
@@ -186,6 +189,8 @@ def _install_schedule_proof(
         "covers_until": "2027-09-01T04:00:00+00:00",
         "document_type": "schedule_coverage_v1",
         "mode": "interseason_gap",
+        "prior_closure_evidence_refs": [reference_sha],
+        "league_evidence_refs": [reference_sha],
         "published_no_reg_through": "2027-09-01T04:00:00+00:00",
         "review": {"reviewer": "synthetic-operator"},
         "schema_version": "schedule_coverage_v1",
@@ -2156,6 +2161,306 @@ def test_schedule_receipt_is_not_emitted_for_a_short_source(engine, monkeypatch)
             is False
         )
     assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2026") == 9
+
+
+def test_multiseason_parquet_receipt_captures(engine, tmp_path, monkeypatch):
+    import json
+    from uuid import uuid4
+
+    import polars as pl
+
+    from loader.run import load_games
+    from loader.source import DirSource
+
+    sunday = _et(2026, 11, 8, 13, 0)
+    later = _et(2026, 11, 8, 16, 25)
+    rows = [
+        _proof_rows([("2025_01_NE_KC", 2025, 1, "NE", "KC", _et(2025, 9, 7, 13, 0))])[0],
+        _proof_rows([("2026_10_NYJ_NE", 2026, 10, "NYJ", "NE", sunday)])[0],
+        _proof_rows([("2026_10_GB_CHI", 2026, 10, "GB", "CHI", later)])[0],
+    ]
+    frame = pl.DataFrame(
+        {
+            "game_id": [row["game_id"] for row in rows],
+            "season": [row["season"] for row in rows],
+            "game_type": ["REG"] * 3,
+            "week": [row["week"] for row in rows],
+            "gameday": [row["gameday"] for row in rows],
+            "weekday": [row["weekday"] for row in rows],
+            "gametime": [row["gametime"] for row in rows],
+            "away_team": [row["away_team"] for row in rows],
+            "home_team": [row["home_team"] for row in rows],
+            "away_score": [None] * 3,
+            "home_score": [None] * 3,
+            "result": [None] * 3,
+            "total": [None] * 3,
+            "overtime": [None] * 3,
+            "location": ["Home"] * 3,
+            "roof": [None] * 3,
+            "surface": [None] * 3,
+            "stadium": [None] * 3,
+            "spread_line": [None] * 3,
+            "total_line": [None] * 3,
+            "old_game_id": [None] * 3,
+            "pfr": [None] * 3,
+            "espn": [None] * 3,
+        }
+    )
+    schedules = tmp_path / "schedules"
+    schedules.mkdir()
+    frame.write_parquet(schedules / "games.parquet")
+    (schedules / "timestamp.json").write_text(json.dumps({"last_updated": "synthetic-nflverse-2026-11-07"}))
+    with engine.begin() as conn:
+        for abbr in ("NE", "KC", "NYJ", "GB", "CHI"):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO teams (
+                        team_abbr, team_name, team_nick, team_conf, team_division,
+                        team_id, team_color, team_color2, loaded_at
+                    ) VALUES (
+                        :abbr, :abbr, :abbr, 'AFC', 'East', :abbr, '#000000', '#111111', now()
+                    )
+                    ON CONFLICT DO NOTHING
+                    """
+                ),
+                {"abbr": abbr},
+            )
+        _install_schedule_proof(
+            conn,
+            rows[1:],
+            datetime.now(UTC),
+            load_run_id=1,
+            source_version="synthetic-nflverse-2026-11-07",
+        )
+    monkeypatch.setenv("SALARY_PRIVATE_MIGRATION", "true")
+    assert load_games(engine, DirSource(tmp_path), [2026], uuid4(), "local", "secret") == set()
+    raw = _rows(
+        engine,
+        "SELECT byte_count FROM salary_private.salary_artifacts WHERE artifact_kind = 'schedule_raw'",
+    )
+    assert raw and raw[0]["byte_count"] > 100
+    sun1 = _info("NYJ", "NE", sunday)
+    sun2 = _info("GB", "CHI", later)
+    csv_rows = [
+        f"QB,Synthetic Quarterback (900001),{CANARY_NAME},900001,QB,{CANARY_SALARY},{sun1},NYJ,1.5,Active",
+        f"RB,Synthetic Rusher (900003),Synthetic Rusher,900003,RB,4444,{sun2},GB,2,Active",
+    ]
+    box = _box(csv=_csv(csv_rows), groups=[_group(90001, [("NYJ", "NE", sunday), ("GB", "CHI", later)])])
+    assert _run(engine, ScriptTransport(_happy_handler(box)), clock=MutableClock(datetime.now(ET))) == 0
+    assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2025") == 0
+    assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2026") == 2
+
+
+def test_projection_rejects_type_and_time_changes_in_one_snapshot(engine):
+    _seed(engine)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE games SET season_type = 'POST' WHERE game_id = '2026_10_NYJ_NE'"))
+    changed = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, changed) == 1
+    assert changed.calls == []
+    meta = _rows(engine, "SELECT metadata FROM salary_private.salary_observations")[0]["metadata"]
+    assert any(item.get("field") == "season_type" for item in meta["schedule_field_differences"])
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE games SET season_type = 'REG', gametime = '25:99' WHERE game_id = '2026_10_NYJ_NE'")
+        )
+    bad_time = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, bad_time) == 1
+    from loader.schedule_proof import repeatable_read
+
+    with engine.connect() as conn:  # noqa: SIM117 - the snapshot needs the open connection
+        with repeatable_read(conn):
+            before = conn.execute(text("SELECT gametime FROM games WHERE game_id = '2026_01_NE_KC'")).scalar()
+            with engine.begin() as other:
+                other.execute(text("UPDATE games SET gametime = '19:00' WHERE game_id = '2026_01_NE_KC'"))
+            after = conn.execute(text("SELECT gametime FROM games WHERE game_id = '2026_01_NE_KC'")).scalar()
+    assert before == after == "13:00"
+
+
+def test_cancellation_gap_and_contradictory_sunday(engine):
+    _seed(engine)
+    cancelled = {
+        "away_team": "DAL",
+        "game_id": "2026_08_DAL_PHI",
+        "home_team": "PHI",
+        "season": 2026,
+        "source_representation": "absent",
+        "status": "cancelled",
+        "week": 8,
+    }
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM salary_private.salary_artifacts
+                WHERE source = 'control'
+                """
+            )
+        )
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            _proof_rows(_seed_plan()),
+            NOW,
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+            cancelled=(cancelled,),
+        )
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 0
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM salary_private.salary_artifacts WHERE source = 'control'"))
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            _proof_rows(_seed_plan()),
+            NOW,
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+            closure="open",
+        )
+    open_gap = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, open_gap, clock=MutableClock(_et(2027, 4, 15, 10, 0))) == 1
+    assert open_gap.calls == []
+    rows = _proof_rows(_seed_plan())
+    rows.append(
+        {
+            "game_id": "2026_12_BUF_MIA",
+            "season": 2026,
+            "week": 12,
+            "gameday": "2026-11-08",
+            "weekday": "Sunday",
+            "gametime": None,
+            "away_team": "BUF",
+            "home_team": "MIA",
+            "game_type": "REG",
+        }
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO games (
+                    game_id, season, game_type, season_type, week, gameday, weekday,
+                    gametime, away_team, home_team, location, loaded_at
+                ) VALUES (
+                    '2026_12_BUF_MIA', 2026, 'REG', 'REG', 12, DATE '2026-11-08', 'Sunday',
+                    NULL, 'BUF', 'MIA', 'Home', now()
+                )
+                """
+            )
+        )
+        conn.execute(text("DELETE FROM salary_private.salary_artifacts WHERE source = 'control'"))
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            rows,
+            NOW,
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+            windows={"2026_12_BUF_MIA": ("2027-01-10T18:00:00+00:00", "2027-01-11T00:00:00+00:00")},
+        )
+    contradictory = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, contradictory) == 1
+    assert contradictory.calls == []
+
+
+def test_real_transport_stalls_only_for_remaining_budget():
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from loader.dk_lobby import CaptureFailure, _read_capped
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(b"5\r\nhello\r\n")
+            self.wfile.flush()
+            time.sleep(8)
+            try:
+                self.wfile.write(b"5\r\nworld\r\n0\r\n\r\n")
+            except OSError:
+                pass
+
+        def log_message(self, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+
+    class SecondRead(MutableClock):
+        def mono(self):
+            self.calls = getattr(self, "calls", 0) + 1
+            if self.calls > 1:
+                self.mono_now = HTTP_BUDGET_S - 1
+            return self.mono_now
+
+    clock = SecondRead(NOW, 0)
+    started = time.monotonic()
+    try:
+        with httpx.Client(transport=httpx.HTTPTransport(), timeout=httpx.Timeout(10.0, read=30.0)) as client:
+            request = client.build_request("GET", f"http://127.0.0.1:{port}/stall")
+            request.extensions["timeout"] = {"connect": 10.0, "read": 30.0, "write": 30.0, "pool": 10.0}
+            response = client.send(request, stream=True)
+            with pytest.raises(CaptureFailure) as caught:
+                _read_capped(response, deadline=HTTP_BUDGET_S, clock=clock)
+    finally:
+        server.shutdown()
+    assert caught.value.reason == "http_budget_exhausted"
+    assert time.monotonic() - started < 4
+    assert clock.mono() <= HTTP_BUDGET_S
+
+
+def test_proof_write_obeys_capacity_and_failure_readback(engine, monkeypatch):
+    import loader.salary_private as private
+    from loader.schedule_proof import canonical_bytes, maybe_emit_schedule_receipt
+
+    _seed(engine)
+    before = _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts")
+    monkeypatch.setenv("SALARY_PRIVATE_MIGRATION", "true")
+    monkeypatch.setattr(private, "CUMULATIVE_LIMIT", 0)
+    body = canonical_bytes({"games": _proof_rows(_seed_plan()), "schema_version": "schedule_raw_v1"})
+    with engine.begin() as conn:
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        assert (
+            maybe_emit_schedule_receipt(
+                conn,
+                run_id=int(run_id),
+                season=2026,
+                raw_body=body,
+                media_type="application/json",
+                source_url="https://example.test/schedules",
+                source_version="synthetic-schedule-v1",
+                retrieved_at=NOW,
+            )
+            is False
+        )
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts") == before
+    assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2026") == 9
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM games WHERE game_id = '2026_10_DAL_PHI'"))
+    failed = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, failed) == 1
+    metadata = _rows(engine, "SELECT metadata FROM salary_private.salary_observations")[0]["metadata"]
+    assert metadata["schedule_authority_root_sha256"]
+    assert metadata["expected_reg_count"] == 9
+    assert metadata["observed_reg_count"] == 8
+    assert any(item.get("game_id") == "2026_10_DAL_PHI" for item in metadata["schedule_field_differences"])
+    assert "4242" not in str(metadata["schedule_field_differences"])
 
 
 def test_login_redirect_keeps_the_body(engine):
