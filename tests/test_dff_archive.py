@@ -120,7 +120,7 @@ def _archive(tmp, specs, *, findings=False, coverage=False):
             html = spec.get("html", b"<html>synthetic dailyfantasyfuel</html>")
             gzip_path = root / f"evidence/dff-{season}-week{week:02d}.html.gz"
             gzip_path.parent.mkdir(parents=True, exist_ok=True)
-            gzip_path.write_bytes(gzip.compress(html))
+            gzip_path.write_bytes(gzip.compress(html, mtime=0))
         digest = hashlib.sha256(body).hexdigest()
         if "sha" in spec:
             digest = spec["sha"]

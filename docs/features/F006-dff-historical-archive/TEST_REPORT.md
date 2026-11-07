@@ -37,7 +37,7 @@ Result: `12 passed`.
 
 `ruff check loader web tests migrations` passed.
 
-`DATABASE_URL=postgresql:///seam_test pytest -q` on this VM's peer authentication: `192 passed, 2 skipped, 1 failed`. The failure is `tests/test_readonly.py::test_at18_read_only_role` (`503`). Local `pg_hba.conf` uses `peer` for local sockets, so the login role cannot connect. The same test passed after a temporary local `trust` rule matching CI, and peer authentication was restored. That failure is not an F006 assertion.
+After merging PR 19 head `4d85d8c`, `DATABASE_URL=postgresql:///seam_test pytest -q` with local trust authentication (the CI setting) reported `198 passed, 2 skipped`. On this VM's default peer authentication, `tests/test_readonly.py::test_at18_read_only_role` returns 503 because the login role fails peer auth. That test passed under trust, and peer authentication was restored. It is not an F006 assertion.
 
 `gitleaks detect --source . --redact --no-banner --no-git` reported `no leaks found`.
 
