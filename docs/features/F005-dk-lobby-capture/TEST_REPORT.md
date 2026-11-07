@@ -102,4 +102,4 @@ The new test is `tests/test_dk_lobby.py::test_draftables_contract_uses_csv_playe
 | Draftables JSON contract vs Classic CSV | PASS | Offline read of the uploaded draftables document and matching CSV. No network. Output below. The private files were not committed. |
 | GitHub's hosted evaluation of the skipped job | UNKNOWN | AT4 forbids a live dispatch. The file gate and the local predicate are tested. |
 | Uncle Bob mutator | UNKNOWN | `mutator` is not on `PATH`. `../crapper` is not present. Go is installed. The mutator tool was not installed. This is not a pass. |
-| Pull request CI | PASS | Both checks on `7cdc4be786b4c306ae17e9352a555f8ed8c5536e` succeeded: [run 42323913004](https://github.com/tjonesy10/seam-finder/actions/runs/42323913004) and [run 42323909318](https://github.com/tjonesy10/seam-finder/actions/runs/42323909318). That run has no AT5 xfails. |
+| Pull request CI | PASS | Both checks on `4d85d8cb58b30e62d6884d21ab1b3a04f29f6559` succeeded: [run 42325368115](https://github.com/tjonesy10/seam-finder/actions/runs/42325368115) and [run 42325362622](https://github.com/tjonesy10/seam-finder/actions/runs/42325362622). |
