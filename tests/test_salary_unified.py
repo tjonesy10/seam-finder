@@ -7,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import text
 
-from loader.salary_private import sha256_bytes
+from loader.salary_private import canonical_sha256, sha256_bytes
 from loader.salary_unified import main, reconcile, revision_hash, run
 from web.attribution import ROTOGURU_DK_CLASSIC_ATTRIBUTION
 
@@ -122,7 +122,7 @@ def _revision(games, week=1):
     return revision_hash(games, RULES, 2024, "REG", week)
 
 
-def _snapshot(conn, *, source, pool, body, rows, observed_at, draft_group=None, season=2024, week=1, season_type="REG", games=None):
+def _snapshot(conn, *, source, pool, body, rows, observed_at, draft_group=None, season=2024, week=1, season_type="REG", games=None, game_set_sha256=None):
     digest = sha256_bytes(body)
     artifact = conn.execute(
         text(
@@ -143,12 +143,12 @@ def _snapshot(conn, *, source, pool, body, rows, observed_at, draft_group=None, 
             """
             INSERT INTO salary_private.salary_snapshots (
                 snapshot_id, source, artifact_id, parser_version, metadata_sha256, source_snapshot_key,
-                season, season_type, week, draft_group_id, games, rules, source_pool_kind, metadata,
-                created_at, loaded_at
+                season, season_type, week, draft_group_id, games, rules, game_set_sha256,
+                source_pool_kind, metadata, created_at, loaded_at
             ) VALUES (
                 gen_random_uuid(), :source, :artifact, 't.1', :meta, :key,
-                :season, :season_type, :week, :draft, CAST(:games AS jsonb), '{}'::jsonb, :pool,
-                CAST(:metadata AS jsonb), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                :season, :season_type, :week, :draft, CAST(:games AS jsonb), '{}'::jsonb, :game_set,
+                :pool, CAST(:metadata AS jsonb), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             ) RETURNING snapshot_id
             """
         ),
@@ -163,6 +163,7 @@ def _snapshot(conn, *, source, pool, body, rows, observed_at, draft_group=None, 
             "draft": draft_group,
             "pool": pool,
             "games": json.dumps(games or []),
+            "game_set": game_set_sha256,
             "metadata": json.dumps(metadata),
         },
     ).scalar_one()
@@ -1718,6 +1719,7 @@ def test_known_lobby_set_rejects_an_extra_claimed_game(engine, database_url, tmp
                 {"status": "valid", "salary": "4500", "native": "222", "name": "Josh", "roster": "QB", "team": "PHI"},
             ],
             observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-ab", games=[game_a, game_b],
+            game_set_sha256=canonical_sha256([game_a, game_b]),
         )
     expanded = [game_a, game_b, game_c]
     payload = {
@@ -1741,6 +1743,123 @@ def test_known_lobby_set_rejects_an_extra_claimed_game(engine, database_url, tmp
         ).scalar_one()
         assert status != "verified"
         assert not any(row["optimizer_ready"] for row in _view(conn, "expanded"))
+
+
+def _scope_slate_status(conn, scope):
+    return conn.execute(
+        text(
+            """
+            SELECT DISTINCT i.status
+            FROM salary_private.salary_selection_batches b
+            JOIN salary_private.salary_selection_rows r ON r.selection_id = b.selection_id
+            JOIN salary_private.salary_interpretations i ON i.interpretation_id = r.slate_interpretation_id
+            WHERE b.selection_scope = :scope
+            """
+        ),
+        {"scope": scope},
+    ).scalar_one()
+
+
+def _slate_status(conn, snapshot):
+    return conn.execute(
+        text(
+            """
+            SELECT status FROM salary_private.salary_interpretations
+            WHERE snapshot_id = :snapshot AND row_number IS NULL
+            """
+        ),
+        {"snapshot": snapshot},
+    ).scalar_one()
+
+
+def test_verified_game_set_with_unknown_kickoff_keeps_its_membership(engine, database_url, tmp_path):
+    """Rejected premise: populated matchup and kickoff facts are whole-slate membership.
+
+    A source that stored a verified game set keeps that membership when one kickoff is
+    still unknown. The same games may receive a reviewed kickoff. An extra game may not.
+    """
+    game_a = {"away": "BUF", "home": "KC", "game_id": "2024_01_BUF_KC", "kickoff_at": "2024-09-08T17:00:00Z"}
+    stored_b = {"away": "DAL", "home": "PHI", "game_id": "2024_01_DAL_PHI", "kickoff_at": None}
+    claimed_b = {"away": "DAL", "home": "PHI", "game_id": "2024_01_DAL_PHI", "kickoff_at": "2024-09-08T20:25:00Z"}
+    game_c = {"away": "NYJ", "home": "NE", "game_id": "2024_01_NYJ_NE", "kickoff_at": "2024-09-08T17:00:00Z"}
+    stored = [game_a, stored_b]
+    with engine.begin() as conn:
+        _world(conn)
+        _game(conn, "2024_01_DAL_PHI", "DAL", "PHI", "2024-09-08", 1)
+        _game(conn, "2024_01_NYJ_NE", "NYJ", "NE", "2024-09-08", 1)
+        snapshot, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"lobby-unknown-kick",
+            rows=[
+                {"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"},
+                {"status": "valid", "salary": "4500", "native": "222", "name": "Josh", "roster": "QB", "team": "PHI"},
+            ],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-unknown", games=stored,
+            game_set_sha256=canonical_sha256(stored),
+        )
+    same = [game_a, claimed_b]
+    same_payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, same, group="dg-unknown")],
+        "entities": [
+            _entity(snapshot, 1, gsis="00-0033873"),
+            _entity(snapshot, 2, gsis="00-0034857", team="PHI", game="2024_01_DAL_PHI"),
+        ],
+    }
+    assert _publish(database_url, _mapping(tmp_path, same_payload, "same.json"), scope="same-membership") == 0
+    expanded = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, [game_a, claimed_b, game_c], group="dg-unknown")],
+        "entities": same_payload["entities"],
+    }
+    assert _publish(database_url, _mapping(tmp_path, expanded, "extra.json"), scope="extra-membership") == 0
+    with engine.connect() as conn:
+        same_rows = [row for row in _view(conn, "same-membership") if row["is_selected"]]
+        extra_rows = list(_view(conn, "extra-membership"))
+        assert same_rows and extra_rows
+        assert all(row["source_pool_kind"] == "full_export" for row in same_rows)
+        assert all(row["optimizer_ready"] for row in same_rows)
+        assert _scope_slate_status(conn, "same-membership") == "verified"
+        assert _scope_slate_status(conn, "extra-membership") != "verified"
+        assert not any(row["optimizer_ready"] for row in extra_rows)
+
+
+def test_observed_subset_with_known_kickoffs_can_name_a_larger_slate(engine, database_url, tmp_path):
+    """Rejected premise: known kickoffs turn an observed subset into a closed whole slate.
+
+    DFF games are observed matchups. A reviewed claim may name the larger slate, including
+    when every observed kickoff is already filled. The source stays a subset and not ready.
+    """
+    game_a = {"away": "BUF", "home": "KC", "game_id": "2024_01_BUF_KC", "kickoff_at": "2024-09-08T17:00:00Z"}
+    game_b = {"away": "DAL", "home": "PHI", "game_id": "2024_01_DAL_PHI", "kickoff_at": "2024-09-08T20:25:00Z"}
+    game_c = {"away": "NYJ", "home": "NE", "game_id": "2024_01_NYJ_NE", "kickoff_at": "2024-09-08T17:00:00Z"}
+    with engine.begin() as conn:
+        _world(conn)
+        _game(conn, "2024_01_DAL_PHI", "DAL", "PHI", "2024-09-08", 1)
+        _game(conn, "2024_01_NYJ_NE", "NYJ", "NE", "2024-09-08", 1)
+        snapshot, _sha = _snapshot(
+            conn, source="dff", pool="subset", body=b"subset-known-kicks",
+            rows=[
+                {"status": "valid", "salary": "5000", "native": "D1", "name": "Patrick", "position": "QB", "team": "KC"},
+                {"status": "valid", "salary": "4500", "native": "D2", "name": "Josh", "position": "QB", "team": "PHI"},
+            ],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), games=[game_a, game_b],
+        )
+    payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, [game_a, game_b, game_c], group=None, source="dff")],
+        "entities": [
+            _entity(snapshot, 1, gsis="00-0033873", source="dff"),
+            _entity(snapshot, 2, gsis="00-0034857", team="PHI", game="2024_01_DAL_PHI", source="dff"),
+        ],
+    }
+    payload["slates"][0]["draft_group_id"] = None
+    assert _publish(database_url, _mapping(tmp_path, payload), scope="subset-enriched") == 0
+    with engine.connect() as conn:
+        assert _slate_status(conn, snapshot) == "verified"
+        rows = _view(conn, "subset-enriched")
+        assert rows
+        assert all(row["source_pool_kind"] == "subset" for row in rows if row["source"] == "dff")
+        assert not any(row["optimizer_ready"] for row in rows)
 
 
 def test_reconcile_waits_for_the_active_attempt(engine, database_url, tmp_path):

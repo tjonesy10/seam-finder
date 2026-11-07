@@ -476,8 +476,9 @@ def _candidates(conn) -> list[dict]:
         text(
             """
             SELECT s.source, s.snapshot_id, s.artifact_id, a.sha256 AS artifact_sha, s.parser_version,
-                   s.season, s.season_type, s.week, s.draft_group_id, s.games, s.rules, s.source_pool_kind,
-                   s.metadata, src.row_number, src.row_status, src.salary, src.dk_id, src.dff_player_id,
+                   s.season, s.season_type, s.week, s.draft_group_id, s.games, s.rules, s.game_set_sha256,
+                   s.source_pool_kind, s.metadata, src.row_number, src.row_status, src.salary, src.dk_id,
+                   src.dff_player_id,
                    src.roster_position_raw, src.name_raw, src.team_raw
             FROM salary_private.salary_snapshots s
             JOIN salary_private.salary_artifacts a ON a.artifact_id = s.artifact_id
@@ -502,8 +503,8 @@ def _candidates(conn) -> list[dict]:
         text(
             """
             SELECT s.source, s.snapshot_id, s.artifact_id, a.sha256 AS artifact_sha, s.parser_version,
-                   s.season, s.season_type, s.week, s.draft_group_id, s.games, s.rules, s.source_pool_kind,
-                   s.metadata, r.row_number, r.raw_fields
+                   s.season, s.season_type, s.week, s.draft_group_id, s.games, s.rules, s.game_set_sha256,
+                   s.source_pool_kind, s.metadata, r.row_number, r.raw_fields
             FROM salary_private.salary_snapshots s
             JOIN salary_private.salary_artifacts a ON a.artifact_id = s.artifact_id
             JOIN salary_private.salary_source_rows r
@@ -528,6 +529,7 @@ def _candidates(conn) -> list[dict]:
                 "draft_group_id": row["draft_group_id"],
                 "games": row["games"],
                 "rules": row["rules"],
+                "game_set_sha256": row["game_set_sha256"],
                 "source_pool_kind": row["source_pool_kind"],
                 "metadata": row["metadata"],
                 "row_number": row["row_number"],
@@ -660,10 +662,6 @@ def _game_identity(games) -> list:
     )
 
 
-def _known_whole_slate(games) -> bool:
-    return bool(games) and all(game.get("away") and game.get("home") and game.get("kickoff_at") for game in games)
-
-
 def _match_claim(known: dict, claims: list[dict], used: set[int]) -> int | None:
     if known.get("game_id"):
         for index, item in enumerate(claims):
@@ -677,15 +675,18 @@ def _match_claim(known: dict, claims: list[dict], used: set[int]) -> int | None:
     return None
 
 
-def _known_game_conflict(snapshot_games, claim_games) -> bool:
+def _known_game_conflict(snapshot_games, claim_games, *, closed_membership: bool) -> bool:
     """Known retained facts must agree. A null kickoff may be filled by the claim.
 
-    A snapshot that already records a whole slate, every matchup and kickoff
-    known, keeps that exact membership. Subset evidence may fill unknown fields.
+    Closed membership is the source's verified game set, recorded in
+    game_set_sha256. F005 fills that column when the draft-group list is
+    verified. F006 and F007 leave it null: their games are observed facts,
+    and full_export names the file format. Populated kickoffs are timing
+    completeness and do not open or close that set.
     """
-    if not snapshot_games:
-        return False
     claims = list(claim_games or [])
+    if not snapshot_games:
+        return bool(closed_membership and claims)
     used: set[int] = set()
     for known in snapshot_games:
         index = _match_claim(known, claims, used)
@@ -702,7 +703,7 @@ def _known_game_conflict(snapshot_games, claim_games) -> bool:
         claim_kick = claim.get("kickoff_at")
         if known_kick and claim_kick and known_kick != claim_kick:
             return True
-    return bool(_known_whole_slate(snapshot_games) and len(claims) != len(used))
+    return bool(closed_membership and len(claims) != len(used))
 
 
 def _snapshot_context(conn) -> dict[str, dict]:
@@ -972,7 +973,11 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             hash_ok = supplied == revision
             kickoffs_ok = bool(games) and all(_aware_kickoff(game.get("kickoff_at")) for game in games)
             rules_ok = _classic_rules(rules)
-            games_ok = not _known_game_conflict(sample.get("games"), games)
+            games_ok = not _known_game_conflict(
+                sample.get("games"),
+                games,
+                closed_membership=bool(sample.get("game_set_sha256")),
+            )
             if (
                 claim.get("status") == "verified"
                 and hash_ok

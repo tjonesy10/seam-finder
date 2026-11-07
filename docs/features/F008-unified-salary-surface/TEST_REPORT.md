@@ -103,3 +103,18 @@ On `19ffaede`, `test_known_lobby_set_rejects_an_extra_claimed_game` was red. A l
 A retained set whose matchups and kickoffs are already known now requires the same membership. Extra claimed games are a conflict, so that slate is not verified and not optimizer-ready. A DFF snapshot whose kickoff is null can still receive a reviewed offset on the same opponents and game id: the interpretation stays `verified`, and the row stays `subset` and not optimizer-ready. A known kickoff that disagrees with the claim is still rejected.
 
 `DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication: `254 passed, 2 skipped`. `alembic heads` is `0008`. Mutator remains UNKNOWN.
+
+## Membership scope is not kickoff population
+
+The section above treated a fully populated matchup and kickoff list as a closed slate. That premise is false. Timing completeness and membership scope are independent, and `source_pool_kind=full_export` only names the export format. F007 states that explicitly. The retained signal is `game_set_sha256`: the dictionary fills it only when the game set is verified. F005 writes it for the captured draft-group list. F006 and F007 insert null, so their stored games stay observed facts.
+
+On `1932401` the two crossed cases were red:
+
+| Test | Red result |
+|---|---|
+| `test_verified_game_set_with_unknown_kickoff_keeps_its_membership` | Lobby games A/B with `game_set_sha256` set and one `kickoff_at` null. The same two games with a reviewed kickoff were ready. Adding game C, recomputing the hash, and setting `complete_pool` true still published `verified` and `ready=2`. |
+| `test_observed_subset_with_known_kickoffs_can_name_a_larger_slate` | DFF games A/B with both kickoffs filled and no `game_set_sha256`. A reviewed claim of A/B/C left the interpretation `unresolved` and selected nothing. |
+
+Both are green after the check uses `game_set_sha256` and stops reading kickoff population as membership. The same-membership kickoff fill stays `verified`, `full_export`, and optimizer-ready. The extra game on that verified set is not `verified` and not ready. The observed subset may be a `verified` interpretation of the larger slate and stays `subset` and not optimizer-ready. `test_known_lobby_set_rejects_an_extra_claimed_game` still rejects fully populated lobby A/B plus game C, now because that fixture records `game_set_sha256`. Null-kickoff DFF enrichment and a contradictory known kickoff stay as they were.
+
+`DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication: `256 passed, 2 skipped`. `alembic heads` is `0008`. Previously closed checks were not reopened. Mutator remains UNKNOWN.
