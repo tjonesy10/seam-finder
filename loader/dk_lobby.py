@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+import httpcore
 import httpx
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
@@ -277,12 +278,141 @@ def _login(url: str) -> bool:
     return "login" in path or "signin" in path or "captcha" in path
 
 
+class DeadlineBackend(httpcore.NetworkBackend):
+    """Clamp every TCP, TLS, read, and write to the time still inside one deadline."""
+
+    def __init__(self, deadline_fn, inner: httpcore.NetworkBackend | None = None):
+        self._deadline_fn = deadline_fn
+        self._inner = inner or httpcore.SyncBackend()
+
+    def _allowed(self, timeout: float | None, *, read: bool) -> float:
+        left = self._deadline_fn() - time.monotonic()
+        if left <= 0:
+            if read:
+                raise httpcore.ReadTimeout("budget")
+            raise httpcore.ConnectTimeout("budget")
+        if timeout is None:
+            return left
+        return min(float(timeout), left)
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        allowed = self._allowed(timeout, read=False)
+        stream = self._inner.connect_tcp(
+            host,
+            port,
+            timeout=allowed,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+        return _DeadlineStream(stream, self)
+
+    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        allowed = self._allowed(timeout, read=False)
+        stream = self._inner.connect_unix_socket(path, timeout=allowed, socket_options=socket_options)
+        return _DeadlineStream(stream, self)
+
+    def sleep(self, seconds: float) -> None:
+        self._inner.sleep(self._allowed(seconds, read=False))
+
+
+class _DeadlineStream(httpcore.NetworkStream):
+    def __init__(self, inner: httpcore.NetworkStream, backend: DeadlineBackend):
+        self._inner = inner
+        self._backend = backend
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        return self._inner.read(max_bytes, timeout=self._backend._allowed(timeout, read=True))
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self._inner.write(buffer, timeout=self._backend._allowed(timeout, read=False))
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+        allowed = self._backend._allowed(timeout, read=False)
+        wrapped = self._inner.start_tls(
+            ssl_context,
+            server_hostname=server_hostname,
+            timeout=allowed,
+        )
+        return _DeadlineStream(wrapped, self._backend)
+
+    def get_extra_info(self, info: str):
+        return self._inner.get_extra_info(info)
+
+
+class BudgetHTTPTransport(httpx.BaseTransport):
+    """Installed HTTP stack with a deadline checked before TCP, TLS, and every later read."""
+
+    def __init__(self, deadline_fn, backend: httpcore.NetworkBackend | None = None):
+        import ssl
+
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=ssl.create_default_context(),
+            network_backend=DeadlineBackend(deadline_fn, backend),
+            retries=0,
+        )
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        req = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(
+                scheme=request.url.raw_scheme,
+                host=request.url.raw_host,
+                port=request.url.port,
+                target=request.url.raw_path,
+            ),
+            headers=request.headers.raw,
+            content=request.stream,
+            extensions=request.extensions,
+        )
+        try:
+            resp = self._pool.handle_request(req)
+        except httpcore.ConnectTimeout as exc:
+            raise httpx.ConnectTimeout(str(exc)) from exc
+        except httpcore.ReadTimeout as exc:
+            raise httpx.ReadTimeout(str(exc)) from exc
+        except httpcore.WriteTimeout as exc:
+            raise httpx.WriteTimeout(str(exc)) from exc
+        except httpcore.ConnectError as exc:
+            raise httpx.ConnectError(str(exc)) from exc
+        except httpcore.ReadError as exc:
+            raise httpx.ReadError(str(exc)) from exc
+        except httpcore.NetworkError as exc:
+            raise httpx.NetworkError(str(exc)) from exc
+        except httpcore.ProtocolError as exc:
+            raise httpx.RemoteProtocolError(str(exc)) from exc
+        return httpx.Response(
+            status_code=resp.status,
+            headers=resp.headers,
+            stream=_IterableStream(resp.stream),
+            extensions=resp.extensions,
+        )
+
+    def close(self) -> None:
+        self._pool.close()
+
+
+class _IterableStream(httpx.SyncByteStream):
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __iter__(self):
+        yield from self._chunks
+
+    def close(self) -> None:
+        closer = getattr(self._chunks, "close", None)
+        if closer is not None:
+            closer()
+
+
 class BoundedClient:
     """At most four logical GETs, one same-allowlist redirect, no cookie jar."""
 
     def __init__(self, transport, clock: Clock, sleeper):
         self.client = httpx.Client(
-            transport=transport if transport is not None else httpx.HTTPTransport(),
+            transport=transport if transport is not None else BudgetHTTPTransport(self._deadline_value),
             follow_redirects=False,
             timeout=httpx.Timeout(10.0, read=30.0),
             trust_env=False,
@@ -306,17 +436,15 @@ class BoundedClient:
         except Exception:  # noqa: BLE001 - cancellation must not raise on the timer thread
             return
 
-    def _arm_wall_deadline(self) -> float:
-        """One wall deadline for connect, headers, and body. Phases do not each get a fresh budget."""
+    def _deadline_value(self) -> float:
+        """Absolute monotonic deadline shared by TCP, TLS, headers, and body."""
         if getattr(self, "_wall_deadline", None) is None:
             left = HTTP_BUDGET_S - self._elapsed()
-            if left <= 0:
-                raise CaptureFailure("http_budget_exhausted")
-            self._wall_deadline = time.monotonic() + left
-            self._budget_timer = threading.Timer(left, self._cancel_inflight)
-            self._budget_timer.daemon = True
-            self._budget_timer.start()
-        if time.monotonic() >= self._wall_deadline:
+            self._wall_deadline = time.monotonic() + max(left, 0.0)
+        return self._wall_deadline
+
+    def _arm_wall_deadline(self) -> float:
+        if self._deadline_value() - time.monotonic() <= 0:
             raise CaptureFailure("http_budget_exhausted")
         return self._wall_deadline - time.monotonic()
 
