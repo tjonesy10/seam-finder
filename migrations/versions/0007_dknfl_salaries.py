@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from loader.grants import apply_readonly_grant
 
 revision = "0007"
-down_revision = "0005"
+down_revision = "0006"
 branch_labels = None
 depends_on = None
 

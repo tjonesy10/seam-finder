@@ -2,7 +2,7 @@
 
 Status: implementation evidence for review. Not release-ready. Blocked on merge of F005 PR 19. No production migration, grant, capture, or schedule activation. No season inventory was certified.
 
-Branch: `cursor/f007-dknfl-historical-loader-bb63`. Base: `cursor/f005-dk-lobby-capture-7241` at `1faaee6ee0664b671f63859f5c3ccd7d3c7c2d8a`. Migration `0007` revises `0005`. F006's `0006` is not on this branch. Merging both archive branches onto one line leaves two Alembic heads until a later down-revision stitch.
+Branch: `cursor/f007-dknfl-historical-loader-bb63`. Pull-request base: `cursor/f006-dff-historical-loader-bb63`. F005 PR 19 head merged underneath is `1faaee6ee0664b671f63859f5c3ccd7d3c7c2d8a`. Migration chain on this branch is `0005` → `0006` → `0007`. `alembic heads` prints only `0007`. The loaders do not import each other; the dependency is the revision line.
 
 ## Design
 
@@ -10,13 +10,13 @@ F007 does not import F006. `loader/dknfl_archive.py` parses original DraftKings 
 
 Corrected season, season type, and week are taken from matched `public.games` rows. A missing, ambiguous, or disagreeing game rejects the snapshot and keeps the artifact and ledger. This loader does not call `project_raw_season`, `repeatable_read`, or any other schedule-proof writer, and it does not invent an authority document.
 
-F005-owned files are unchanged on this branch. `tests/test_dk_lobby.py` still expects a flag-on migrate to land on revision `0005`. With `0007` present, that assertion fails. The same assertion already follows alembic head on the F006 branch. It was not copied here.
+F005 runtime files are unchanged. The flag-on assertion in `tests/test_dk_lobby.py` is the copy already on the F006 branch: it follows the current Alembic head. `tests/test_dff_archive.py` uses that same head check on this branch so revision `0007` is not reported as a missing `0006`.
 
 ## Acceptance tests
 
 Command: `DATABASE_URL=postgresql:///seam_f007 pytest tests/test_dknfl_archive.py -q`
 
-Result: `12 passed`. `seam_f007` is a separate local database. `seam_test` was left at the F006 revision and was not reused.
+Those tests, including `test_empty_games_fail_closed`, passed inside the stacked `211 passed` run below.
 
 | AT | Result | Evidence |
 |---|---|---|
@@ -37,9 +37,9 @@ Result: `12 passed`. `seam_f007` is a separate local database. `seam_test` was l
 
 `ruff check loader web tests migrations` passed.
 
-`DATABASE_URL=postgresql:///seam_f007 pytest -q` with local trust authentication: `197 passed, 2 skipped, 1 failed`.
+`DATABASE_URL=postgresql:///seam_linear pytest -q` with local trust authentication, after F006 was merged and `0007` revised `0006`: `211 passed, 2 skipped`. `alembic heads` is `0007`.
 
-The failure is `tests/test_dk_lobby.py::test_production_migrate_stops_before_0004`: flag-on migrate reached revision `0007`, and the unchanged F005 test expects `0005`. Flag-off behavior is still `0003` for a fresh database and `0005` for a database already at `0005`. This branch does not edit that test.
+Flag-on migrate follows the current Alembic head in both `tests/test_dk_lobby.py` (brought by the F006 merge) and `tests/test_dff_archive.py` (updated on this branch so a later revision is not mistaken for a missing `0006`). Flag-off behavior is still `0003` for a fresh database and `0005` for a database already at `0005`.
 
 `gitleaks detect --source . --redact --no-banner --no-git` reported `no leaks found`.
 
@@ -47,30 +47,48 @@ UncleBob Mutator `--changed`: UNKNOWN. `mutator` is not on `PATH` and `/agent/re
 
 ## Offline archive load
 
-Isolated database `seam_dknfl`, migrated to head (`0007`). `public.games` was empty. `DK_SCHEDULE_AUTHORITY_SHA256` was unset. No schedule was invented.
+### Negative: empty games
+
+`test_empty_games_fail_closed` keeps this case in the suite. A two-game file with `games` empty exits 1, reason `game_evidence_missing`, snapshot null, ledger rows kept, and no `dknfl_salaries` rows.
+
+An earlier isolated database with no games at all returned `selected=62 succeeded=0 failed=62` (`game_evidence_missing=61`, `game_info_unparsed=1`), snapshots 0, ledger 27788. That run is not a successful load.
+
+### Positive: independent nflverse schedule
+
+No schedule file was attached to the archive. The repository fixture has 7 games, which cannot cover 2021–2024. The public nflverse schedules release was read once with the existing release URL. Downloads that return 401, 403, or 429 were not retried. Bytes were staged outside the repo.
+
+| Object | SHA-256 | Publisher version |
+|---|---|---|
+| `schedules/games.parquet` (523439 bytes) | `0bc6e1221d68535848e58b37c3adf298907be2a3759f7d3abb986c7e7f8587e2` | `2026-11-06 20:46:43 EST` |
+| `teams/teams_colors_logos.parquet` (13361 bytes) | `46955c6de3ff83e6ce229d278bc56a7772be287854f4b3a9666b151339568266` | `2026-03-27 11:49:45 EDT` |
+
+Teams and games for 2021–2026 were loaded only by `loader.run` from that local mirror into database `seam_archive` after migrations through `0007`. Game rows were not built from salary Game Info. `DK_SCHEDULE_AUTHORITY_SHA256` was unset. This is not an F005 schedule-authority certificate.
 
 Command: `python -m loader.dknfl_archive --archive-root /tmp/dk-historical-gap --manifest /tmp/dk-historical-gap/MANIFEST.csv --trigger local`
 
-Stdout and stderr:
-
 ```
-failed_reasons=game_evidence_missing:61,game_info_unparsed:1
-attribution=Archived DraftKings salary export via pureslurp/DKNFL (GitHub). Not affiliated with DraftKings.
-selected=62 succeeded=0 failed=62 reused=0 not_selected=80 rows_read=27788 rows_valid=27773 rows_rejected=15
+failed_reasons=game_evidence_missing:35,game_info_unparsed:1
+selected=62 succeeded=26 failed=36 reused=0 not_selected=80 rows_read=27788 rows_valid=27773 rows_rejected=15
 ```
 
-Exit 1. Aggregates:
+Exit 1.
 
 | Check | Value |
 |---|---|
-| Snapshots | 0 |
-| `dknfl_salaries` rows | 0 |
-| Ledger rows | 27788 |
-| DKNFL observations with null snapshot | 62 |
-| Load runs `game_evidence_missing` | 61 |
-| Load runs `game_info_unparsed` | 1 |
+| Snapshots | 26, all `full_export`, `draft_group_id` null, `optimizer_ready` not true |
+| Snapshot seasons | 2022: 3, 2023: 12, 2024: 11 |
+| `dknfl_salaries` rows | 7663 |
+| Ledger rows, including failed files | 27788 |
+| `game_evidence_missing` | 35 |
+| `game_info_unparsed` | 1 |
 | DKNFL CSV artifacts / bytes | 62 / 2819068 |
-| Control artifacts | 1 CSV (698 bytes) and 2 manifest-kind documents (87126 bytes) |
-| Lobby rows | 0 |
 
-Sixty-one files failed because no loaded game matched their Game Info. One file failed because a non-placeholder Game Info value did not parse. Raw CSV bytes and every parseable ledger row were kept. No snapshot was published. This is not a certified season and not an optimizer-ready pool. The local nflverse fixture has 7 games and was not used as a stand-in for 2021–2024.
+The one `game_info_unparsed` file has a non-placeholder Game Info value that is not `AWAY@HOME date time ET`. Its CSV and ledger remain; it has no snapshot.
+
+The 35 missing-evidence files do not have an exact `away_team`/`home_team`/`gameday` row. Thirty-four of them contain the token `LAR` on a date whose independent schedule row uses `LA` for the Rams. They stay rejected. One of those dates, 2024-01-14 `LAR@DET`, also has kickoff 20:15 in the file and 20:00 in the schedule, so it would still fail a clock check. No abbreviation crosswalk was applied, and those 35 are not successes.
+
+### DFF companion readback on the same database
+
+`python -m loader.dff_archive` on `seam_archive` exited 0: `selected=80 succeeded=80 failed=0 rows_read=17026`.
+
+For all 80 manifest-selected DFF files, the snapshot metadata `companion_sha256` and `companion_artifact_id` were read back. The artifact row is `source=dff`, `artifact_kind=html_gzip`, and `sha256(body)` equals the stored `sha256`, the metadata hash, and the SHA-256 of the staged `evidence/dff-{season}-week{ww}.html.gz` bytes. Result: 80/80. The hash values are not copied here.

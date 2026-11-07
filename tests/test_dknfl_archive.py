@@ -717,6 +717,26 @@ def test_at11_grants_leave_other_sources(database_url, engine, tmp_path, monkeyp
         admin.dispose()
 
 
+def test_empty_games_fail_closed(database_url, engine, tmp_path):
+    assert _scalar(engine, "SELECT count(*) FROM games") == 0
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/empty-games.csv", "season": 2022, "week": 1, "rows": _two_players()}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        """
+        SELECT reason_code, snapshot_id FROM salary_private.salary_observations
+        WHERE original_path = 'raw/empty-games.csv'
+        """,
+    )[0]
+    assert observed["reason_code"] == "game_evidence_missing"
+    assert observed["snapshot_id"] is None
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dknfl_salaries") == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_source_rows") == 2
+
+
 def test_at12_attribution_and_scanner(database_url, engine, tmp_path, capsys, monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network")))
     with engine.begin() as conn:

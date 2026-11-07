@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -895,12 +896,13 @@ def test_at11_grants_guards_and_gate(database_url, engine, tmp_path, monkeypatch
             assert conn.execute(text("SELECT to_regclass('salary_private.dk_lobby_salaries')")).scalar() is not None
         check.dispose()
         assert migrate_production(gated, "true") == "head"
+        head_rev = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
         check = create_engine(gated)
         with check.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head_rev
             assert conn.execute(text("SELECT to_regclass('salary_private.dff_salaries')")).scalar() is not None
         check.dispose()
-        assert migrate_production(gated, None) == "0006"
+        assert migrate_production(gated, None) == head_rev
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)
