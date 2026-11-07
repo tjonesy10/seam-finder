@@ -67,6 +67,15 @@ def upgrade() -> None:
         sa.Column("effective_at", sa.DateTime(timezone=True)),
         sa.Column("details", JSONB, nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("loaded_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_salary_interpretations_evidence_sha",
+        ),
+        sa.CheckConstraint(
+            "slate_revision_sha256 IS NULL OR slate_revision_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_salary_interpretations_slate_sha",
+        ),
         sa.CheckConstraint(
             "status IN ('verified', 'unresolved', 'ambiguous', 'rejected', 'legacy_unknown')",
             name="ck_salary_interpretations_status",
@@ -120,6 +129,11 @@ def upgrade() -> None:
         ),
         sa.Column("committed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("summary", JSONB, nullable=False),
+        sa.Column("loaded_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "input_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_salary_selection_batches_input_sha",
+        ),
         sa.UniqueConstraint(
             "selection_scope",
             "cutoff_at",
@@ -204,6 +218,11 @@ def upgrade() -> None:
         sa.Column("salary_selected", sa.Numeric(10, 2)),
         sa.Column("quality_flags", JSONB, nullable=False),
         sa.Column("alternative_refs", JSONB, nullable=False),
+        sa.Column("loaded_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "slate_revision_sha256 IS NULL OR slate_revision_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_salary_selection_rows_slate_sha",
+        ),
         schema="salary_private",
     )
     op.create_index(

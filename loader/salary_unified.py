@@ -13,15 +13,16 @@ import os
 import sys
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
 
 from loader.salary_private import (
+    CAPTURE_LOCK,
     OBJECT_LIMIT,
     PoolKind,
     PrivateWriteError,
@@ -42,8 +43,8 @@ ROTOGURU_DK_CLASSIC_ATTRIBUTION = (
 PARSER_VERSION = "f008.1"
 DATASET = "dk_salary_unified"
 PUBLIC_SOURCE_URL = "dk_salary_unified"
-PUBLISH_LOCK = 582008
 OFFICIAL = {Source.F004_ADAPTER.value, Source.DK_LOBBY.value}
+CLASSIC_SLOTS = {"QB", "RB", "WR", "TE", "FLEX", "DST"}
 ARCHIVE = {Source.DKNFL.value, Source.DFF.value}
 PRIORITY = {
     Source.F004_ADAPTER.value: 0,
@@ -161,8 +162,9 @@ def _pairs(raw) -> dict:
     return {}
 
 
-def _store_artifact(conn, *, source: str, body: bytes, kind: str, now: datetime) -> tuple[int, str]:
+def _store_artifact(conn, *, source: str, body: bytes, kind: str, now: datetime, spent: dict) -> tuple[int, str]:
     digest = sha256_bytes(body)
+    spent["bytes"] = int(spent.get("bytes", 0)) + len(body)
     existing = conn.execute(
         text(
             """
@@ -176,7 +178,7 @@ def _store_artifact(conn, *, source: str, body: bytes, kind: str, now: datetime)
         if bytes(existing.body) != body:
             raise UnifiedError("artifact_conflict")
         return int(existing.artifact_id), digest
-    block = budget_block(conn, object_bytes=len(body), invocation_bytes=len(body))
+    block = budget_block(conn, object_bytes=len(body), invocation_bytes=spent["bytes"])
     if block is not None:
         raise UnifiedError(block.value)
     row = conn.execute(
@@ -327,7 +329,7 @@ def _observe(conn, *, run_id, snapshot_id, source, now, artifact_id) -> UUID:
     return observation_id
 
 
-def _adapt_f003(conn, now: datetime) -> None:
+def _adapt_f003(conn, now: datetime, spent: dict) -> None:
     rows = conn.execute(
         text(
             """
@@ -359,7 +361,7 @@ def _adapt_f003(conn, now: datetime) -> None:
         ]
         body = json.dumps(image, sort_keys=True).encode()
         artifact_id, _digest = _store_artifact(
-            conn, source=Source.F003_ADAPTER.value, body=body, kind="adapter_row_image", now=now
+            conn, source=Source.F003_ADAPTER.value, body=body, kind="adapter_row_image", now=now, spent=spent
         )
         _ledger(conn, artifact_id, image, now)
         _ensure_snapshot(
@@ -382,7 +384,7 @@ def _adapt_f003(conn, now: datetime) -> None:
         )
 
 
-def _adapt_f004(conn, now: datetime) -> None:
+def _adapt_f004(conn, now: datetime, spent: dict) -> None:
     rows = conn.execute(
         text(
             """
@@ -419,7 +421,7 @@ def _adapt_f004(conn, now: datetime) -> None:
         ]
         body = json.dumps(image, sort_keys=True).encode()
         artifact_id, _sha = _store_artifact(
-            conn, source=Source.F004_ADAPTER.value, body=body, kind="adapter_row_image", now=now
+            conn, source=Source.F004_ADAPTER.value, body=body, kind="adapter_row_image", now=now, spent=spent
         )
         _ledger(conn, artifact_id, image, now)
         _ensure_snapshot(
@@ -431,7 +433,12 @@ def _adapt_f004(conn, now: datetime) -> None:
             week=image[0]["week"],
             season_type="REG",
             pool=PoolKind.ADAPTER_CURRENT.value,
-            metadata={"raw_retained": False, "mixed_hash_cohort": mixed, "row_count": len(image)},
+            metadata={
+                "raw_retained": False,
+                "mixed_hash_cohort": mixed,
+                "row_count": len(image),
+                "source_sha256": digest,
+            },
             now=now,
             games=[],
             rules=rules,
@@ -509,7 +516,16 @@ def _candidates(conn) -> list[dict]:
                 "preserved_game_id": image.get("game_id"),
             }
         )
-    return found
+    current_hashes = {
+        row[0]
+        for row in conn.execute(text("SELECT DISTINCT source_sha256 FROM dk_classic_slate")).all()
+    }
+    return [
+        row
+        for row in found
+        if row["source"] != Source.F004_ADAPTER.value
+        or (row.get("metadata") or {}).get("source_sha256") in current_hashes
+    ]
 
 
 def _observations(conn, cutoff: datetime) -> dict:
@@ -567,9 +583,44 @@ def _plausible_reject(row: dict) -> bool:
 def _groups_link(left: dict, right: dict) -> bool:
     left_group = left.get("group")
     right_group = right.get("group")
-    if not left_group or not right_group or left_group == right_group:
+    if left_group and right_group:
+        return left_group == right_group or (
+            right_group in left["equivalents"] and left_group in right["equivalents"]
+        )
+    if not left_group and not right_group:
         return True
-    return right_group in left["equivalents"] and left_group in right["equivalents"]
+    known = left if left_group else right
+    other = right if left_group else left
+    return bool(known.get("group")) and known["group"] in other["equivalents"]
+
+
+def _aware_kickoff(value) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    text_value = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text_value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _classic_rules(rules: dict | None) -> bool:
+    if not isinstance(rules, dict) or rules.get("rules_id") != "classic":
+        return False
+    slots = rules.get("roster_slots")
+    cap = rules.get("salary_cap")
+    if not isinstance(slots, list) or not CLASSIC_SLOTS <= set(slots):
+        return False
+    return isinstance(cap, int) and cap > 0 and not isinstance(cap, bool)
+
+
+def _same_games(snapshot_games, claim_games) -> bool:
+    if not snapshot_games:
+        return True
+    def pairs(games):
+        return {(item.get("away"), item.get("home")) for item in games or []}
+    return pairs(snapshot_games) == pairs(claim_games)
 
 
 def _validate_refs(conn, mapping: dict, rows: list[dict]) -> None:
@@ -644,12 +695,60 @@ def _entity_status(row: dict, spec: dict | None) -> dict:
     }
 
 
+def _entity_consistent(conn, row: dict, entity: dict) -> bool:
+    if entity["status"] != "verified":
+        return True
+    roster = (row.get("roster_position_raw") or "").upper()
+    if entity["entity_key"] and entity["entity_key"].startswith("dst:") and "QB" in roster.split("/"):
+        return False
+    if entity["entity_key"] and entity["entity_key"].startswith("player:") and "DST" in roster:
+        return False
+    team = entity.get("team_abbr")
+    game_id = entity.get("game_id")
+    if entity["entity_key"] and entity["entity_key"].startswith("player:") and (not game_id or not team):
+        return False
+    if not game_id:
+        return True
+    game = conn.execute(
+        text("SELECT season, week, away_team, home_team FROM games WHERE game_id = :game_id"),
+        {"game_id": game_id},
+    ).one_or_none()
+    if game is None:
+        return False
+    if row.get("season") is not None and int(game.season) != int(row["season"]):
+        return False
+    if row.get("week") is not None and int(game.week) != int(row["week"]):
+        return False
+    return not (team and team not in {game.away_team, game.home_team})
+
+
 def _latest(items: list[dict], key) -> dict:
     return max(items, key=key)
 
 
-def _pick_anchor(nodes: list[dict], choice: dict | None) -> dict | None:
+def _source_blockers(nodes: list[dict], timeline: list[dict]) -> set[str]:
+    if not nodes:
+        return set()
+    key, revision = nodes[0]["key"], nodes[0]["revision"]
+    grouped: dict[str, list] = defaultdict(list)
+    for item in timeline:
+        if item["key"] == key and item["revision"] == revision:
+            grouped[item["source"]].append(item)
+    blocked = set()
+    for source, items in grouped.items():
+        latest = _latest(items, lambda item: (item["observed"], item["sha"], str(item["snapshot_id"])))
+        if not latest["complete"]:
+            blocked.add(source)
+    return blocked
+
+
+def _pick_anchor(nodes: list[dict], choice: dict | None, timeline: list[dict] | None = None) -> dict | None:
+    blocked_sources = _source_blockers(nodes, timeline or [])
     if choice is not None:
+        if choice and blocked_sources:
+            chosen_source = next((node["source"] for node in nodes if str(node["snapshot_id"]) == str(choice["snapshot_id"])), None)
+            if chosen_source in blocked_sources:
+                return None
         chosen = next((node for node in nodes if str(node["snapshot_id"]) == str(choice["snapshot_id"])), None)
         if chosen is None or chosen.get("observed") is None:
             raise UnifiedError("bad_mapping_reference")
@@ -663,7 +762,7 @@ def _pick_anchor(nodes: list[dict], choice: dict | None) -> dict | None:
     blocked = set()
     for source, items in by_source.items():
         shas = {item["sha"] for item in items}
-        if source in ARCHIVE and len(shas) > 1:
+        if source in blocked_sources or (source in ARCHIVE and len(shas) > 1):
             blocked.add(source)
             continue
         if source == Source.DK_LOBBY.value:
@@ -708,6 +807,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
     entity_of = {(str(item["snapshot_id"]), int(item["row_number"])): item for item in mapping["entities"]}
     interpretations = []
     nodes = []
+    timeline = []
     slate_meta = {}
     for snapshot_id, snapshot_rows in by_snapshot.items():
         sample = snapshot_rows[0]
@@ -734,12 +834,16 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             if basis != "source_loaded_at":
                 effective = _instant(claim.get("effective_at"))
             hash_ok = supplied == revision
-            explicit_games = bool(games)
+            kickoffs_ok = bool(games) and all(_aware_kickoff(game.get("kickoff_at")) for game in games)
+            rules_ok = _classic_rules(rules)
+            games_ok = _same_games(sample.get("games"), games)
             if (
                 claim.get("status") == "verified"
                 and hash_ok
                 and claim.get("complete_pool") is True
-                and explicit_games
+                and kickoffs_ok
+                and rules_ok
+                and games_ok
             ):
                 status = "verified"
                 complete = True
@@ -768,6 +872,18 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                 "details": {"complete_pool": complete, "method": None if claim is None else claim.get("reason")},
             }
         )
+        if observations.get(snapshot_id) is not None and key and status != "legacy_unknown":
+            timeline.append(
+                {
+                    "snapshot_id": snapshot_id,
+                    "source": sample["source"],
+                    "sha": sample["artifact_sha"],
+                    "key": key,
+                    "revision": revision,
+                    "observed": observations[snapshot_id]["observed_at"],
+                    "complete": complete,
+                }
+            )
         if status == "verified" and observations.get(snapshot_id) is not None:
             nodes.append(
                 {
@@ -818,7 +934,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                 family_of[node["snapshot_id"]] = {"anchor": None, "ambiguous": True, "key": token[0], "revision": token[1], "nodes": members}
             continue
         choice = choices.get(token)
-        anchor = _pick_anchor(members, choice)
+        anchor = _pick_anchor(members, choice, timeline)
         for node in members:
             family_of[node["snapshot_id"]] = {
                 "anchor": None if anchor is None else anchor["snapshot_id"],
@@ -832,6 +948,14 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
     for row in rows:
         spec = entity_of.get((str(row["snapshot_id"]), int(row["row_number"])))
         entity = _entity_status(row, spec)
+        if not _entity_consistent(conn, row, entity):
+            entity = {
+                "status": "unresolved",
+                "entity_key": None,
+                "gsis_id": None,
+                "team_abbr": None,
+                "game_id": None,
+            }
         entity_for[(row["snapshot_id"], row["row_number"])] = entity
         meta = slate_meta[row["snapshot_id"]]
         interpretations.append(
@@ -870,8 +994,18 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
         alternatives = defaultdict(list)
         other_pools = []
         if family is not None and anchor_id is not None:
+            latest_by_source: dict[str, dict] = {}
             for node in family["nodes"]:
-                if node["snapshot_id"] == anchor_id:
+                current = latest_by_source.get(node["source"])
+                if current is None or (node["observed"], node["sha"], str(node["snapshot_id"])) > (
+                    current["observed"],
+                    current["sha"],
+                    str(current["snapshot_id"]),
+                ):
+                    latest_by_source[node["source"]] = node
+            latest_ids = {node["snapshot_id"] for node in latest_by_source.values()}
+            for node in family["nodes"]:
+                if node["snapshot_id"] == anchor_id or node["snapshot_id"] not in latest_ids:
                     continue
                 other = []
                 for row in by_snapshot[node["snapshot_id"]]:
@@ -915,6 +1049,14 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             if key:
                 entity_counts[key] += 1
         duplicate_pool = any(count > 1 for count in entity_counts.values())
+        native_counts: dict[str, int] = defaultdict(int)
+        for row in anchor_rows:
+            if row["row_status"] != "valid" or _blank_placeholder(row):
+                continue
+            native = row.get("dk_id") or row.get("dff_player_id")
+            if native:
+                native_counts[str(native)] += 1
+        duplicate_native = any(count > 1 for count in native_counts.values())
         flags_for = {}
         disagreement = False
         nonpositive = False
@@ -943,7 +1085,11 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             flags_for[(row["snapshot_id"], row["row_number"])] = (flags, refs)
         if disagreement:
             disagreement_count += 1
-        resolved = False
+        disputed = set()
+        for (snapshot_id, row_number), (flags, _refs) in flags_for.items():
+            if "disagreement" in flags:
+                disputed.add(entity_for[(snapshot_id, row_number)]["entity_key"])
+        cleared = set()
         cross_source = False
         for resolution in mapping["resolutions"]:
             if (resolution.get("canonical_slate_key"), resolution.get("slate_revision_sha256")) != (
@@ -952,10 +1098,22 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             ):
                 continue
             chosen = resolution.get("chosen_ref") or {}
+            entity_key = resolution.get("entity_key")
             if str(chosen.get("snapshot_id")) != str(anchor_id):
                 cross_source = True
-            else:
-                resolved = True
+                continue
+            matched = next(
+                (
+                    row
+                    for row in anchor_rows
+                    if int(row["row_number"]) == int(chosen.get("row_number") or 0)
+                    and entity_for[(row["snapshot_id"], row["row_number"])]["entity_key"] == entity_key
+                ),
+                None,
+            )
+            if matched is not None and entity_key:
+                cleared.add(entity_key)
+        unresolved_disputes = {item for item in disputed if item and item not in cleared}
         blocked = (
             anchor_id is None
             or ambiguous
@@ -964,11 +1122,12 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             or chronology
             or unresolved_member
             or duplicate_pool
+            or duplicate_native
             or nonpositive
             or membership
             or anchor_source == Source.DFF.value
             or anchor_pool in {PoolKind.SUBSET.value, PoolKind.LEGACY_UNKNOWN.value}
-            or (disagreement and not resolved)
+            or bool(unresolved_disputes)
             or cross_source
             or not (anchor_node and anchor_node.get("complete"))
         )
@@ -1034,7 +1193,8 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                     "canonical_slate_key": shown_key,
                     "slate_revision_sha256": shown_rev,
                     "entity_key": entity["entity_key"],
-                    "is_selected": selected,
+                    "entity_status": entity["status"],
+                "is_selected": selected,
                     "pool_ready": pool_ok,
                     "optimizer_ready": pool_ok and anchor_source != Source.DFF.value,
                     "salary_selected": row["salary"] if selected else None,
@@ -1054,31 +1214,100 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
     return output, summary, interpretations
 
 
+def _empty_coverage() -> dict:
+    return {
+        "raw": 0,
+        "valid": 0,
+        "skill": 0,
+        "dst": 0,
+        "mapped": 0,
+        "dst_mapped": 0,
+        "unmapped": 0,
+        "unresolved": 0,
+        "ambiguous": 0,
+        "slate_verified": 0,
+        "slate_unknown": 0,
+        "full_export": 0,
+        "subset": 0,
+        "legacy_unknown": 0,
+        "adapter_current": 0,
+    }
+
+
+def _is_dst_row(row: dict) -> bool:
+    return "DST" in f"{row.get('roster_position_raw') or ''}"
+
+
 def _summary(rows, output, disagreement_count) -> dict:
-    valid = [row for row in rows if row["row_status"] == "valid"]
-    skill = [
-        row
-        for row in valid
-        if "DST" not in f"{row.get('roster_position_raw') or ''}"
-    ]
-    ready = [row for row in output if row["optimizer_ready"]]
+    by_source: dict[str, dict] = {}
+    by_snapshot: dict[str, dict] = {}
+    produced = {(str(row["snapshot_id"]), int(row["row_number"])): row for row in output}
+    mapped_skill = 0
+    skill_total = 0
+    for row in rows:
+        source_bucket = by_source.setdefault(row["source"], _empty_coverage())
+        snap_bucket = by_snapshot.setdefault(str(row["snapshot_id"]), _empty_coverage())
+        snap_bucket["source"] = row["source"]
+        pool = row.get("source_pool_kind")
+        for bucket in (source_bucket, snap_bucket):
+            bucket["raw"] += 1
+            if pool in bucket:
+                bucket[pool] += 1
+            if row["row_status"] == "valid":
+                bucket["valid"] += 1
+                if _is_dst_row(row):
+                    bucket["dst"] += 1
+                else:
+                    bucket["skill"] += 1
+        item = produced.get((str(row["snapshot_id"]), int(row["row_number"])))
+        status = None if item is None else item.get("entity_status")
+        verified_slate = bool(item and item.get("slate_revision_sha256") and item.get("entity_status") != "legacy_unknown")
+        for bucket in (source_bucket, snap_bucket):
+            if verified_slate:
+                bucket["slate_verified"] += 1
+            else:
+                bucket["slate_unknown"] += 1
+        if row["row_status"] != "valid":
+            continue
+        if _is_dst_row(row):
+            if status == "verified":
+                source_bucket["dst_mapped"] += 1
+                snap_bucket["dst_mapped"] += 1
+            continue
+        skill_total += 1
+        if status == "verified":
+            mapped_skill += 1
+            source_bucket["mapped"] += 1
+            snap_bucket["mapped"] += 1
+        else:
+            source_bucket["unmapped"] += 1
+            snap_bucket["unmapped"] += 1
+            if status == "ambiguous":
+                source_bucket["ambiguous"] += 1
+                snap_bucket["ambiguous"] += 1
+            else:
+                source_bucket["unresolved"] += 1
+                snap_bucket["unresolved"] += 1
 
     def rate(num, den):
         if den == 0:
             return None
         return {"numerator": num, "denominator": den}
 
+    valid = [row for row in rows if row["row_status"] == "valid"]
     return {
         "raw_records": len(rows),
         "parsed_records": len(rows),
         "valid_salary_records": len(valid),
-        "skill_records": len(skill),
-        "dst_records": len(valid) - len(skill),
+        "skill_records": skill_total,
+        "dst_records": sum(1 for row in valid if _is_dst_row(row)),
         "selected_rows": sum(1 for row in output if row["is_selected"]),
-        "ready_rows": len(ready),
+        "ready_rows": sum(1 for row in output if row["optimizer_ready"]),
         "disagreement_count": disagreement_count,
         "blank_placeholders": sum(_blank_placeholder(row) for row in rows),
-        "rates": {"skill_mapped": rate(len(ready), len(skill))},
+        "by_source": by_source,
+        "by_snapshot": by_snapshot,
+        "rates": {"skill_mapped": rate(mapped_skill, skill_total)},
     }
 
 
@@ -1107,10 +1336,10 @@ def _insert_interpretation(conn, item, version, evidence_sha, evidence_artifact,
             INSERT INTO salary_private.salary_interpretations (
                 interpretation_id, snapshot_id, row_number, mapping_version, evidence_sha256,
                 evidence_artifact_id, status, entity_key, gsis_id, team_abbr, game_id,
-                canonical_slate_key, slate_revision_sha256, effective_at, details, created_at
+                canonical_slate_key, slate_revision_sha256, effective_at, details, created_at, loaded_at
             ) VALUES (
                 :id, :snapshot, :row_number, :version, :sha, :artifact, :status, :entity,
-                :gsis, :team, :game, :slate_key, :slate_sha, :effective, CAST(:details AS jsonb), :now
+                :gsis, :team, :game, :slate_key, :slate_sha, :effective, CAST(:details AS jsonb), :now, :now
             )
             """
         ),
@@ -1146,6 +1375,8 @@ def _input_sha(version: str, evidence_sha: str, rows: list[dict]) -> str:
                     row["row_number"],
                     row["is_selected"],
                     row["pool_ready"],
+                    None if row["observation_id"] is None else str(row["observation_id"]),
+                    tuple(row["quality_flags"]["flags"]),
                     None if row["salary_selected"] is None else str(row["salary_selected"]),
                 )
                 for row in rows
@@ -1189,106 +1420,76 @@ def run(database_url: str, selection_scope: str, as_of: str, mapping_file, trigg
             print(f"reason={exc.reason}")
             return 1
         evidence_sha = sha256_bytes(body)
+        spent = {"bytes": 0}
         with engine.connect() as conn:
-            run_id = _open_run(conn, trigger, now)
-            with _tx(conn):
-                conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": PUBLISH_LOCK})
-                artifact_id, _digest = _store_artifact(
-                    conn, source=Source.CONTROL.value, body=body, kind="mapping", now=now
-                )
-                _adapt_f003(conn, now)
-                _adapt_f004(conn, now)
-                _observe_new_adapters(conn, run_id, now)
-                built, summary, interpretations = _build(conn, mapping, cutoff)
-                version = str(mapping["mapping_version"])
-                input_sha = _input_sha(version, evidence_sha, built)
-                existing = conn.execute(
-                    text(
-                        """
-                        SELECT selection_id FROM salary_private.salary_selection_batches
-                        WHERE selection_scope = :scope AND cutoff_at = :cutoff
-                          AND mapping_version = :version AND input_sha256 = :sha
-                        """
-                    ),
-                    {"scope": selection_scope, "cutoff": cutoff, "version": version, "sha": input_sha},
-                ).one_or_none()
-                if existing is None:
-                    selection_id = uuid4()
-                    ids = {}
-                    for item in interpretations:
-                        ids[(item["snapshot_id"], item["row_number"])] = _insert_interpretation(
-                            conn, item, version, evidence_sha, artifact_id, now
-                        )
-                    conn.execute(
+            conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": CAPTURE_LOCK})
+            try:
+                run_id = _open_run(conn, trigger, now)
+                with conn.execution_options(isolation_level="REPEATABLE READ").begin():
+                    now = datetime.now(cutoff.tzinfo)
+                    artifact_id, _digest = _store_artifact(
+                        conn, source=Source.CONTROL.value, body=body, kind="mapping", now=now, spent=spent
+                    )
+                    _adapt_f003(conn, now, spent)
+                    _adapt_f004(conn, now, spent)
+                    _observe_new_adapters(conn, run_id, now)
+                    built, summary, interpretations = _build(conn, mapping, cutoff)
+                    version = str(mapping["mapping_version"])
+                    input_sha = _input_sha(version, evidence_sha, built)
+                    existing = conn.execute(
                         text(
                             """
-                            INSERT INTO salary_private.salary_selection_batches (
-                                selection_id, selection_scope, cutoff_at, mapping_version, input_sha256,
-                                load_run_id, committed_at, summary
-                            ) VALUES (
-                                :id, :scope, :cutoff, :version, :sha, :run_id, :now, CAST(:summary AS jsonb)
-                            )
+                            SELECT selection_id FROM salary_private.salary_selection_batches
+                            WHERE selection_scope = :scope AND cutoff_at = :cutoff
+                              AND mapping_version = :version AND input_sha256 = :sha
                             """
                         ),
-                        {
-                            "id": selection_id,
-                            "scope": selection_scope,
-                            "cutoff": cutoff,
-                            "version": version,
-                            "sha": input_sha,
-                            "run_id": run_id,
-                            "now": now,
-                            "summary": json.dumps(summary),
-                        },
-                    )
-                    for row in built:
-                        if fault == "force_duplicate" and row["is_selected"]:
-                            row = dict(row)
+                        {"scope": selection_scope, "cutoff": cutoff, "version": version, "sha": input_sha},
+                    ).one_or_none()
+                    if existing is None:
+                        selection_id = uuid4()
+                        ids = {}
+                        for item in interpretations:
+                            ids[(item["snapshot_id"], item["row_number"])] = _insert_interpretation(
+                                conn, item, version, evidence_sha, artifact_id, now
+                            )
                         conn.execute(
                             text(
                                 """
-                                INSERT INTO salary_private.salary_selection_rows (
-                                    selection_id, snapshot_id, row_number, interpretation_id, slate_interpretation_id,
-                                    observation_id, anchor_snapshot_id, canonical_slate_key, slate_revision_sha256,
-                                    entity_key, is_selected, pool_ready, optimizer_ready, salary_selected,
-                                    quality_flags, alternative_refs
+                                INSERT INTO salary_private.salary_selection_batches (
+                                    selection_id, selection_scope, cutoff_at, mapping_version, input_sha256,
+                                    load_run_id, committed_at, summary, loaded_at
                                 ) VALUES (
-                                    :selection, :snapshot, :row_number, :entity, :slate, :observation, :anchor,
-                                    :slate_key, :slate_sha, :entity_key, :selected, :pool, :ready, :salary,
-                                    CAST(:flags AS jsonb), CAST(:alts AS jsonb)
+                                    :id, :scope, :cutoff, :version, :sha, :run_id, :now, CAST(:summary AS jsonb), :now
                                 )
                                 """
                             ),
                             {
-                                "selection": selection_id,
-                                "snapshot": row["snapshot_id"],
-                                "row_number": row["row_number"],
-                                "entity": ids.get((row["snapshot_id"], row["row_number"])),
-                                "slate": ids.get((row["snapshot_id"], None)),
-                                "observation": row["observation_id"],
-                                "anchor": row["anchor_snapshot_id"],
-                                "slate_key": row["canonical_slate_key"],
-                                "slate_sha": row["slate_revision_sha256"],
-                                "entity_key": row["entity_key"],
-                                "selected": row["is_selected"],
-                                "pool": row["pool_ready"],
-                                "ready": row["optimizer_ready"],
-                                "salary": row["salary_selected"],
-                                "flags": json.dumps(row["quality_flags"]),
-                                "alts": json.dumps(row["alternative_refs"]),
+                                "id": selection_id,
+                                "scope": selection_scope,
+                                "cutoff": cutoff,
+                                "version": version,
+                                "sha": input_sha,
+                                "run_id": run_id,
+                                "now": now,
+                                "summary": json.dumps(summary),
                             },
                         )
-                        if fault == "force_duplicate" and row["is_selected"]:
+                        for row in built:
+                            if fault == "force_duplicate" and row["is_selected"]:
+                                row = dict(row)
                             conn.execute(
                                 text(
                                     """
                                     INSERT INTO salary_private.salary_selection_rows (
-                                        selection_id, snapshot_id, row_number, is_selected, pool_ready,
-                                        optimizer_ready, quality_flags, alternative_refs, entity_key,
-                                        canonical_slate_key, slate_revision_sha256
+                                        selection_id, snapshot_id, row_number, interpretation_id, slate_interpretation_id,
+                                        observation_id, anchor_snapshot_id, canonical_slate_key, slate_revision_sha256,
+                                        entity_key, is_selected, pool_ready, optimizer_ready, salary_selected,
+                                        quality_flags, alternative_refs, loaded_at
                                     ) VALUES (
-                                        :selection, :snapshot, :row_number, true, false,
-                                        false, '{}'::jsonb, '[]'::jsonb, :entity_key, :slate_key, :slate_sha
+                                        :selection, :snapshot, :row_number, :entity, :slate, :observation, :anchor,
+                                        :slate_key, :slate_sha, :entity_key, :selected, :pool, :ready, :salary,
+                                        CAST(:flags AS jsonb), CAST(:alts AS jsonb), :now
                                     )
                                     """
                                 ),
@@ -1296,15 +1497,54 @@ def run(database_url: str, selection_scope: str, as_of: str, mapping_file, trigg
                                     "selection": selection_id,
                                     "snapshot": row["snapshot_id"],
                                     "row_number": row["row_number"],
-                                    "entity_key": row["entity_key"],
+                                    "entity": ids.get((row["snapshot_id"], row["row_number"])),
+                                    "slate": ids.get((row["snapshot_id"], None)),
+                                    "observation": row["observation_id"],
+                                    "anchor": row["anchor_snapshot_id"],
                                     "slate_key": row["canonical_slate_key"],
                                     "slate_sha": row["slate_revision_sha256"],
+                                    "entity_key": row["entity_key"],
+                                    "selected": row["is_selected"],
+                                    "pool": row["pool_ready"],
+                                    "ready": row["optimizer_ready"],
+                                    "salary": row["salary_selected"],
+                                    "flags": json.dumps(row["quality_flags"]),
+                                    "alts": json.dumps(row["alternative_refs"]),
+                                    "now": now,
                                 },
                             )
-                if fault == "mid_batch":
-                    raise UnifiedError("injected_fault")
-                assert_actual_ceiling(conn)
-            _succeed(conn, run_id, summary, now)
+                            if fault == "force_duplicate" and row["is_selected"]:
+                                conn.execute(
+                                    text(
+                                        """
+                                        INSERT INTO salary_private.salary_selection_rows (
+                                            selection_id, snapshot_id, row_number, is_selected, pool_ready,
+                                            optimizer_ready, quality_flags, alternative_refs, entity_key,
+                                            canonical_slate_key, slate_revision_sha256
+                                        ) VALUES (
+                                            :selection, :snapshot, :row_number, true, false,
+                                            false, '{}'::jsonb, '[]'::jsonb, :entity_key, :slate_key, :slate_sha
+                                        )
+                                        """
+                                    ),
+                                    {
+                                        "selection": selection_id,
+                                        "snapshot": row["snapshot_id"],
+                                        "row_number": row["row_number"],
+                                        "entity_key": row["entity_key"],
+                                        "slate_key": row["canonical_slate_key"],
+                                        "slate_sha": row["slate_revision_sha256"],
+                                    },
+                                )
+                    if fault == "mid_batch":
+                        raise UnifiedError("injected_fault")
+                    assert_actual_ceiling(conn)
+                if fault == "after_commit":
+                    print("reason=audit_interrupted", file=sys.stderr)
+                    return 2
+                _succeed(conn, run_id, summary, now)
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": CAPTURE_LOCK})
         print(
             f"reason=published;selected={summary['selected_rows']};ready={summary['ready_rows']};rows={summary['raw_records']}"
         )
@@ -1320,6 +1560,12 @@ def run(database_url: str, selection_scope: str, as_of: str, mapping_file, trigg
     except PrivateWriteError as exc:
         _mark_failed(engine, run_id, exc.reason, cutoff)
         print(f"reason={exc.reason}", file=sys.stderr)
+        return 1
+    except ProgrammingError as exc:
+        missing = "does not exist" in str(getattr(exc, "orig", exc))
+        reason = "source_table_missing" if missing else "load_failed"
+        _mark_failed(engine, run_id, reason, cutoff)
+        print(f"reason={reason}", file=sys.stderr)
         return 1
     except (SQLAlchemyError, OSError):
         print("database_unreachable", file=sys.stderr)
@@ -1403,6 +1649,38 @@ def _succeed(conn, run_id: int, summary: dict, now: datetime) -> None:
         rows_skipped=summary["raw_records"] - summary["selected_rows"],
         source_version=PARSER_VERSION,
     )
+
+
+def reconcile(conn) -> int:
+    """Finish a running rebuild whose batch committed before the public audit."""
+    running = conn.execute(
+        text(
+            """
+            SELECT id FROM load_runs
+            WHERE dataset = :dataset AND status = 'running'
+            ORDER BY id
+            """
+        ),
+        {"dataset": DATASET},
+    ).all()
+    fixed = 0
+    now = datetime.now(UTC)
+    for row in running:
+        batch = conn.execute(
+            text(
+                """
+                SELECT summary FROM salary_private.salary_selection_batches
+                WHERE load_run_id = :run_id
+                """
+            ),
+            {"run_id": row.id},
+        ).one_or_none()
+        if batch is None:
+            _fail(conn, int(row.id), "interrupted", now)
+        else:
+            _succeed(conn, int(row.id), batch.summary, now)
+        fixed += 1
+    return fixed
 
 
 def main(argv: list[str] | None = None) -> int:

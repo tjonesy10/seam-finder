@@ -46,3 +46,19 @@ UncleBob Mutator `--changed`: UNKNOWN. `mutator` is not on `PATH` and `/agent/re
 ## Upstream archive evidence
 
 The positive archive rerun is recorded on F007. Fresh isolated `seam_validate`, public nflverse `games.parquet` sha256 `0bc6e1221d68535848e58b37c3adf298907be2a3759f7d3abb986c7e7f8587e2` version `2026-11-06 20:46:43 EST`, teams sha256 `46955c6de3ff83e6ce229d278bc56a7772be287854f4b3a9666b151339568266` version `2026-03-27 11:49:45 EDT`. Empty games: `selected=62 succeeded=0 failed=62`. After that schedule load: `selected=62 succeeded=26 failed=36` (`game_evidence_missing=35`, `game_info_unparsed=1`), `rows_read=27788`, `rows_valid=27773`, `rows_rejected=15`, snapshots 26. Classifier counts: matched 26, `LAR`-token-only 34, other missing 1, unparsed 1. No alias was applied. DFF companion artifact id, kind, source, and body SHA-256 read back from the database: 80/80. Private HTML hashes are not listed.
+
+## Gate corrections
+
+The earlier AT1–AT16 table did not cover the gaps below. Those rows stay historical. The new tests are the evidence for these corrections. AT10 and AT15 were not part of this gate and still pass inside the suite.
+
+| Finding | Before | After |
+|---|---|---|
+| Unknown rules, naive kickoff, game/team/season mismatch, unknown draft group bridging two known groups | A self-hash plus `complete_pool` and a null group could verify and connect group A to group B | `test_slate_rules_kickoff_game_and_group_bridge`: none of those four publishes an optimizer-ready row |
+| Newer incomplete snapshot resurrects an older ready one; duplicate native IDs can be mapped ready | Latest was chosen only among already-complete snapshots | `test_newer_incomplete_blocks_older_ready`: the older snapshot is not selected, and duplicate `dk_id` rows are not optimizer-ready |
+| One anchor resolution clears every dispute | A single `chosen_ref` on the anchor set `resolved` for the pool | `test_one_resolution_does_not_clear_every_dispute`: two disagreed entities with one resolution stay not optimizer-ready |
+| Publish used a different lock from capture, reset the invocation budget per artifact, and took `committed_at` before the lock | Concurrent identical rebuilds could collide, and a source writer was not on the same lock | Session lock `582005` is taken before the repeatable-read snapshot. `test_rebuild_waits_for_the_source_writer_lock`: `committed_at` is not earlier than the writer's release. Invocation bytes accumulate across artifacts in one rebuild |
+| Coverage was one global rate and counted ready rows, including DST, as mapped skill | Empty AT14 only | `test_coverage_counts_skill_apart_from_dst`: source bucket skill 2, DST 1, mapped skill 1, unmapped 1, rate `1/2` |
+| A missing source table was `database_unreachable` and a committed batch could leave the audit running | The run row stayed `running` | `test_missing_table_fails_closed_and_audit_can_reconcile`: the missing-table run is `failed` with `source_table_missing`. `fault=after_commit` leaves the batch, and `reconcile` marks that run `succeeded` |
+| `0008` tables had no `loaded_at` and no lowercase SHA checks | Columns and checks were absent | The same test reads `loaded_at` NOT NULL on all three tables and the three SHA check constraints |
+
+`DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication after these corrections: `243 passed, 2 skipped`. `alembic heads` is `0008`. `ruff check loader web tests migrations` passed. This suite does not certify the 26-of-62 DKNFL archive load, and it does not add a `LAR` alias.

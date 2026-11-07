@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from loader.salary_private import sha256_bytes
-from loader.salary_unified import revision_hash, run
+from loader.salary_unified import reconcile, revision_hash, run
 from web.attribution import ROTOGURU_DK_CLASSIC_ATTRIBUTION
 
 FUTURE = "2099-01-01T00:00:00+00:00"
@@ -352,7 +352,7 @@ def test_at2_different_games_do_not_merge(engine, database_url, tmp_path):
         )
         holiday, _sha = _snapshot(
             conn, source="dknfl", pool="full_export", body=b"holiday-slate",
-            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "PHI"}],
             observed_at=datetime(2024, 12, 1, tzinfo=UTC), draft_group="dg-holiday", week=16,
         )
     payload = {
@@ -360,7 +360,7 @@ def test_at2_different_games_do_not_merge(engine, database_url, tmp_path):
         "slates": [_slate(main, GAMES, key="main", group="dg-main"), _slate(holiday, HOLIDAY, key="holiday", group="dg-holiday", week=16)],
         "entities": [
             _entity(main, 1, gsis="00-0033873"),
-            _entity(holiday, 1, gsis="00-0033873", game="2024_16_DAL_PHI"),
+            _entity(holiday, 1, gsis="00-0033873", team="PHI", game="2024_16_DAL_PHI"),
         ],
     }
     assert _publish(database_url, _mapping(tmp_path, payload)) == 0
@@ -599,7 +599,9 @@ def test_at6_no_pool_filling(engine, database_url, tmp_path):
         ],
     }
     payload["slates"][1]["draft_group_id"] = None
+    payload["slates"][1]["equivalent_group_ids"] = ["dg-1"]
     payload["slates"][2]["draft_group_id"] = None
+    payload["slates"][2]["equivalent_group_ids"] = ["dg-1"]
     assert _publish(database_url, _mapping(tmp_path, payload)) == 0
     with engine.connect() as conn:
         rows = _view(conn)
@@ -693,6 +695,7 @@ def test_at8_disagreement_and_resolution(engine, database_url, tmp_path):
         "entities": [_entity(lobby, 1, gsis="00-0033873"), _entity(other, 1, gsis="00-0033873")],
     }
     base["slates"][1]["draft_group_id"] = None
+    base["slates"][1]["equivalent_group_ids"] = ["dg-1"]
     assert _publish(database_url, _mapping(tmp_path, base), scope="open") == 0
     with engine.connect() as conn:
         selected = next(row for row in _view(conn, "open") if row["is_selected"])
@@ -1039,3 +1042,303 @@ def test_at16_bounded_failures(engine, database_url, tmp_path, capsys):
         )
         assert "98%" not in notes
         assert str(tmp_path) not in notes
+
+
+def test_slate_rules_kickoff_game_and_group_bridge(engine, database_url, tmp_path):
+    with engine.begin() as conn:
+        _world(conn)
+        left, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"bridge-a",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-a",
+        )
+        unknown, _sha = _snapshot(
+            conn, source="dknfl", pool="full_export", body=b"bridge-u",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC),
+        )
+        right, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"bridge-b",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-b",
+        )
+        naive = dict(GAMES[0])
+        naive["kickoff_at"] = "2024-09-08T17:00:00"
+    bad_rules = {
+        "mapping_version": "v1",
+        "slates": [_slate(left, GAMES) | {"rules": {"rules_id": None, "roster_slots": None, "salary_cap": None}}],
+        "entities": [_entity(left, 1, gsis="00-0033873")],
+    }
+    assert _publish(database_url, _mapping(tmp_path, bad_rules), scope="rules") == 0
+    naive_payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(left, [naive])],
+        "entities": [_entity(left, 1, gsis="00-0033873")],
+    }
+    assert _publish(database_url, _mapping(tmp_path, naive_payload, "naive.json"), scope="naive") == 0
+    wrong_game = {
+        "mapping_version": "v1",
+        "slates": [_slate(left, GAMES)],
+        "entities": [_entity(left, 1, gsis="00-0033873", team="KC", game="2024_16_DAL_PHI")],
+    }
+    assert _publish(database_url, _mapping(tmp_path, wrong_game, "wrong.json"), scope="wrong") == 0
+    bridge = {
+        "mapping_version": "v1",
+        "slates": [
+            _slate(left, GAMES, key="shared", group="dg-a"),
+            _slate(unknown, GAMES, key="shared", group=None),
+            _slate(right, GAMES, key="shared", group="dg-b"),
+        ],
+        "entities": [
+            _entity(left, 1, gsis="00-0033873"),
+            _entity(unknown, 1, gsis="00-0033873"),
+            _entity(right, 1, gsis="00-0033873"),
+        ],
+    }
+    bridge["slates"][1]["draft_group_id"] = None
+    assert _publish(database_url, _mapping(tmp_path, bridge, "bridge.json"), scope="bridge") == 0
+    with engine.connect() as conn:
+        for scope in ("rules", "naive", "wrong", "bridge"):
+            assert not any(row["optimizer_ready"] for row in _view(conn, scope))
+
+
+def test_newer_incomplete_blocks_older_ready(engine, database_url, tmp_path):
+    with engine.begin() as conn:
+        _world(conn)
+        older, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"older-ready",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-1",
+        )
+        newer, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"newer-incomplete",
+            rows=[{"status": "valid", "salary": "5100", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 3, tzinfo=UTC), draft_group="dg-1",
+        )
+        dupes, _sha = _snapshot(
+            conn, source="dknfl", pool="full_export", body=b"dup-native",
+            rows=[
+                {"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"},
+                {"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"},
+            ],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-dup",
+        )
+    payload = {
+        "mapping_version": "v1",
+        "slates": [
+            _slate(older, GAMES, effective="2024-09-01T00:00:00+00:00"),
+            _slate(newer, GAMES, complete=False, effective="2024-09-03T00:00:00+00:00"),
+        ],
+        "entities": [_entity(older, 1, gsis="00-0033873"), _entity(newer, 1, gsis="00-0033873")],
+    }
+    assert _publish(database_url, _mapping(tmp_path, payload), scope="blockold") == 0
+    dup_payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(dupes, GAMES, key="dups", group="dg-dup")],
+        "entities": [
+            _entity(dupes, 1, gsis="00-0033873"),
+            _entity(dupes, 2, gsis="00-0034857", team="BUF"),
+        ],
+    }
+    assert _publish(database_url, _mapping(tmp_path, dup_payload, "dups.json"), scope="dups") == 0
+    with engine.connect() as conn:
+        assert not any(row["optimizer_ready"] for row in _view(conn, "blockold"))
+        assert not any(row["is_selected"] and row["source_snapshot_id"] == older for row in _view(conn, "blockold"))
+        assert not any(row["optimizer_ready"] for row in _view(conn, "dups"))
+
+
+def test_one_resolution_does_not_clear_every_dispute(engine, database_url, tmp_path):
+    with engine.begin() as conn:
+        _world(conn)
+        lobby, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"two-disputes",
+            rows=[
+                {"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"},
+                {"status": "valid", "salary": "4000", "native": "222", "name": "Josh", "roster": "QB", "team": "BUF"},
+            ],
+            observed_at=datetime(2024, 9, 2, tzinfo=UTC), draft_group="dg-1",
+        )
+        other, _sha = _snapshot(
+            conn, source="dknfl", pool="full_export", body=b"two-disputes-other",
+            rows=[
+                {"status": "valid", "salary": "5100", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"},
+                {"status": "valid", "salary": "4100", "native": "222", "name": "Josh", "roster": "QB", "team": "BUF"},
+            ],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC),
+        )
+    payload = {
+        "mapping_version": "v1",
+        "slates": [
+            _slate(lobby, GAMES, effective="2024-09-02T00:00:00+00:00"),
+            _slate(other, GAMES, group=None),
+        ],
+        "entities": [
+            _entity(lobby, 1, gsis="00-0033873"),
+            _entity(lobby, 2, gsis="00-0034857", team="BUF"),
+            _entity(other, 1, gsis="00-0033873"),
+            _entity(other, 2, gsis="00-0034857", team="BUF"),
+        ],
+        "resolutions": [
+            {
+                "canonical_slate_key": "main",
+                "slate_revision_sha256": _revision(GAMES),
+                "entity_key": "player:00-0033873",
+                "chosen_ref": {"snapshot_id": str(lobby), "row_number": 1},
+                "reason": "one-only",
+            }
+        ],
+    }
+    payload["slates"][1]["draft_group_id"] = None
+    payload["slates"][1]["equivalent_group_ids"] = ["dg-1"]
+    assert _publish(database_url, _mapping(tmp_path, payload), scope="partialres") == 0
+    with engine.connect() as conn:
+        selected = [row for row in _view(conn, "partialres") if row["is_selected"]]
+        assert selected
+        assert all(row["optimizer_ready"] is False for row in selected)
+
+
+def test_coverage_counts_skill_apart_from_dst(engine, database_url, tmp_path):
+    with engine.begin() as conn:
+        _world(conn)
+        snapshot, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"coverage",
+            rows=[
+                {"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"},
+                {"status": "valid", "salary": "3000", "native": "222", "name": "Chiefs", "roster": "DST", "team": "KC"},
+                {"status": "valid", "salary": "4500", "native": "333", "name": "Unmapped", "roster": "RB", "team": "KC"},
+            ],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-1",
+        )
+    payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, GAMES)],
+        "entities": [
+            _entity(snapshot, 1, gsis="00-0033873"),
+            _entity(snapshot, 2, kind="dst", gsis=None, team="KC", game=None),
+        ],
+    }
+    assert _publish(database_url, _mapping(tmp_path, payload), scope="cover") == 0
+    with engine.connect() as conn:
+        summary = conn.execute(text("SELECT summary FROM salary_private.salary_selection_batches WHERE selection_scope = 'cover'")).scalar_one()
+        lobby = summary["by_source"]["dk_lobby"]
+        assert lobby["skill"] == 2
+        assert lobby["dst"] == 1
+        assert lobby["mapped"] == 1
+        assert lobby["dst_mapped"] == 1
+        assert lobby["unmapped"] == 1
+        assert summary["rates"]["skill_mapped"] == {"numerator": 1, "denominator": 2}
+        assert summary["raw_records"] == lobby["raw"] == 3
+
+
+def test_missing_table_fails_closed_and_audit_can_reconcile(engine, database_url, tmp_path):
+    with engine.begin() as conn:
+        _world(conn)
+        snapshot, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"reconcile",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-1",
+        )
+        for table in ("salary_interpretations", "salary_selection_batches", "salary_selection_rows"):
+            loaded = conn.execute(
+                text(
+                    """
+                    SELECT is_nullable FROM information_schema.columns
+                    WHERE table_schema = 'salary_private' AND table_name = :table AND column_name = 'loaded_at'
+                    """
+                ),
+                {"table": table},
+            ).scalar_one()
+            assert loaded == "NO"
+        checks = conn.execute(
+            text(
+                """
+                SELECT conname FROM pg_constraint
+                WHERE conname IN (
+                    'ck_salary_interpretations_evidence_sha',
+                    'ck_salary_selection_batches_input_sha',
+                    'ck_salary_selection_rows_slate_sha'
+                )
+                """
+            )
+        ).all()
+        assert len(checks) == 3
+    payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, GAMES)],
+        "entities": [_entity(snapshot, 1, gsis="00-0033873")],
+    }
+    path = _mapping(tmp_path, payload)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE salary_private.dff_salaries RENAME TO dff_salaries_hidden"))
+    try:
+        assert _publish(database_url, path, scope="missing") == 1
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE salary_private.dff_salaries_hidden RENAME TO dff_salaries"))
+    with engine.connect() as conn:
+        status = conn.execute(
+            text("SELECT status FROM load_runs WHERE dataset = 'dk_salary_unified' AND notes LIKE '%source_table_missing%'")
+        ).scalar_one()
+        assert status == "failed"
+    assert _publish(database_url, path, scope="crash", fault="after_commit") == 2
+    with engine.connect() as conn:
+        assert reconcile(conn) >= 1
+    with engine.connect() as conn:
+        crashed = conn.execute(
+            text(
+                """
+                SELECT r.status FROM load_runs r
+                JOIN salary_private.salary_selection_batches b ON b.load_run_id = r.id
+                WHERE b.selection_scope = 'crash'
+                """
+            )
+        ).scalar_one()
+        assert crashed == "succeeded"
+
+
+def test_rebuild_waits_for_the_source_writer_lock(engine, database_url, tmp_path):
+    import time
+
+    with engine.begin() as conn:
+        _world(conn)
+        snapshot, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"locked",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-1",
+        )
+    payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, GAMES)],
+        "entities": [_entity(snapshot, 1, gsis="00-0033873")],
+    }
+    path = _mapping(tmp_path, payload)
+    held = threading.Event()
+    release = threading.Event()
+    marks = {}
+
+    def writer():
+        with engine.connect() as conn:
+            conn.execute(text("SELECT pg_advisory_lock(582005)"))
+            held.set()
+            assert release.wait(5)
+            marks["released"] = datetime.now(UTC)
+            conn.execute(text("SELECT pg_advisory_unlock(582005)"))
+            conn.commit()
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    assert held.wait(3)
+
+    def let_go():
+        time.sleep(0.4)
+        release.set()
+
+    threading.Thread(target=let_go).start()
+    assert _publish(database_url, path, scope="locked") == 0
+    thread.join(5)
+    assert marks["released"]
+    with engine.connect() as conn:
+        committed = conn.execute(
+            text("SELECT committed_at FROM salary_private.salary_selection_batches WHERE selection_scope = 'locked'")
+        ).scalar_one()
+        assert committed >= marks["released"]
