@@ -59,7 +59,9 @@ def clean_tables(engine):
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE salary_private.dk_lobby_salaries, "
+                "TRUNCATE salary_private.salary_selection_rows, "
+                "salary_private.salary_selection_batches, salary_private.salary_interpretations, "
+                "salary_private.dk_lobby_salaries, "
                 "salary_private.salary_source_rows, salary_private.salary_observations, "
                 "salary_private.salary_snapshots, salary_private.salary_artifacts, "
                 "load_runs, dk_classic_slate, dk_classic_salaries, "
