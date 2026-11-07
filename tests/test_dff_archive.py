@@ -964,3 +964,67 @@ def test_at12_logs_attribution_and_scanner(database_url, engine, tmp_path, capsy
         check=False,
     )
     assert scan.returncode == 0, scan.stdout + scan.stderr
+
+
+def test_corrected_manifest_reuses_intrinsic_ledger(database_url, engine, tmp_path):
+    player = _player()
+    body = _csv_bytes(CORE, [player])
+    wrong, wrong_manifest = _archive(
+        tmp_path / "wrong",
+        [
+            {
+                "path": "raw/same.csv",
+                "season": 2022,
+                "week": 9,
+                "date": "2022-09-11",
+                "body": body,
+                "rows": [player],
+            }
+        ],
+    )
+    assert _load(database_url, wrong, wrong_manifest) == 1
+    failed = _rows(
+        engine,
+        """
+        SELECT reason_code, snapshot_id FROM salary_private.salary_observations
+        WHERE original_path = 'raw/same.csv'
+        """,
+    )
+    assert failed[-1]["reason_code"] == "row_week_contradiction"
+    assert failed[-1]["snapshot_id"] is None
+    ledger = _rows(
+        engine,
+        """
+        SELECT reason_codes FROM salary_private.salary_source_rows
+        WHERE parser_version = 'f006.1'
+        """,
+    )
+    assert ledger
+    assert all("row_week_contradiction" not in codes for codes in (row["reason_codes"] for row in ledger))
+    before = _scalar(engine, "SELECT count(*) FROM salary_private.salary_source_rows")
+    corrected, corrected_manifest = _archive(
+        tmp_path / "corrected",
+        [
+            {
+                "path": "raw/same.csv",
+                "season": 2022,
+                "week": 1,
+                "date": "2022-09-11",
+                "body": body,
+                "rows": [player],
+            }
+        ],
+    )
+    assert _load(database_url, corrected, corrected_manifest) == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_source_rows") == before
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots WHERE source = 'dff'") == 1
+    retained = _rows(
+        engine,
+        """
+        SELECT reason_code, snapshot_id FROM salary_private.salary_observations
+        WHERE original_path = 'raw/same.csv'
+        ORDER BY loaded_at
+        """,
+    )
+    assert retained[0]["snapshot_id"] is None
+    assert retained[-1]["snapshot_id"] is not None
