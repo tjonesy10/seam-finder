@@ -2,7 +2,7 @@
 
 Status: staged implementation evidence. Not release-ready. Blocked on merge of F005 PR 19, F006 PR 21, and F007 PR 22. No production migration, optimizer grant in production, live capture, or schedule activation. No season inventory was certified.
 
-Branch: `cursor/f008-unified-salary-bb63`. Pull-request base: `cursor/f007-dknfl-historical-loader-bb63`. Migration chain: `0005` (F005 `f9f1dfb965406822b51c9a9100eca457829263c2`) → `0006` → `0007` → `0008`. `alembic heads` prints only `0008`. F005's Alembic head stays `0005`. The savepoint and `BudgetHTTPTransport` stay in the owner's commits.
+Branch: `cursor/f008-unified-salary-bb63`. Pull-request base: `cursor/f007-dknfl-historical-loader-bb63`. Migration chain: `0005` (F005 `206edf7e0e739b451e7b3d12501cdb2e0357a1b3`) → `0006` → `0007` → `0008`. `alembic heads` prints only `0008`. F005's Alembic head stays `0005`. The savepoint, `BudgetHTTPTransport`, and the httpcore-to-httpx body-error translation stay in the owner's commits. Main docs `b15ab560` arrived through that F005 merge.
 
 ## Design
 
@@ -37,7 +37,7 @@ Command: `DATABASE_URL=postgresql:///seam_f008 pytest tests/test_salary_unified.
 
 `ruff check loader web tests migrations` passed.
 
-`DATABASE_URL=postgresql:///seam_f008 pytest -q` with local trust authentication: `233 passed, 2 skipped`. `alembic heads` is `0008`.
+`DATABASE_URL=postgresql:///seam_f008 pytest -q` with local trust authentication, after merging F005 `206edf7`: `235 passed, 2 skipped`. `alembic heads` is `0008`.
 
 `gitleaks detect --source . --redact --no-banner --no-git` reported `no leaks found`.
 
