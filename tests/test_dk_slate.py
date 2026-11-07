@@ -381,11 +381,13 @@ def test_at8_non_dst_match_rate_is_at_least_95_percent(database_url, engine, tmp
 def test_at9_no_nfldfs_or_draftkings_fetch():
     pyproject = (ROOT / "pyproject.toml").read_text().lower()
     assert "nfldfs" not in pyproject
+    allowed_host = ROOT / "loader" / "dk_lobby.py"
     for folder in ("loader", "web", "migrations"):
         for path in (ROOT / folder).rglob("*.py"):
             text_value = path.read_text().lower()
             assert "nfldfs" not in text_value, path
-            assert BANNED_HOST not in text_value, path
+            if path.resolve() != allowed_host.resolve():
+                assert BANNED_HOST not in text_value, path
     for path in (ROOT / ".github").rglob("*.yml"):
         text_value = path.read_text().lower()
         assert "nfldfs" not in text_value

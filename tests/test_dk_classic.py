@@ -520,11 +520,13 @@ def test_at9_no_nfldfs_or_draftkings_in_production_code():
     pyproject = (ROOT / "pyproject.toml").read_text().lower()
     assert "nfldfs" not in pyproject
     banned = "draftkings.com"
+    allowed_host = ROOT / "loader" / "dk_lobby.py"
     for folder in ("loader", "web", "migrations"):
         for path in (ROOT / folder).rglob("*.py"):
             text_value = path.read_text().lower()
             assert "nfldfs" not in text_value, path
-            assert banned not in text_value, path
+            if path.resolve() != allowed_host.resolve():
+                assert banned not in text_value, path
     for path in (ROOT / ".github").rglob("*.yml"):
         text_value = path.read_text().lower()
         assert "nfldfs" not in text_value

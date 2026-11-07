@@ -340,7 +340,9 @@ def test_readonly_role_is_select_only(engine, monkeypatch):
             conn.execute(text("SET ROLE seam_reader"))
             conn.execute(text("SELECT count(*) FROM teams"))
             conn.execute(text("SELECT count(*) FROM dk_classic_salaries"))
-            conn.execute(text("SELECT count(*) FROM dk_classic_slate"))
+            with pytest.raises(DBAPIError):
+                conn.execute(text("SELECT count(*) FROM dk_classic_slate"))
+            conn.rollback()
             conn.execute(text("RESET ROLE"))
             conn.commit()
         insert_team = (
