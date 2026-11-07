@@ -2,7 +2,7 @@
 
 Status: implementation evidence for review. Not release-ready. Blocked on merge of F005 PR 19. No production migration, grant, capture, or schedule activation. No season inventory was certified.
 
-Branch: `cursor/f007-dknfl-historical-loader-bb63`. Pull-request base: `cursor/f006-dff-historical-loader-bb63`. F005 PR 19 head merged underneath is `f9f1dfb965406822b51c9a9100eca457829263c2`. Migration chain on this branch is `0005` → `0006` → `0007`. Alembic head of F005 stays `0005`. `alembic heads` prints only `0007`. The loaders do not import each other; the dependency is the revision line. The savepoint and `BudgetHTTPTransport` stay in the owner's commits.
+Branch: `cursor/f007-dknfl-historical-loader-bb63`. Pull-request base: `cursor/f006-dff-historical-loader-bb63`. F005 PR 19 head merged underneath is `206edf7e0e739b451e7b3d12501cdb2e0357a1b3`. Migration chain on this branch is `0005` → `0006` → `0007`. Alembic head of F005 stays `0005`. `alembic heads` prints only `0007`. The loaders do not import each other; the dependency is the revision line. The savepoint and `BudgetHTTPTransport` stay in the owner's commits.
 
 ## Design
 
