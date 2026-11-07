@@ -8,16 +8,27 @@ complete. This module does not certify a real NFL season.
 import hashlib
 import json
 import os
+import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from loader.salary_private import PrivateWriteError
+
 AUTHORITY_ENV = "DK_SCHEDULE_AUTHORITY_SHA256"
 PROOF_VERSION = "f005.schedule.1"
 FRESH_HOURS = 24
 FUTURE_SKEW = timedelta(minutes=5)
+_CLOCK = re.compile(r"^(\d{2}):(\d{2})(?::(\d{2}))?$")
+
+
+class ProjectionError(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -53,46 +64,80 @@ def _day(value) -> str:
     return str(value)
 
 
-def projection_record(row: dict) -> dict:
-    gametime = row.get("gametime")
-    if gametime is not None:
-        gametime = str(gametime).strip()[:5] or None
+def _clock(value) -> str | None:
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    if text_value == "":
+        return None
+    match = _CLOCK.fullmatch(text_value)
+    if match is None:
+        raise ProjectionError("malformed_time")
+    hour, minute = int(match.group(1)), int(match.group(2))
+    second = int(match.group(3) or 0)
+    if hour > 23 or minute > 59 or second > 59:
+        raise ProjectionError("malformed_time")
+    if match.group(3) is None:
+        return f"{hour:02d}:{minute:02d}"
+    return f"{hour:02d}:{minute:02d}:{second:02d}"
+
+
+def projection_record(row: dict, *, from_raw: bool) -> dict:
+    game_type = row.get("game_type")
+    if game_type is None or str(game_type) == "":
+        raise ProjectionError("malformed_type")
+    game_type = str(game_type)
+    if from_raw:
+        season_type = "REG" if game_type == "REG" else "POST"
+    else:
+        season_type = row.get("season_type")
+        if season_type not in {"REG", "POST"}:
+            raise ProjectionError("malformed_type")
     return {
         "away_team": str(row["away_team"]).upper(),
         "game_id": str(row["game_id"]),
-        "game_type": "REG",
+        "game_type": game_type,
         "gameday": _day(row["gameday"]),
-        "gametime": gametime,
+        "gametime": _clock(row.get("gametime")),
         "home_team": str(row["home_team"]).upper(),
         "season": int(row["season"]),
-        "season_type": "REG",
+        "season_type": str(season_type),
         "week": int(row["week"]),
         "weekday": str(row["weekday"]),
     }
 
 
-def projection_documents(rows: list[dict]) -> tuple[list[dict], str, list[str], str]:
-    records = sorted((projection_record(row) for row in rows), key=lambda item: item["game_id"])
+def projection_documents(rows: list[dict], *, from_raw: bool = True) -> tuple[list[dict], str, list[str], str]:
+    records = sorted(
+        (projection_record(row, from_raw=from_raw) for row in rows),
+        key=lambda item: item["game_id"],
+    )
     ids = [item["game_id"] for item in records]
     return records, _sha(records), ids, _sha(ids)
 
 
 def parse_schedule_bytes(body: bytes, media_type: str) -> list[dict]:
+    """Return normalized REG rows from the exact raw object. Season is not filtered here."""
     if media_type == "application/json" or body[:1] in (b"{", b"["):
         payload = json.loads(body)
         games = payload["games"] if isinstance(payload, dict) else payload
-        return [projection_record(game) for game in games if str(game.get("game_type", "REG")) == "REG"]
+        return [
+            projection_record(game, from_raw=True)
+            for game in games
+            if str(game.get("game_type", "REG")) == "REG"
+        ]
     if body[:4] == b"PAR1" or "parquet" in media_type:
         import polars as pl
 
         frame = pl.read_parquet(body)
-        rows = []
-        for record in frame.iter_rows(named=True):
-            if str(record.get("game_type")) != "REG":
-                continue
-            rows.append(record)
-        return [projection_record(row) for row in rows]
+        rows = [record for record in frame.iter_rows(named=True) if str(record.get("game_type")) == "REG"]
+        return [projection_record(row, from_raw=True) for row in rows]
     raise ValueError("unsupported schedule media")
+
+
+def project_raw_season(body: bytes, media_type: str, season: int) -> list[dict]:
+    """Same season slice the games loader writes. The raw bytes themselves stay complete."""
+    return [row for row in parse_schedule_bytes(body, media_type) if int(row["season"]) == int(season)]
 
 
 def _artifact(conn, digest: str) -> tuple[int, bytes, str] | None:
@@ -142,7 +187,8 @@ def _pg_rows(conn, season: int) -> list[dict]:
     rows = conn.execute(
         text(
             """
-            SELECT game_id, season, week, gameday, weekday, gametime, away_team, home_team
+            SELECT game_id, season, game_type, season_type, week, gameday, weekday,
+                   gametime, away_team, home_team
             FROM games
             WHERE season = :season AND game_type = 'REG'
             ORDER BY game_id
@@ -209,11 +255,11 @@ def _check_inventory(payload: dict, records: list[dict]) -> str | None:
     expected_ids = []
     appearances: dict[str, int] = {}
     for fixture in planned:
+        for side in ("away_team", "home_team"):
+            appearances[fixture[side]] = appearances.get(fixture[side], 0) + 1
         if fixture.get("status") == "cancelled" and fixture.get("source_representation") == "absent":
             continue
         expected_ids.append(fixture["game_id"])
-        for side in ("away_team", "home_team"):
-            appearances[fixture[side]] = appearances.get(fixture[side], 0) + 1
     if sorted(expected_ids) != represented:
         return "inventory_representation"
     census = payload.get("team_appearance_census") or {}
@@ -248,6 +294,9 @@ def _timing(payload: dict, records: list[dict], sunday) -> str | None:
             if bounds[1] <= bounds[0]:
                 return "timing_unbounded"
         if row["gametime"] is None:
+            on_target_sunday = row["gameday"] == sunday.isoformat()
+            if on_target_sunday:
+                return "timing_contradiction"
             if bounds is None or _interval_intersects_sunday(bounds[0], bounds[1], sunday):
                 return "timing_unresolved"
             continue
@@ -259,6 +308,36 @@ def _timing(payload: dict, records: list[dict], sunday) -> str | None:
         kick = kick.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(UTC)
         if kick < bounds[0] or kick > bounds[1]:
             return "timing_outside_bounds"
+    return None
+
+
+def _kickoff(row: dict) -> datetime:
+    from zoneinfo import ZoneInfo
+
+    text_time = row["gametime"]
+    if len(text_time) == 5:
+        text_time = f"{text_time}:00"
+    local = datetime.fromisoformat(f"{row['gameday']}T{text_time}")
+    return local.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(UTC)
+
+
+def _gap_envelope(inventory: dict, records: list[dict], gap_start: datetime) -> str | None:
+    by_id = {row["game_id"]: row for row in records}
+    latest = None
+    for fixture in inventory.get("planned_fixtures") or []:
+        if fixture.get("status") == "cancelled" and fixture.get("source_representation") == "absent":
+            continue
+        until = fixture.get("possible_playing_until")
+        row = by_id.get(fixture["game_id"])
+        if until:
+            instant = _parse_time(until)
+        elif row is not None and row.get("gametime"):
+            instant = _kickoff(row)
+        else:
+            return "unresolved_postponement"
+        latest = instant if latest is None else max(latest, instant)
+    if latest is not None and latest > gap_start:
+        return "gap_envelope"
     return None
 
 
@@ -294,7 +373,11 @@ def _bind_receipt(conn, root_sha: str, inventory_sha: str, season: int, now: dat
             if raw is None or raw[2] != "schedule_raw":
                 failure = "raw_missing"
                 continue
-            parsed = parse_schedule_bytes(raw[1], receipt.get("media_type") or "application/json")
+            parsed = project_raw_season(
+                raw[1],
+                receipt.get("media_type") or "application/json",
+                season,
+            )
             records, projection_sha, ids, id_sha = projection_documents(parsed)
             if projection_sha != receipt.get("normalized_projection_sha256") or ids != receipt.get("source_reg_ids"):
                 failure = "receipt_projection_mismatch"
@@ -311,18 +394,70 @@ def _bind_receipt(conn, root_sha: str, inventory_sha: str, season: int, now: dat
             if stale:
                 failure = stale
                 continue
-            _pg_records, pg_sha, pg_ids, _pg_id_sha = projection_documents(_pg_rows(conn, season))
+            pg_records, pg_sha, pg_ids, _pg_id_sha = projection_documents(
+                _pg_rows(conn, season),
+                from_raw=False,
+            )
             if pg_sha != projection_sha or pg_ids != ids:
-                failure = "postgres_mismatch"
-                continue
+                return (
+                    "fail",
+                    "postgres_mismatch",
+                    {
+                        "schedule_raw_artifact_ids": [raw[0]],
+                        "schedule_receipt_sha256s": [_sha(receipt)],
+                        "expected_reg_count": len(ids),
+                        "observed_reg_count": len(pg_ids),
+                        "schedule_field_differences": _field_differences(records, pg_records),
+                    },
+                )
             return ("ok", receipt, records, raw[0])
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            failure = "receipt_unreadable"
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, ProjectionError) as exc:
+            failure = getattr(exc, "reason", None) or "receipt_unreadable"
             continue
-    return ("fail", failure)
+    return ("fail", failure, {})
+
+
+def _field_differences(expected: list[dict], observed: list[dict]) -> list[dict]:
+    exp = {row["game_id"]: row for row in expected}
+    obs = {row["game_id"]: row for row in observed}
+    diffs = []
+    for game_id in sorted(set(exp) - set(obs)):
+        diffs.append({"game_id": game_id, "difference": "missing"})
+    for game_id in sorted(set(obs) - set(exp)):
+        diffs.append({"game_id": game_id, "difference": "extra"})
+    for game_id in sorted(set(exp) & set(obs)):
+        for field in ("season_type", "game_type", "week", "gametime", "gameday", "away_team", "home_team", "weekday"):
+            if exp[game_id].get(field) != obs[game_id].get(field):
+                diffs.append(
+                    {
+                        "game_id": game_id,
+                        "field": field,
+                        "expected": exp[game_id].get(field),
+                        "observed": obs[game_id].get(field),
+                    }
+                )
+                break
+        if len(diffs) >= 20:
+            break
+    return diffs[:20]
+
+
+@contextmanager
+def repeatable_read(conn):
+    """One snapshot for the authority, receipt, and Postgres reads."""
+    if conn.in_transaction():
+        conn.rollback()
+    with conn.begin():
+        conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+        yield
 
 
 def verify_schedule(conn, now: datetime) -> ScheduleVerdict:
+    with repeatable_read(conn):
+        return _verify_in_snapshot(conn, now)
+
+
+def _verify_in_snapshot(conn, now: datetime) -> ScheduleVerdict:
     pin = os.environ.get(AUTHORITY_ENV)
     if not pin or len(pin) != 64:
         return _reject("authority_unpinned")
@@ -362,14 +497,20 @@ def verify_schedule(conn, now: datetime) -> ScheduleVerdict:
         return _reject("coverage_inventory_unpinned")
     mode = chosen.get("mode")
     allow_historical = mode == "interseason_gap"
+    seen = {"schedule_authority_root_sha256": pin, "schedule_coverage_sha256": _sha(chosen)}
     if mode == "interseason_gap":
         if not chosen.get("published_no_reg_through") and not chosen.get("next_earliest_possible_reg_at"):
-            return _reject("gap_unbounded")
+            return _reject("gap_unbounded", **seen)
         bound = chosen.get("published_no_reg_through") or chosen.get("next_earliest_possible_reg_at")
         if _parse_time(bound) < moment:
-            return _reject("gap_expired")
+            return _reject("gap_expired", **seen)
+        support = list(chosen.get("prior_closure_evidence_refs") or []) + list(
+            chosen.get("league_evidence_refs") or []
+        )
+        if not support or any(_artifact(conn, digest) is None for digest in support):
+            return _reject("gap_reference_missing", **seen)
     elif mode != "active_season":
-        return _reject("coverage_mode")
+        return _reject("coverage_mode", **seen)
     games: list[dict] = []
     raw_ids: list[int] = []
     receipt_shas: list[str] = []
@@ -385,6 +526,8 @@ def verify_schedule(conn, now: datetime) -> ScheduleVerdict:
             if reference is None or reference[2] != "schedule_reference":
                 return _reject("reference_missing")
         season = int(inventory["season"])
+        if mode == "interseason_gap" and inventory.get("closure") != "final":
+            return _reject("prior_not_final", schedule_inventory_sha256s=[inventory_sha], **seen)
         status, *bound = _bind_receipt(
             conn,
             pin,
@@ -394,14 +537,34 @@ def verify_schedule(conn, now: datetime) -> ScheduleVerdict:
             allow_historical and inventory.get("closure") == "final",
         )
         if status != "ok":
-            return _reject(bound[0], schedule_inventory_sha256s=[inventory_sha])
+            detail = bound[1] if len(bound) > 1 and isinstance(bound[1], dict) else {}
+            return _reject(bound[0], schedule_inventory_sha256s=[inventory_sha], **seen, **detail)
         receipt, records, raw_id = bound
+        if mode == "interseason_gap":
+            envelope = _gap_envelope(inventory, records, _parse_time(chosen["covers_from"]))
+            if envelope:
+                return _reject(
+                    envelope,
+                    schedule_inventory_sha256s=[inventory_sha],
+                    schedule_raw_artifact_ids=[raw_id],
+                    **seen,
+                )
         mismatch = _check_inventory(inventory, records)
         if mismatch:
-            return _reject(mismatch, schedule_inventory_sha256s=[inventory_sha])
+            return _reject(
+                mismatch,
+                schedule_inventory_sha256s=[inventory_sha],
+                schedule_raw_artifact_ids=[raw_id],
+                **seen,
+            )
         timing = _timing(inventory, records, sunday)
         if timing:
-            return _reject(timing, schedule_inventory_sha256s=[inventory_sha])
+            return _reject(
+                timing,
+                schedule_inventory_sha256s=[inventory_sha],
+                schedule_raw_artifact_ids=[raw_id],
+                **seen,
+            )
         games.extend(records)
         raw_ids.append(raw_id)
         receipt_shas.append(_sha(receipt))
@@ -425,6 +588,9 @@ def verify_schedule(conn, now: datetime) -> ScheduleVerdict:
 
 
 def _insert_control(conn, *, body: bytes, kind: str, media_type: str, stored_at: datetime) -> int:
+    from loader.salary_private import CAPTURE_LOCK, assert_actual_ceiling
+
+    conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": CAPTURE_LOCK})
     digest = sha256_bytes(body)
     existing = conn.execute(
         text(
@@ -457,6 +623,7 @@ def _insert_control(conn, *, body: bytes, kind: str, media_type: str, stored_at:
             "stored_at": stored_at,
         },
     ).one()
+    assert_actual_ceiling(conn)
     return int(row.artifact_id)
 
 
@@ -481,7 +648,7 @@ def maybe_emit_schedule_receipt(
     if not pin or not source_version or source_version == sha256_bytes(raw_body):
         return False
     try:
-        parsed = [row for row in parse_schedule_bytes(raw_body, media_type) if int(row["season"]) == season]
+        parsed = project_raw_season(raw_body, media_type, season)
         records, projection_sha, ids, id_sha = projection_documents(parsed)
         found = _document(conn, pin)
         if found is None:
@@ -547,9 +714,9 @@ def maybe_emit_schedule_receipt(
                 stored_at=retrieved_at,
             )
             savepoint.commit()
-        except (OSError, TypeError, ValueError, SQLAlchemyError):
+        except (OSError, TypeError, ValueError, SQLAlchemyError, ProjectionError, PrivateWriteError):
             savepoint.rollback()
             return False
         return True
-    except (OSError, TypeError, ValueError, SQLAlchemyError, json.JSONDecodeError):
+    except (OSError, TypeError, ValueError, SQLAlchemyError, ProjectionError, PrivateWriteError, json.JSONDecodeError):
         return False

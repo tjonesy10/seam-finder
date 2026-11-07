@@ -10,7 +10,9 @@ import io
 import json
 import os
 import re
+import socket
 import sys
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -426,6 +428,10 @@ class BoundedClient:
         return FetchBody(body=body, media_type=media, fetched_at=self.clock.wall())
 
 
+class _BudgetTimeout(httpx.ReadTimeout):
+    """The body read was stopped because the capture budget ran out."""
+
+
 class _Retry(Exception):
     def __init__(self, reason: str, body: bytes | None, retry_after: str | None):
         super().__init__(reason)
@@ -434,27 +440,49 @@ class _Retry(Exception):
         self.retry_after = retry_after
 
 
-def _arm_read_timeout(response: httpx.Response, read_timeout: float) -> None:
-    """Cap every later socket read. httpcore otherwise keeps the timeout it copied at the start."""
-    stream = getattr(response, "stream", None)
-    core = getattr(stream, "_httpcore_stream", None)
-    connection = getattr(core, "_connection", None)
-    network = getattr(connection, "_network_stream", None)
-    if network is None:
-        return
-    if getattr(network, "_budget_wrapped", False):
-        network._budget_cap = read_timeout
-        return
-    original = network.read
+def _response_socket(response: httpx.Response):
+    """Socket published on the response extensions. Mock transports do not have one."""
+    extensions = getattr(response, "extensions", None) or {}
+    stream = extensions.get("network_stream")
+    info = getattr(stream, "get_extra_info", None)
+    if info is None:
+        return None
+    return info("socket")
 
-    def read(max_bytes, timeout=None, _original=original, _network=network):
-        cap = _network._budget_cap
-        allowed = cap if timeout is None else min(float(timeout), cap)
-        return _original(max_bytes, allowed)
 
-    network._budget_cap = read_timeout
-    network._budget_wrapped = True
-    network.read = read
+def _next_bounded(chunks, response: httpx.Response, timeout_s: float):
+    """Stop a blocking body read when the remaining budget is gone.
+
+    The HTTP library copies its read timeout when the body starts. Closing the
+    socket is the timeout that still applies to a later chunk.
+    """
+    sock = _response_socket(response)
+    if sock is None:
+        return next(chunks)
+    cancelled = False
+
+    def _cancel():
+        nonlocal cancelled
+        cancelled = True
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    timer = threading.Timer(max(timeout_s, 0.05), _cancel)
+    timer.daemon = True
+    timer.start()
+    try:
+        return next(chunks)
+    except Exception as exc:
+        if cancelled:
+            raise _BudgetTimeout("remaining budget") from exc
+        raise
+    finally:
+        timer.cancel()
 
 
 def _read_capped(response: httpx.Response, *, deadline: float, clock: Clock) -> tuple[bytes, bool]:
@@ -467,17 +495,14 @@ def _read_capped(response: httpx.Response, *, deadline: float, clock: Clock) -> 
         if left <= 0:
             raise CaptureFailure("http_budget_exhausted")
         read_timeout = min(30.0, left)
-        request = getattr(response, "_request", None)
-        if request is not None:
-            timeout = request.extensions.setdefault("timeout", {})
-            timeout["read"] = read_timeout
-        _arm_read_timeout(response, read_timeout)
         if chunks is None:
             chunks = iter(response.iter_bytes())
         try:
-            chunk = next(chunks)
+            chunk = _next_bounded(chunks, response, read_timeout)
         except StopIteration:
             break
+        except _BudgetTimeout:
+            raise CaptureFailure("http_budget_exhausted") from None
         if not chunk:
             continue
         buf.extend(chunk)
