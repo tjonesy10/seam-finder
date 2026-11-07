@@ -15,7 +15,7 @@ from sqlalchemy import create_engine, text
 from loader.url import normalize_database_url
 
 PRODUCTION_CEILING = "0003"
-_CHAIN = ("0001", "0002", "0003", "0004")
+_CHAIN = ("0001", "0002", "0003", "0004", "0005")
 
 
 def upgrade_target(current: str | None, flag: str | None) -> str:

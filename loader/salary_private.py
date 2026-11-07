@@ -39,6 +39,8 @@ class ArtifactKind(StrEnum):
     RULES_JSON = "rules_json"
     HTML_GZIP = "html_gzip"
     MANIFEST = "manifest"
+    SCHEDULE_RAW = "schedule_raw"
+    SCHEDULE_REFERENCE = "schedule_reference"
     MAPPING = "mapping"
     ADAPTER_ROW_IMAGE = "adapter_row_image"
     REJECTED_BODY = "rejected_body"

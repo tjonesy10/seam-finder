@@ -55,7 +55,6 @@ from loader.url import normalize_database_url
 
 ET = ZoneInfo("America/New_York")
 HTTP_BUDGET_S = 180
-SCHEDULE_FRESH_DAYS = 120
 USER_AGENT = "seam-finder/0.1 (private DK Classic capture; github.com/tjonesy10/seam-finder)"
 LOBBY_URL = "https://www.draftkings.com/lobby/getcontests?sport=NFL"
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -938,88 +937,33 @@ def _priority(reasons: list[str]) -> str:
     return reasons[0] if reasons else "rejected"
 
 
-def _fresh_load(version: str | None, finished_at: datetime | None, now: datetime) -> bool:
-    if not version or finished_at is None:
-        return False
-    finished = finished_at if finished_at.tzinfo is not None else finished_at.replace(tzinfo=UTC)
-    return finished >= now.astimezone(UTC) - timedelta(days=SCHEDULE_FRESH_DAYS)
+def load_schedule(conn, now: datetime) -> tuple[str, tuple[RegGame, ...], dict]:
+    """Return gap, verified, or missing. Completeness comes from the pinned authority."""
+    from loader.schedule_proof import verify_schedule
 
-
-def load_schedule(conn, now: datetime) -> tuple[str, tuple[RegGame, ...]]:
-    """Judge one season. A bad historical season does not void a good current one."""
-    loads = {
-        int(row.season): (row.source_version, row.finished_at)
-        for row in conn.execute(
-            text(
-                """
-                SELECT DISTINCT ON (season) season, source_version, finished_at
-                FROM load_runs
-                WHERE dataset = 'games' AND status = 'succeeded' AND season IS NOT NULL
-                ORDER BY season, finished_at DESC NULLS LAST, id DESC
-                """
-            )
-        ).all()
-    }
-    raw_rows = conn.execute(
-        text(
-            """
-            SELECT game_id, season, week, game_type, gameday, weekday, gametime,
-                   away_team, home_team
-            FROM games
-            WHERE game_type = 'REG'
-            """
-        )
-    ).all()
-    if not raw_rows:
-        return "schedule_evidence_missing", ()
-    good: dict[int, list[RegGame]] = {}
-    tainted: set[int] = set()
-    for row in raw_rows:
-        season = int(row.season)
-        kickoff = None if row.gametime is None else _gametime(row.gameday, row.gametime)
-        weekday_ok = False
-        if kickoff is not None:
-            weekday_ok = (
-                WEEKDAYS[kickoff.astimezone(ET).weekday()].lower()
-                == str(row.weekday).strip().lower()
-            )
-        week_ok = WEEK_MIN <= int(row.week) <= WEEK_MAX
-        if kickoff is None or not weekday_ok or not week_ok:
-            tainted.add(season)
+    verdict = verify_schedule(conn, now)
+    games = []
+    for row in verdict.games:
+        if row["gametime"] is None:
             continue
-        good.setdefault(season, []).append(
+        kickoff = _gametime(date.fromisoformat(row["gameday"]), row["gametime"])
+        if kickoff is None:
+            return "schedule_evidence_missing", (), verdict.metadata
+        if WEEKDAYS[kickoff.astimezone(ET).weekday()].lower() != str(row["weekday"]).strip().lower():
+            return "schedule_evidence_missing", (), verdict.metadata
+        games.append(
             RegGame(
-                str(row.game_id),
-                season,
-                int(row.week),
-                row.gameday,
-                str(row.weekday),
+                row["game_id"],
+                int(row["season"]),
+                int(row["week"]),
+                date.fromisoformat(row["gameday"]),
+                str(row["weekday"]),
                 kickoff,
-                str(row.away_team).upper(),
-                str(row.home_team).upper(),
+                row["away_team"],
+                row["home_team"],
             )
         )
-    verified: dict[int, tuple[RegGame, ...]] = {}
-    for season, rows in good.items():
-        if season in tainted or not rows:
-            continue
-        version, finished = loads.get(season, (None, None))
-        if not _fresh_load(version, finished, now):
-            continue
-        verified[season] = tuple(rows)
-    local = now.astimezone(ET)
-    relevant = local.year if local.month >= 8 else local.year - 1
-    if relevant in tainted or relevant not in verified:
-        return "schedule_evidence_missing", ()
-    rows = verified[relevant]
-    kickoffs = [game.kickoff_at for game in rows]
-    weeks = {game.week for game in rows}
-    moment = now.astimezone(UTC)
-    if moment < min(kickoffs) and 1 not in weeks:
-        return "schedule_evidence_missing", ()
-    if moment > max(kickoffs) and 18 not in weeks:
-        return "schedule_evidence_missing", ()
-    return "verified", rows
+    return verdict.evidence, tuple(games), verdict.metadata
 
 
 def _gametime(gameday: date, gametime: str) -> datetime | None:
@@ -1179,7 +1123,7 @@ def _locked(conn, **kwargs) -> AttemptResult:
     reconcile(conn, finished_at=clock.wall())
     opened = clock.wall()
     started_mono = clock.mono()
-    evidence, games = load_schedule(conn, opened)
+    evidence, games, schedule_meta = load_schedule(conn, opened)
     _release(conn)
     plan = _plan(
         evidence=evidence,
@@ -1216,6 +1160,7 @@ def _locked(conn, **kwargs) -> AttemptResult:
     state.season = plan["season"]
     state.week = plan["week"]
     state.label = plan["label"]
+    state.schedule_meta = schedule_meta
     try:
         if plan["stop"] is not None:
             raise CaptureFailure(plan["stop"])
@@ -1283,26 +1228,25 @@ def _plan(*, evidence, games, now, season, week, trigger, selection, draft_group
         mode = "explicit"
     else:
         stop = "invalid_selector"
-    if stop is None and evidence != "verified":
+    if stop is None and evidence == "gap":
+        stop = "off_season"
+    elif stop is None and evidence != "verified":
         stop = "schedule_evidence_missing"
     if stop is None and mode == "sunday":
-        if not _in_season(now, games):
-            stop = "off_season"
+        sunday = upcoming_sunday(now)
+        expected = expected_sunday_games(games, sunday)
+        identity = week_of(games, sunday)
+        if identity is None:
+            stop = "schedule_evidence_missing"
         else:
-            sunday = upcoming_sunday(now)
-            expected = expected_sunday_games(games, sunday)
-            identity = week_of(games, sunday)
-            if identity is None:
-                stop = "schedule_evidence_missing"
-            else:
-                derived_season, derived_week = identity
-                if season is None and week is None:
-                    if trigger != "schedule":
-                        stop = "season_week_required"
-                elif (season, week) != identity:
-                    stop = "wrong_season_week"
-                if stop is None and not expected:
-                    stop = "slate_unavailable"
+            derived_season, derived_week = identity
+            if season is None and week is None:
+                if trigger != "schedule":
+                    stop = "season_week_required"
+            elif (season, week) != identity:
+                stop = "wrong_season_week"
+            if stop is None and not expected:
+                stop = "slate_unavailable"
     if stop is None and mode == "explicit":
         if season is None or week is None:
             stop = "season_week_required"
@@ -1315,9 +1259,7 @@ def _plan(*, evidence, games, now, season, week, trigger, selection, draft_group
         "week": derived_week,
         "label": label,
         "draft_group_id": int(draft_group_id) if draft_group_id and draft_group_id.isdigit() else None,
-        "expected": expected_sunday_games(games, upcoming_sunday(now))
-        if evidence == "verified" and games and _in_season(now, games)
-        else (),
+        "expected": expected_sunday_games(games, upcoming_sunday(now)) if evidence == "verified" else (),
     }
 
 
@@ -1688,6 +1630,8 @@ def _write_terminal(
     )
     if getattr(state, "truncated_meta", None):
         metadata.update(state.truncated_meta)
+    if getattr(state, "schedule_meta", None):
+        metadata.update(state.schedule_meta)
     try:
         with state.conn.begin():
             if state.failpoint == "constraint":

@@ -107,9 +107,170 @@ def _kickoffs():
     }
 
 
-def _seed(engine, *, source_version="synthetic-schedule-v1"):
+def _install_schedule_proof(
+    conn,
+    rows,
+    retrieved_at,
+    *,
+    load_run_id,
+    source_version,
+    closure="final",
+    windows=None,
+    cancelled=(),
+):
+    """Stage a synthetic operator pin. This does not certify a real NFL season."""
+    from loader.schedule_proof import (
+        AUTHORITY_ENV,
+        canonical_bytes,
+        projection_documents,
+        sha256_bytes,
+    )
+
+    records, projection_sha, ids, id_sha = projection_documents(rows)
+    appearances: dict[str, int] = {}
+    windows = windows or {}
+    planned = []
+    for row in records:
+        fixture = {
+            "away_team": row["away_team"],
+            "game_id": row["game_id"],
+            "home_team": row["home_team"],
+            "season": row["season"],
+            "source_representation": "present",
+            "status": "active",
+            "week": row["week"],
+        }
+        if row["game_id"] in windows:
+            fixture["possible_playing_from"], fixture["possible_playing_until"] = windows[row["game_id"]]
+        planned.append(fixture)
+        appearances[row["away_team"]] = appearances.get(row["away_team"], 0) + 1
+        appearances[row["home_team"]] = appearances.get(row["home_team"], 0) + 1
+    planned.extend(cancelled)
+    reference = b"synthetic league schedule reference fixture\n"
+    reference_sha = sha256_bytes(reference)
+    inventory = {
+        "closure": closure,
+        "document_type": "season_inventory_v1",
+        "league_reference_artifacts": [
+            {"sha256": reference_sha, "url": "https://example.test/synthetic-league-reference"}
+        ],
+        "nflverse_source_origin": "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.parquet",
+        "original_scheduled_count": len(planned),
+        "planned_fixtures": planned,
+        "represented_count": len(ids),
+        "represented_set_sha256": id_sha,
+        "represented_source_ids": ids,
+        "review": {
+            "approved_at": "2026-11-01T15:00:00+00:00",
+            "method": "synthetic-fixture",
+            "reviewer": "synthetic-operator",
+        },
+        "schema_version": "season_inventory_v1",
+        "season": 2026,
+        "season_type": "REG",
+        "team_appearance_census": appearances,
+    }
+    inventory_body = canonical_bytes(inventory)
+    inventory_sha = sha256_bytes(inventory_body)
+    active = {
+        "covers_from": "2026-09-10T04:00:00+00:00",
+        "covers_until": "2027-02-10T05:00:00+00:00",
+        "document_type": "schedule_coverage_v1",
+        "mode": "active_season",
+        "review": {"reviewer": "synthetic-operator"},
+        "schema_version": "schedule_coverage_v1",
+        "season_inventory_refs": [{"inventory_sha256": inventory_sha}],
+    }
+    gap = {
+        "covers_from": "2027-02-10T05:00:00+00:00",
+        "covers_until": "2027-09-01T04:00:00+00:00",
+        "document_type": "schedule_coverage_v1",
+        "mode": "interseason_gap",
+        "published_no_reg_through": "2027-09-01T04:00:00+00:00",
+        "review": {"reviewer": "synthetic-operator"},
+        "schema_version": "schedule_coverage_v1",
+        "season_inventory_refs": [{"inventory_sha256": inventory_sha}],
+    }
+    active_sha = sha256_bytes(canonical_bytes(active))
+    gap_sha = sha256_bytes(canonical_bytes(gap))
+    root = {
+        "approval_reference": "synthetic-fixture-not-a-season-certification",
+        "approved_at": "2026-11-01T15:00:00+00:00",
+        "approved_by": "synthetic-operator",
+        "coverage_documents": [
+            {"coverage_sha256": active_sha},
+            {"coverage_sha256": gap_sha},
+        ],
+        "document_type": "authority_root_v1",
+        "schema_version": "authority_root_v1",
+        "season_inventories": [{"inventory_sha256": inventory_sha, "season": 2026}],
+    }
+    root_body = canonical_bytes(root)
+    raw_body = canonical_bytes({"games": records, "schema_version": "schedule_raw_v1"})
+    raw_sha = sha256_bytes(raw_body)
+    retrieved = retrieved_at.astimezone(UTC).isoformat()
+    receipt = {
+        "authority_root_sha256": sha256_bytes(root_body),
+        "byte_count": len(raw_body),
+        "committed_at": retrieved,
+        "document_type": "schedule_source_receipt_v1",
+        "games_load_run_id": int(load_run_id),
+        "inventory_checks": "matched_pinned_inventory",
+        "inventory_sha256": inventory_sha,
+        "media_type": "application/json",
+        "normalized_projection_sha256": projection_sha,
+        "parser_version": "f005.schedule.1",
+        "projection_version": "f005.schedule.1",
+        "publication_evidence_refs": [source_version],
+        "retrieved_at": retrieved,
+        "retrieval_evidence": {"source_url": "https://example.test/schedules", "status": 200},
+        "schema_version": "schedule_source_receipt_v1",
+        "season": 2026,
+        "source_raw_sha256": raw_sha,
+        "source_reg_count": len(ids),
+        "source_reg_ids": ids,
+        "source_reg_set_sha256": id_sha,
+        "source_url": "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.parquet",
+        "source_version": source_version,
+        "verification_version": "f005.schedule.1",
+    }
+    stored_at = retrieved_at
+    for body, kind, media in (
+        (reference, "schedule_reference", "text/plain"),
+        (inventory_body, "manifest", "application/json"),
+        (canonical_bytes(active), "manifest", "application/json"),
+        (canonical_bytes(gap), "manifest", "application/json"),
+        (root_body, "manifest", "application/json"),
+        (raw_body, "schedule_raw", "application/json"),
+        (canonical_bytes(receipt), "manifest", "application/json"),
+    ):
+        digest = sha256_bytes(body)
+        conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind, stored_at, loaded_at
+                ) VALUES (
+                    'control', :sha, :body, :count, :media, :kind, :stored_at, :stored_at
+                )
+                ON CONFLICT (source, sha256) DO NOTHING
+                """
+            ),
+            {
+                "sha": digest,
+                "body": body,
+                "count": len(body),
+                "media": media,
+                "kind": kind,
+                "stored_at": stored_at,
+            },
+        )
+    os.environ[AUTHORITY_ENV] = sha256_bytes(root_body)
+
+
+def _seed_plan():
     kicks = _kickoffs()
-    plan = [
+    return [
         ("2026_01_NE_KC", 2026, 1, "NE", "KC", kicks["book"]),
         ("2026_10_DAL_PHI", 2026, 10, "DAL", "PHI", kicks["thu"]),
         ("2026_10_BUF_MIA", 2026, 10, "BUF", "MIA", kicks["sat1"]),
@@ -120,6 +281,55 @@ def _seed(engine, *, source_version="synthetic-schedule-v1"):
         ("2026_16_CIN_PIT", 2026, 16, "CIN", "PIT", kicks["hol"]),
         ("2026_17_KC_DEN", 2026, 17, "KC", "DEN", kicks["end"]),
     ]
+
+
+def _proof_rows(plan):
+    rows = []
+    for game_id, season, week, away, home, moment in plan:
+        local = moment.astimezone(ET)
+        rows.append(
+            {
+                "game_id": game_id,
+                "season": season,
+                "week": week,
+                "gameday": local.date().isoformat(),
+                "weekday": WEEKDAYS[local.weekday()],
+                "gametime": local.strftime("%H:%M"),
+                "away_team": away,
+                "home_team": home,
+                "game_type": "REG",
+            }
+        )
+    return rows
+
+
+def _restamp_schedule_proof(engine, when):
+    plan = _seed_plan()
+    with engine.begin() as conn:
+        run_id = conn.execute(
+            text(
+                """
+                SELECT id FROM load_runs
+                WHERE dataset = 'games' AND season = 2026
+                ORDER BY id DESC LIMIT 1
+                """
+            )
+        ).scalar_one()
+        version = conn.execute(
+            text("SELECT source_version FROM load_runs WHERE id = :id"),
+            {"id": run_id},
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            _proof_rows(plan),
+            when,
+            load_run_id=run_id,
+            source_version=version,
+        )
+
+
+def _seed(engine, *, source_version="synthetic-schedule-v1"):
+    plan = _seed_plan()
     teams = sorted({team for _gid, _s, _w, away, home, _when in plan for team in (away, home)})
     with engine.begin() as conn:
         for abbr in teams:
@@ -137,8 +347,22 @@ def _seed(engine, *, source_version="synthetic-schedule-v1"):
                 ),
                 {"abbr": abbr},
             )
+        proof_rows = []
         for game_id, season, week, away, home, moment in plan:
             local = moment.astimezone(ET)
+            proof_rows.append(
+                {
+                    "game_id": game_id,
+                    "season": season,
+                    "week": week,
+                    "gameday": local.date().isoformat(),
+                    "weekday": WEEKDAYS[local.weekday()],
+                    "gametime": local.strftime("%H:%M"),
+                    "away_team": away,
+                    "home_team": home,
+                    "game_type": "REG",
+                }
+            )
             conn.execute(
                 text(
                     """
@@ -162,7 +386,7 @@ def _seed(engine, *, source_version="synthetic-schedule-v1"):
                     "home": home,
                 },
             )
-        conn.execute(
+        run_id = conn.execute(
             text(
                 """
                 INSERT INTO load_runs (
@@ -172,10 +396,12 @@ def _seed(engine, *, source_version="synthetic-schedule-v1"):
                     :run_group, 'games', 2026, 'succeeded', 'local', now(), now(),
                     'https://example.test/schedules', :source_version
                 )
+                RETURNING id
                 """
             ),
             {"run_group": uuid4(), "source_version": source_version},
-        )
+        ).scalar_one()
+        _install_schedule_proof(conn, proof_rows, NOW, load_run_id=run_id, source_version=source_version)
         conn.execute(
             text(
                 """
@@ -451,6 +677,7 @@ def test_at3_wrong_week_and_holiday_do_not_substitute(engine):
     ] == "wrong_season_week"
     assert transport.calls == []
     holiday = MutableClock(_et(2026, 12, 23, 10, 0))
+    _restamp_schedule_proof(engine, holiday.wall_now)
     holiday_transport = ScriptTransport(_happy_handler(_box()))
     assert (
         _run(
@@ -502,10 +729,10 @@ def test_at4_schedule_text_and_disabled_gate():
 def test_at5_off_season_stale_and_absent_group(engine):
     _seed(engine)
     off = ScriptTransport(_happy_handler(_box()))
-    assert _run(engine, off, clock=MutableClock(_et(2026, 8, 1, 10, 0))) == 0
+    assert _run(engine, off, clock=MutableClock(_et(2026, 8, 1, 10, 0))) == 1
     assert off.calls == []
     obs = _rows(engine, "SELECT status, reason_code, duration_ms FROM salary_private.salary_observations")[0]
-    assert (obs["status"], obs["reason_code"]) == ("skipped", "off_season")
+    assert (obs["status"], obs["reason_code"]) == ("failed", "schedule_evidence_missing")
     assert obs["duration_ms"] is not None
     with engine.begin() as conn:
         conn.execute(text("UPDATE load_runs SET source_version = NULL WHERE dataset = 'games'"))
@@ -761,6 +988,7 @@ def test_at10_retries_redirects_and_budget(engine):
     assert "authorization" not in {key.lower() for call in cookie_transport.calls for key in call.headers}
 
     clock = MutableClock(NOW + timedelta(days=3), 0)
+    _restamp_schedule_proof(engine, clock.wall_now)
 
     def jump(_request):
         clock.mono_now = 181
@@ -939,7 +1167,10 @@ def test_at12_storage_guards_and_concurrent_lock(engine):
     assert errors == []
     assert _scalar(
         engine,
-        "SELECT count(*) FROM salary_private.salary_artifacts WHERE artifact_kind = 'manifest'",
+        """
+        SELECT count(*) FROM salary_private.salary_artifacts
+        WHERE artifact_kind = 'manifest' AND media_type = 'text/plain'
+        """,
     ) == 2
 
 
@@ -995,7 +1226,8 @@ def test_at15_and_at16_timing(engine):
     _seed(engine)
     assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 0
     assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 0
-    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(_et(2026, 8, 1, 10, 0))) == 0
+    april = MutableClock(_et(2027, 4, 15, 10, 0))
+    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=april) == 0
     assert _run(
         engine,
         ScriptTransport(lambda _request: (403, {"content-type": "text/plain"}, b"no")),
@@ -1042,7 +1274,7 @@ def test_at15_and_at16_timing(engine):
         """
         SELECT started_at, finished_at, duration_ms
         FROM salary_private.salary_observations
-        ORDER BY loaded_at DESC
+        WHERE finished_at - started_at > interval '30 minutes'
         """,
     )[0]
     wall_ms = int((timed["finished_at"] - timed["started_at"]).total_seconds() * 1000)
@@ -1213,13 +1445,13 @@ def test_production_migrate_stops_before_0004(database_url):
         assert migrate_production(gated, "true") == "head"
         check = create_engine(gated)
         with check.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
             assert (
                 conn.execute(text("SELECT to_regclass('salary_private.dk_lobby_salaries')")).scalar()
                 is not None
             )
         check.dispose()
-        assert migrate_production(gated, None) == "0004"
+        assert migrate_production(gated, None) == "0005"
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)
@@ -1313,6 +1545,7 @@ def test_historical_hole_does_not_block_the_current_season(engine):
 def test_redirect_stops_when_the_budget_is_spent(engine):
     _seed(engine)
     clock = MutableClock(NOW + timedelta(days=2), 0)
+    _restamp_schedule_proof(engine, clock.wall_now)
 
     def handler(request):
         if request.url.path.endswith("/getcontests"):
@@ -1456,10 +1689,6 @@ def test_rules_hash_and_game_type_split_snapshots(engine):
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCKED: no authoritative season-completeness evidence in the repo or merged SPEC/ADRs",
-)
 def test_deleted_interior_sunday_game_is_missing_evidence(engine):
     """Endpoints stay. One interior Sunday game is gone. That is not a smaller slate."""
     _seed(engine)
@@ -1487,7 +1716,9 @@ def test_deleted_interior_sunday_game_is_missing_evidence(engine):
     ]
     reduced = [("NYJ", "NE", kicks["sun1"]), ("PHI", "DAL", kicks["sun1"])]
     box = _box(csv=_csv(rows), groups=[_group(90001, reduced)])
-    assert _run(engine, ScriptTransport(_happy_handler(box))) == 1
+    transport = ScriptTransport(_happy_handler(box))
+    assert _run(engine, transport) == 1
+    assert transport.calls == []
     observed = _rows(
         engine, "SELECT status, reason_code FROM salary_private.salary_observations"
     )[0]
@@ -1496,15 +1727,13 @@ def test_deleted_interior_sunday_game_is_missing_evidence(engine):
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCKED: no authoritative season-completeness evidence in the repo or merged SPEC/ADRs",
-)
 def test_deleted_interior_week_is_missing_evidence(engine):
     _seed(engine)
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM games WHERE season = 2026 AND week = 16"))
-    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 1
+    transport = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, transport) == 1
+    assert transport.calls == []
     observed = _rows(
         engine, "SELECT status, reason_code FROM salary_private.salary_observations"
     )[0]
@@ -1513,10 +1742,6 @@ def test_deleted_interior_week_is_missing_evidence(engine):
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCKED: no authoritative season-completeness evidence in the repo or merged SPEC/ADRs",
-)
 def test_incomplete_prior_season_in_april_is_not_off_season(engine):
     _seed(engine)
     with engine.begin() as conn:
@@ -1558,6 +1783,31 @@ def test_incomplete_prior_season_in_april_is_not_off_season(engine):
 def test_stale_current_season_is_not_saved_by_fresh_history(engine):
     _seed(engine)
     with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM salary_private.salary_artifacts
+                WHERE source = 'control'
+                  AND position('schedule_source_receipt_v1'::bytea in body) > 0
+                """
+            )
+        )
+        run_id = conn.execute(
+            text(
+                """
+                SELECT id FROM load_runs
+                WHERE dataset = 'games' AND season = 2026
+                ORDER BY id DESC LIMIT 1
+                """
+            )
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            _proof_rows(_seed_plan()),
+            NOW - timedelta(days=200),
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+        )
         conn.execute(
             text(
                 """
@@ -1613,6 +1863,294 @@ def test_truncated_schedule_is_not_off_season(engine):
     )[0]["reason_code"]
     assert reason == "schedule_evidence_missing"
     assert reason != "off_season"
+
+
+def test_positive_schedule_proof_is_stored_on_the_attempt(engine):
+    _seed(engine)
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 0
+    metadata = _rows(
+        engine,
+        "SELECT metadata FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["metadata"]
+    assert metadata["schedule_verification_result"] == "verified_active"
+    assert metadata["schedule_authority_root_sha256"]
+    assert metadata["expected_reg_count"] == metadata["observed_reg_count"] == 9
+    root = _rows(
+        engine,
+        """
+        SELECT body FROM salary_private.salary_artifacts
+        WHERE source = 'control' AND sha256 = :sha
+        """,
+        sha=metadata["schedule_authority_root_sha256"],
+    )[0]["body"]
+    assert b"synthetic-fixture-not-a-season-certification" in bytes(root)
+    assert b"272" not in bytes(root)
+
+
+def _stage_receipt_only(conn, rows, retrieved_at, load_run_id, source_version):
+    """Attach a self-consistent receipt without changing the pinned inventory."""
+    import json
+
+    from loader.schedule_proof import (
+        AUTHORITY_ENV,
+        canonical_bytes,
+        projection_documents,
+        sha256_bytes,
+    )
+
+    pin = os.environ[AUTHORITY_ENV]
+    root_body = conn.execute(
+        text("SELECT body FROM salary_private.salary_artifacts WHERE source = 'control' AND sha256 = :sha"),
+        {"sha": pin},
+    ).scalar_one()
+    inventory_sha = json.loads(bytes(root_body))["season_inventories"][0]["inventory_sha256"]
+    records, projection_sha, ids, id_sha = projection_documents(rows)
+    raw_body = canonical_bytes({"games": records, "schema_version": "schedule_raw_v1"})
+    retrieved = retrieved_at.astimezone(UTC).isoformat()
+    receipt = {
+        "authority_root_sha256": pin,
+        "byte_count": len(raw_body),
+        "committed_at": retrieved,
+        "document_type": "schedule_source_receipt_v1",
+        "games_load_run_id": int(load_run_id),
+        "inventory_checks": "recalculated",
+        "inventory_sha256": inventory_sha,
+        "media_type": "application/json",
+        "normalized_projection_sha256": projection_sha,
+        "parser_version": "f005.schedule.1",
+        "projection_version": "f005.schedule.1",
+        "publication_evidence_refs": [source_version],
+        "retrieved_at": retrieved,
+        "retrieval_evidence": {"source_url": "https://example.test/schedules", "status": 200},
+        "schema_version": "schedule_source_receipt_v1",
+        "season": 2026,
+        "source_raw_sha256": sha256_bytes(raw_body),
+        "source_reg_count": len(ids),
+        "source_reg_ids": ids,
+        "source_reg_set_sha256": id_sha,
+        "source_url": "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.parquet",
+        "source_version": source_version,
+        "verification_version": "f005.schedule.1",
+    }
+    for body, kind, media in (
+        (raw_body, "schedule_raw", "application/json"),
+        (canonical_bytes(receipt), "manifest", "application/json"),
+    ):
+        conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind, stored_at, loaded_at
+                ) VALUES (
+                    'control', :sha, :body, :count, :media, :kind, :stored_at, :stored_at
+                )
+                ON CONFLICT (source, sha256) DO NOTHING
+                """
+            ),
+            {
+                "sha": sha256_bytes(body),
+                "body": body,
+                "count": len(body),
+                "media": media,
+                "kind": kind,
+                "stored_at": retrieved_at,
+            },
+        )
+
+
+def test_truncated_raw_and_self_hash_still_fail(engine):
+    _seed(engine)
+    short = [row for row in _proof_rows(_seed_plan()) if row["game_id"] != "2026_10_DAL_PHI"]
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM games WHERE game_id = '2026_10_DAL_PHI'"))
+        conn.execute(
+            text(
+                """
+                DELETE FROM salary_private.salary_artifacts
+                WHERE source = 'control'
+                  AND position('schedule_source_receipt_v1'::bytea in body) > 0
+                """
+            )
+        )
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _stage_receipt_only(conn, short, NOW, run_id, "synthetic-schedule-v1")
+    transport = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, transport) == 1
+    assert transport.calls == []
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[0]["reason_code"] == "schedule_evidence_missing"
+
+
+def test_unpinned_or_future_or_shifted_schedule_fails(engine):
+    _seed(engine)
+    from loader.schedule_proof import AUTHORITY_ENV
+
+    saved_pin = os.environ[AUTHORITY_ENV]
+    os.environ[AUTHORITY_ENV] = "ab" * 32
+    unpinned = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, unpinned) == 1
+    assert unpinned.calls == []
+    os.environ[AUTHORITY_ENV] = saved_pin
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE games SET gametime = '18:00' WHERE game_id = '2026_10_GB_CHI'"))
+    shifted = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, shifted) == 1
+    assert shifted.calls == []
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE games SET gametime = '16:25' WHERE game_id = '2026_10_GB_CHI'"))
+        conn.execute(
+            text(
+                """
+                DELETE FROM salary_private.salary_artifacts
+                WHERE source = 'control'
+                  AND position('schedule_source_receipt_v1'::bytea in body) > 0
+                """
+            )
+        )
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            _proof_rows(_seed_plan()),
+            NOW + timedelta(hours=2),
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+        )
+    future = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, future) == 1
+    assert future.calls == []
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_disjoint_tbd_does_not_block_and_target_sunday_unknown_does(engine):
+    _seed(engine)
+    rows = _proof_rows(_seed_plan())
+    rows.append(
+        {
+            "game_id": "2026_18_BUF_MIA",
+            "season": 2026,
+            "week": 18,
+            "gameday": "2027-01-10",
+            "weekday": "Sunday",
+            "gametime": None,
+            "away_team": "BUF",
+            "home_team": "MIA",
+            "game_type": "REG",
+        }
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO games (
+                    game_id, season, game_type, season_type, week, gameday, weekday,
+                    gametime, away_team, home_team, location, loaded_at
+                ) VALUES (
+                    '2026_18_BUF_MIA', 2026, 'REG', 'REG', 18, DATE '2027-01-10', 'Sunday',
+                    NULL, 'BUF', 'MIA', 'Home', now()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                DELETE FROM salary_private.salary_artifacts
+                WHERE source = 'control'
+                  AND position('schedule_source_receipt_v1'::bytea in body) > 0
+                """
+            )
+        )
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            rows,
+            NOW,
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+            windows={"2026_18_BUF_MIA": ("2027-01-10T18:00:00+00:00", "2027-01-11T00:00:00+00:00")},
+        )
+    assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 0
+    rows[-1]["gametime"] = None
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE games SET gameday = DATE '2026-11-08' WHERE game_id = '2026_18_BUF_MIA'"))
+        conn.execute(
+            text(
+                """
+                DELETE FROM salary_private.salary_artifacts
+                WHERE source = 'control'
+                  AND position('schedule_source_receipt_v1'::bytea in body) > 0
+                """
+            )
+        )
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        rows[-1]["gameday"] = "2026-11-08"
+        rows[-1]["weekday"] = "Sunday"
+        _install_schedule_proof(
+            conn,
+            rows,
+            NOW,
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+            windows={"2026_18_BUF_MIA": ("2026-11-08T17:00:00+00:00", "2026-11-09T02:00:00+00:00")},
+        )
+    blocked = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, blocked) == 1
+    assert blocked.calls == []
+
+
+def test_supported_gap_is_off_season_and_a_bare_april_is_not(engine):
+    _seed(engine)
+    clock = MutableClock(_et(2027, 4, 15, 10, 0))
+    skipped = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, skipped, clock=clock) == 0
+    assert skipped.calls == []
+    skipped_row = _rows(
+        engine, "SELECT status, reason_code FROM salary_private.salary_observations"
+    )[0]
+    assert (skipped_row["status"], skipped_row["reason_code"]) == ("skipped", "off_season")
+    later = MutableClock(_et(2028, 4, 15, 10, 0))
+    missing = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, missing, clock=later) == 1
+    assert missing.calls == []
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations ORDER BY loaded_at DESC"
+    )[0]["reason_code"] == "schedule_evidence_missing"
+
+
+def test_schedule_receipt_is_not_emitted_for_a_short_source(engine, monkeypatch):
+    _seed(engine)
+    from loader.schedule_proof import canonical_bytes, maybe_emit_schedule_receipt
+
+    monkeypatch.setenv("SALARY_PRIVATE_MIGRATION", "true")
+    short_rows = [row for row in _proof_rows(_seed_plan()) if row["week"] != 16]
+    short = canonical_bytes({"games": short_rows, "schema_version": "schedule_raw_v1"})
+    with engine.begin() as conn:
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        assert (
+            maybe_emit_schedule_receipt(
+                conn,
+                run_id=int(run_id),
+                season=2026,
+                raw_body=short,
+                media_type="application/json",
+                source_url="https://example.test/schedules",
+                source_version="synthetic-schedule-v1",
+                retrieved_at=NOW,
+            )
+            is False
+        )
+    assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2026") == 9
 
 
 def test_login_redirect_keeps_the_body(engine):
