@@ -77,3 +77,13 @@ Exit 0. Aggregates from that database:
 | Snapshot seasons | 2022–2025 × 18 and 2026 × 8 |
 
 The 18 `evidence/dff-2021-week*.html.gz` files were not selected and were not stored. This load does not certify a season, a complete player pool, or optimizer readiness. Successful parsing of a subset is not a usable F005 snapshot.
+
+## Contract correction: manifest contradictions are not ledger identity
+
+`salary_source_rows` is keyed by CSV bytes and parser version. A manifest week or slate date that disagrees with a row is an interpretation of that file, not a property of the bytes.
+
+Before this correction, `classify` wrote `row_week_contradiction` onto the row, so the same CSV under a corrected manifest raised `ledger_conflict`. `test_corrected_manifest_reuses_intrinsic_ledger` failed on that head: the stored reason codes still contained `row_week_contradiction`.
+
+After the split, that reason stays on the failed observation only. The same bytes with manifest week 1 reuse the ledger and publish one snapshot. The failed observation remains, with `snapshot_id` null. A non-numeric week token is still an intrinsic `invalid_week` rejection.
+
+`DATABASE_URL=postgresql:///seam_f006_fix pytest -q` with trust authentication: `207 passed, 2 skipped`. `alembic heads` is `0006`. This does not reopen the archive-load section above.
