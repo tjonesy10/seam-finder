@@ -117,3 +117,9 @@ Classic eligibility was reading only `Roster Position`. With kickoffs that match
 CPT in either column is now `showdown`. QB and DST must appear in their own roster tokens. A roster token that names a different primary position, such as `QB/FLEX` on an RB, is `unsupported_roster`. The failed files keep their CSV artifact and two ledger rows. The earlier two-game snapshot and its salary rows stay. No `LAR`→`LA` alias was added; the 35 missing-game files above remain fail-closed.
 
 `DATABASE_URL=postgresql:///seam_f007_fix pytest -q` with trust authentication: `221 passed, 2 skipped`. `alembic heads` is `0007`. AT5 and AT6 still pass. This does not turn the 26-of-62 archive load into a certified season.
+
+## Contract correction: every eligibility token
+
+`Position=RB` with `Roster Position=RB/QB`, and `Position=QB` with `Roster Position=QB/FLEX`, still exited 0. A single matching primary token was enough. `test_every_roster_token_must_fit_position` was red on that.
+
+QB and DST now allow only their own token. RB, WR, and TE allow themselves and FLEX, and every token must be in that set. Both counterexamples fail `unsupported_roster`, keep the CSV artifact and two ledger rows, and leave the earlier two-game snapshot in place. CPT and a roster that omits QB or DST were already closed.

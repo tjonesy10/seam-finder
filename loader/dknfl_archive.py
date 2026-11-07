@@ -374,17 +374,24 @@ def _kickoff(game_info: str):
     return away, home, parsed
 
 
+_ELIGIBLE = {
+    "QB": {"QB"},
+    "DST": {"DST"},
+    "RB": {"RB", "FLEX"},
+    "WR": {"WR", "FLEX"},
+    "TE": {"TE", "FLEX"},
+}
+
+
 def _classic_eligibility(position: str, roster_tokens: list[str]) -> bool:
-    if not roster_tokens or any(token not in CLASSIC_TOKENS for token in roster_tokens):
+    allowed = _ELIGIBLE.get(position)
+    if not roster_tokens or allowed is None:
         return False
-    if position not in {"QB", "RB", "WR", "TE", "DST"}:
+    if any(token not in allowed for token in roster_tokens):
         return False
-    if position in {"QB", "DST"} and position not in roster_tokens:
-        return False
-    if position in {"RB", "WR", "TE"} and position not in roster_tokens and "FLEX" not in roster_tokens:
-        return False
-    primaries = [token for token in roster_tokens if token in {"QB", "RB", "WR", "TE", "DST"}]
-    return not primaries or position in primaries
+    if position in {"QB", "DST"}:
+        return position in roster_tokens
+    return position in roster_tokens or "FLEX" in roster_tokens
 
 
 def classify(records, headers: list[str]) -> tuple[list[ParsedRow], set[str]]:
