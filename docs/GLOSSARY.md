@@ -50,6 +50,9 @@
 | Artifact | Exact private bytes with source-specific SHA; BOM/CRLF and rejected evidence preserved, not only parsed values. | salary_artifacts |
 | Observation | One capture/ingestion attempt and its timestamps, even when bytes are unchanged. | salary_observations |
 | Capture runtime | Wall-clock `started_at`/`finished_at` and monotonic `duration_ms` for one private capture attempt. Not derived by subtracting clocks. | `salary_observations.duration_ms` |
+| Schedule authority root | Operator-reviewed pin of the expected full-season REG inventory and allowed gap proofs. A stored hash does not approve itself. | `DK_SCHEDULE_AUTHORITY_SHA256` |
+| Source-to-PG receipt | Private record binding exact nflverse schedule bytes to the games load and the approved inventory. Not proof that Postgres is still unchanged. | `schedule_source_receipt_v1` |
+| Schedule coverage | Finite reviewed interval that is either an active season or a supported no-REG gap. An unsupported gap is not off-season. | `schedule_coverage_v1` |
 | Source snapshot | One immutable source/path/group + artifact + parser/identity-metadata revision, not a union of weekly players. | salary_snapshots |
 | Slate revision | Verified exact game/kickoff set plus roster/rules/cap identity; changed evidence yields another revision. Native groups need explicit equivalence evidence. | canonical_slate_key / slate_revision_sha256 |
 | DFF | Daily Fantasy Fuel; acquired files are dated HTML-row-extraction salary/projection-player subsets, not complete DK exports. | dff_salaries |
