@@ -2716,6 +2716,116 @@ def test_stale_and_wide_damage_keep_the_whole_observed_set(engine):
     )
 
 
+def test_capacity_guard_rolls_back_optional_evidence(engine, monkeypatch):
+    import loader.salary_private as private
+
+    _seed(engine)
+    before = _scalar(
+        engine,
+        """
+        SELECT count(*) FROM salary_private.salary_artifacts
+        WHERE position('schedule_verification_v1'::bytea in body) > 0
+        """,
+    )
+    monkeypatch.setattr(private, "CUMULATIVE_LIMIT", 0)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM games WHERE game_id = '2026_10_DAL_PHI'"))
+    failed = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, failed) == 1
+    assert failed.calls == []
+    observed = _rows(
+        engine, "SELECT status, reason_code FROM salary_private.salary_observations"
+    )[0]
+    assert (observed["status"], observed["reason_code"]) == ("failed", "schedule_evidence_missing")
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+    assert (
+        _scalar(
+            engine,
+            """
+            SELECT count(*) FROM salary_private.salary_artifacts
+            WHERE position('schedule_verification_v1'::bytea in body) > 0
+            """,
+        )
+        == before
+    )
+
+
+def test_evidence_sql_error_leaves_the_outer_transaction_usable(engine, monkeypatch):
+    from loader import schedule_proof
+
+    def broken(conn, **_kwargs):
+        conn.execute(text("SELECT 1/0"))
+
+    monkeypatch.setattr(schedule_proof, "_insert_control", broken)
+    _seed(engine)
+    with engine.connect() as conn, conn.begin():
+        assert schedule_proof._store_failure_evidence(conn, {"subreason": "sql"}) is None
+        assert conn.execute(text("SELECT 1")).scalar() == 1
+
+
+def test_tcp_then_tls_share_one_deadline():
+    import time
+
+    import httpcore
+
+    from loader.dk_lobby import BudgetHTTPTransport
+
+    class SlowStream(httpcore.NetworkStream):
+        def __init__(self, pause: float):
+            self._pause = pause
+
+        def _burn(self, timeout):
+            if timeout is not None and timeout < self._pause:
+                time.sleep(max(timeout, 0))
+                raise httpcore.ConnectTimeout("phase budget")
+            time.sleep(self._pause)
+
+        def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            self._burn(timeout)
+            return self
+
+        def read(self, max_bytes, timeout=None):
+            return b""
+
+        def write(self, buffer, timeout=None):
+            return None
+
+        def close(self):
+            return None
+
+        def get_extra_info(self, info):
+            return None
+
+    class SlowSetup(httpcore.NetworkBackend):
+        def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            stream = SlowStream(2.5)
+            stream._burn(timeout)
+            return stream
+
+        def connect_unix_socket(self, path, timeout=None, socket_options=None):
+            raise httpcore.ConnectError("unused")
+
+        def sleep(self, seconds):
+            time.sleep(seconds)
+
+    started = time.monotonic()
+    transport = BudgetHTTPTransport(lambda: started + 4, SlowSetup())
+    try:
+        with httpx.Client(transport=transport, timeout=None) as client:
+            request = client.build_request("GET", "https://127.0.0.1/setup")
+            request.extensions["timeout"] = {
+                "connect": 10.0,
+                "read": 30.0,
+                "write": 30.0,
+                "pool": 10.0,
+            }
+            with pytest.raises(httpx.TimeoutException):
+                client.send(request)
+    finally:
+        transport.close()
+    assert time.monotonic() - started <= 4.6
+
+
 def test_login_redirect_keeps_the_body(engine):
     _seed(engine)
     evidence = b"synthetic-login-body"

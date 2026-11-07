@@ -174,7 +174,7 @@ def _document(conn, digest: str) -> tuple[int, dict] | None:
 
 
 def _store_failure_evidence(conn, payload: dict) -> str | None:
-    """Private record of the full expected and observed sets. Not a public log."""
+    """Optional private evidence. A failed insert must not commit or poison the caller."""
     body = canonical_bytes(
         {
             "document_type": "schedule_verification_v1",
@@ -182,6 +182,7 @@ def _store_failure_evidence(conn, payload: dict) -> str | None:
             **payload,
         }
     )
+    nested = conn.begin_nested()
     try:
         _insert_control(
             conn,
@@ -190,7 +191,9 @@ def _store_failure_evidence(conn, payload: dict) -> str | None:
             media_type="application/json",
             stored_at=datetime.now(UTC),
         )
+        nested.commit()
     except (OSError, TypeError, ValueError, SQLAlchemyError, PrivateWriteError, ProjectionError):
+        nested.rollback()
         return None
     return sha256_bytes(body)
 
