@@ -62,3 +62,21 @@ The earlier AT1–AT16 table did not cover the gaps below. Those rows stay histo
 | `0008` tables had no `loaded_at` and no lowercase SHA checks | Columns and checks were absent | The same test reads `loaded_at` NOT NULL on all three tables and the three SHA check constraints |
 
 `DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication after these corrections: `243 passed, 2 skipped`. `alembic heads` is `0008`. `ruff check loader web tests migrations` passed. This suite does not certify the 26-of-62 DKNFL archive load, and it does not add a `LAR` alias.
+
+## Second gate, remaining items
+
+The items the reviewer closed (per-entity resolution, superseded alternatives, lock-before-snapshot, serialized timestamp, fingerprint, `loaded_at`/hash checks, missing-table audit, and a direct `reconcile` call) were not reworked.
+
+On `68a33f4` the five new tests failed:
+
+| Test | Red result |
+|---|---|
+| `test_mapping_must_match_retained_context` | A DFF source label on a lobby snapshot published `ready=1` |
+| `test_unclaimed_newer_group_and_stale_f004_and_blank_reject` | The older claimed snapshot stayed selected, and the blank-rejected DKNFL file was `ready=1` |
+| `test_reused_artifacts_count_toward_invocation_budget` | The second rebuild of already-stored artifacts exited 0 under a limit smaller than their sum |
+| `test_mixed_source_coverage_reconciles` | The DFF DST row was counted as skill (`skill == 2`) |
+| `test_reachable_sql_failure_and_entrypoint_reconcile` | A statement timeout left the run `running` and printed `database_unreachable` |
+
+After the retained-context checks, those five tests pass. A supplied source or evidence artifact that does not match the stored snapshot is `bad_mapping_reference`. A claim cannot replace a known draft group. A rehashed kickoff does not agree with the stored game id and kickoff. An RB row cannot become `dst:`. A newer successful snapshot of the same native group blocks an older ready one even when the newer snapshot has no mapping claim. An F004 snapshot is current only when its row image matches the rows that still carry that hash. Any rejected DFF or DKNFL row, including a blank one, blocks readiness. Reused artifact bytes are checked against the invocation total before the stored row is reused. DFF `position_raw` is the roster token used for skill versus DST. `slate_verified` follows the interpretation status. Coverage now includes `dst_unresolved`, `excluded_duplicates`, and `ready_pools`, and the mixed DFF/legacy/unresolved fixture reconciles to `raw_records`. Reachable `OperationalError` finalizes the run as `statement_timeout`. The next `main` invocation reconciles a batch whose public audit did not finish.
+
+`DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication on this head: `249 passed, 2 skipped`. `alembic heads` is `0008`. Mutator remains UNKNOWN. The 26-of-62 DKNFL load is still not a certified season.

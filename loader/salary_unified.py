@@ -19,7 +19,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, SQLAlchemyError
 
 from loader.salary_private import (
     CAPTURE_LOCK,
@@ -165,6 +165,9 @@ def _pairs(raw) -> dict:
 def _store_artifact(conn, *, source: str, body: bytes, kind: str, now: datetime, spent: dict) -> tuple[int, str]:
     digest = sha256_bytes(body)
     spent["bytes"] = int(spent.get("bytes", 0)) + len(body)
+    block = budget_block(conn, object_bytes=len(body), invocation_bytes=spent["bytes"])
+    if block is not None:
+        raise UnifiedError(block.value)
     existing = conn.execute(
         text(
             """
@@ -178,9 +181,6 @@ def _store_artifact(conn, *, source: str, body: bytes, kind: str, now: datetime,
         if bytes(existing.body) != body:
             raise UnifiedError("artifact_conflict")
         return int(existing.artifact_id), digest
-    block = budget_block(conn, object_bytes=len(body), invocation_bytes=spent["bytes"])
-    if block is not None:
-        raise UnifiedError(block.value)
     row = conn.execute(
         text(
             """
@@ -384,6 +384,45 @@ def _adapt_f003(conn, now: datetime, spent: dict) -> None:
         )
 
 
+def _f004_image(digest: str, group: list) -> bytes:
+    image = [
+        {
+            "dk_id": item["dk_id"],
+            "game_info_raw": item["game_info_raw"],
+            "name_raw": item["name_raw"],
+            "position_raw": item["position_raw"],
+            "roster_position_raw": item["roster_position_raw"],
+            "salary": str(item["salary"]),
+            "season": int(item["season"]),
+            "source_loaded_at": item["source_loaded_at"].isoformat()
+            if isinstance(item["source_loaded_at"], datetime)
+            else str(item["source_loaded_at"]),
+            "source_sha256": digest,
+            "team_raw": item["team_raw"],
+            "week": int(item["week"]),
+        }
+        for item in group
+    ]
+    return json.dumps(image, sort_keys=True).encode()
+
+
+def _current_f004_images(conn) -> dict[str, str]:
+    rows = conn.execute(
+        text(
+            """
+            SELECT season, week, dk_id, name_raw, position_raw, roster_position_raw, team_raw,
+                   game_info_raw, salary, source_sha256, source_loaded_at
+            FROM dk_classic_slate
+            ORDER BY season, week, dk_id
+            """
+        )
+    ).mappings().all()
+    grouped: dict[str, list] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["source_sha256"])].append(dict(row))
+    return {digest: sha256_bytes(_f004_image(digest, group)) for digest, group in grouped.items()}
+
+
 def _adapt_f004(conn, now: datetime, spent: dict) -> None:
     rows = conn.execute(
         text(
@@ -401,25 +440,8 @@ def _adapt_f004(conn, now: datetime, spent: dict) -> None:
     mixed = len(grouped) > 1
     rules = {"rules_id": None, "roster_slots": None, "salary_cap": None, "evidence_artifact_id": None}
     for digest, group in grouped.items():
-        image = [
-            {
-                "dk_id": item["dk_id"],
-                "game_info_raw": item["game_info_raw"],
-                "name_raw": item["name_raw"],
-                "position_raw": item["position_raw"],
-                "roster_position_raw": item["roster_position_raw"],
-                "salary": str(item["salary"]),
-                "season": int(item["season"]),
-                "source_loaded_at": item["source_loaded_at"].isoformat()
-                if isinstance(item["source_loaded_at"], datetime)
-                else str(item["source_loaded_at"]),
-                "source_sha256": digest,
-                "team_raw": item["team_raw"],
-                "week": int(item["week"]),
-            }
-            for item in group
-        ]
-        body = json.dumps(image, sort_keys=True).encode()
+        body = _f004_image(digest, group)
+        image = json.loads(body)
         artifact_id, _sha = _store_artifact(
             conn, source=Source.F004_ADAPTER.value, body=body, kind="adapter_row_image", now=now, spent=spent
         )
@@ -461,7 +483,7 @@ def _candidates(conn) -> list[dict]:
                 FROM salary_private.dk_lobby_salaries
                 UNION ALL
                 SELECT snapshot_id, row_number, row_status, salary, NULL::text, dff_player_id,
-                       NULL::text, name_raw, team_raw
+                       position_raw, name_raw, team_raw
                 FROM salary_private.dff_salaries
                 UNION ALL
                 SELECT snapshot_id, row_number, row_status, salary, dk_id, NULL::text,
@@ -516,15 +538,12 @@ def _candidates(conn) -> list[dict]:
                 "preserved_game_id": image.get("game_id"),
             }
         )
-    current_hashes = {
-        row[0]
-        for row in conn.execute(text("SELECT DISTINCT source_sha256 FROM dk_classic_slate")).all()
-    }
+    current_images = _current_f004_images(conn)
     return [
         row
         for row in found
         if row["source"] != Source.F004_ADAPTER.value
-        or (row.get("metadata") or {}).get("source_sha256") in current_hashes
+        or current_images.get((row.get("metadata") or {}).get("source_sha256")) == row["artifact_sha"]
     ]
 
 
@@ -615,24 +634,66 @@ def _classic_rules(rules: dict | None) -> bool:
     return isinstance(cap, int) and cap > 0 and not isinstance(cap, bool)
 
 
+def _game_identity(games) -> list:
+    return sorted(
+        (
+            item.get("away"),
+            item.get("home"),
+            item.get("game_id"),
+            item.get("kickoff_at"),
+        )
+        for item in games or []
+    )
+
+
 def _same_games(snapshot_games, claim_games) -> bool:
     if not snapshot_games:
         return True
-    def pairs(games):
-        return {(item.get("away"), item.get("home")) for item in games or []}
-    return pairs(snapshot_games) == pairs(claim_games)
+    return _game_identity(snapshot_games) == _game_identity(claim_games)
+
+
+def _snapshot_context(conn) -> dict[str, dict]:
+    rows = conn.execute(
+        text("SELECT snapshot_id::text AS snapshot_id, source, draft_group_id FROM salary_private.salary_snapshots")
+    ).mappings().all()
+    return {row["snapshot_id"]: dict(row) for row in rows}
+
+
+def _artifact_exists(conn, artifact_id) -> bool:
+    if artifact_id in (None, ""):
+        return True
+    found = conn.execute(
+        text("SELECT 1 FROM salary_private.salary_artifacts WHERE artifact_id = :artifact_id"),
+        {"artifact_id": int(artifact_id)},
+    ).first()
+    return found is not None
+
+
+def _context_agrees(conn, item: dict, context: dict[str, dict]) -> None:
+    snapshot_id = str(item.get("snapshot_id") or "")
+    stored = context.get(snapshot_id)
+    if stored is None:
+        raise UnifiedError("bad_mapping_reference")
+    supplied = item.get("source")
+    if supplied not in (None, "") and supplied != stored["source"]:
+        raise UnifiedError("bad_mapping_reference")
+    if not _artifact_exists(conn, item.get("evidence_artifact_id")):
+        raise UnifiedError("bad_mapping_reference")
 
 
 def _validate_refs(conn, mapping: dict, rows: list[dict]) -> None:
     known = _known_ids(conn)
+    context = _snapshot_context(conn)
     present = {(str(row["snapshot_id"]), int(row["row_number"])) for row in rows}
     for slate in mapping["slates"]:
         if str(slate.get("snapshot_id")) not in known:
             raise UnifiedError("bad_mapping_reference")
+        _context_agrees(conn, slate, context)
     for item in mapping["entities"]:
         token = (str(item.get("snapshot_id")), int(item.get("row_number")))
         if token[0] not in known or token not in present:
             raise UnifiedError("bad_mapping_reference")
+        _context_agrees(conn, item, context)
         if item.get("gsis_id") and not _exists(conn, "players", "gsis_id", item.get("gsis_id")):
             raise UnifiedError("bad_mapping_reference")
         if item.get("team_abbr") and not _exists(conn, "teams", "team_abbr", item.get("team_abbr")):
@@ -642,11 +703,14 @@ def _validate_refs(conn, mapping: dict, rows: list[dict]) -> None:
     for choice in mapping["snapshot_choices"]:
         if str(choice.get("snapshot_id")) not in known:
             raise UnifiedError("bad_mapping_reference")
+        _context_agrees(conn, choice, context)
     for resolution in mapping["resolutions"]:
         chosen = resolution.get("chosen_ref") or {}
         if str(chosen.get("snapshot_id")) not in known:
             raise UnifiedError("bad_mapping_reference")
         if (str(chosen.get("snapshot_id")), int(chosen.get("row_number"))) not in present:
+            raise UnifiedError("bad_mapping_reference")
+        if resolution.get("evidence_artifact_id") and not _artifact_exists(conn, resolution.get("evidence_artifact_id")):
             raise UnifiedError("bad_mapping_reference")
 
 
@@ -681,9 +745,15 @@ def _entity_status(row: dict, spec: dict | None) -> dict:
             game = spec["game_id"]
             entity_key = f"player:{gsis}"
     elif spec.get("status") == "verified" and kind == "dst" and mapped_team and team_ok:
-        status = "verified"
-        team = mapped_team
-        entity_key = f"dst:{team}"
+        roster_tokens = {part for part in (row.get("roster_position_raw") or "").upper().split("/") if part}
+        skill_tokens = {"QB", "RB", "WR", "TE"}
+        if roster_tokens & skill_tokens and "DST" not in roster_tokens:
+            status = "unresolved"
+        else:
+            status = "verified"
+            team = mapped_team
+            game = spec.get("game_id")
+            entity_key = f"dst:{team}"
     elif spec.get("status") in {"ambiguous", "rejected", "unresolved", "legacy_unknown"}:
         status = spec["status"]
     return {
@@ -727,18 +797,20 @@ def _latest(items: list[dict], key) -> dict:
 
 
 def _source_blockers(nodes: list[dict], timeline: list[dict]) -> set[str]:
-    if not nodes:
-        return set()
-    key, revision = nodes[0]["key"], nodes[0]["revision"]
-    grouped: dict[str, list] = defaultdict(list)
-    for item in timeline:
-        if item["key"] == key and item["revision"] == revision:
-            grouped[item["source"]].append(item)
     blocked = set()
-    for source, items in grouped.items():
-        latest = _latest(items, lambda item: (item["observed"], item["sha"], str(item["snapshot_id"])))
-        if not latest["complete"]:
-            blocked.add(source)
+    for node in nodes:
+        later = [
+            item
+            for item in timeline
+            if item["source"] == node["source"]
+            and item.get("native_group") == node.get("native_group")
+            and item["snapshot_id"] != node["snapshot_id"]
+            and (item["observed"], item["sha"], str(item["snapshot_id"]))
+            > (node["observed"], node["sha"], str(node["snapshot_id"]))
+            and not item["complete"]
+        ]
+        if later:
+            blocked.add(node["source"])
     return blocked
 
 
@@ -817,8 +889,10 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
         key = None
         effective = None
         complete = False
-        group = sample.get("draft_group_id")
+        native_group = sample.get("draft_group_id")
+        group = native_group
         equivalents = set()
+        group_override = False
         if sample["source"] == Source.F003_ADAPTER.value:
             status = "legacy_unknown"
         elif claim is not None:
@@ -826,7 +900,9 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             rules = claim.get("rules") if claim.get("rules") is not None else sample["rules"]
             revision = revision_hash(games, rules, sample["season"], sample["season_type"], sample["week"])
             supplied = claim.get("slate_revision_sha256")
-            group = claim.get("draft_group_id") or group
+            claimed_group = claim.get("draft_group_id")
+            group_override = bool(native_group and claimed_group and str(claimed_group) != str(native_group))
+            group = native_group or claimed_group
             equivalents = set(claim.get("equivalent_group_ids") or [])
             if group:
                 equivalents.add(group)
@@ -844,6 +920,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                 and kickoffs_ok
                 and rules_ok
                 and games_ok
+                and not group_override
             ):
                 status = "verified"
                 complete = True
@@ -872,7 +949,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                 "details": {"complete_pool": complete, "method": None if claim is None else claim.get("reason")},
             }
         )
-        if observations.get(snapshot_id) is not None and key and status != "legacy_unknown":
+        if observations.get(snapshot_id) is not None and status != "legacy_unknown":
             timeline.append(
                 {
                     "snapshot_id": snapshot_id,
@@ -880,6 +957,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                     "sha": sample["artifact_sha"],
                     "key": key,
                     "revision": revision,
+                    "native_group": native_group,
                     "observed": observations[snapshot_id]["observed_at"],
                     "complete": complete,
                 }
@@ -896,6 +974,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                     "key": key,
                     "revision": revision,
                     "group": group,
+                    "native_group": native_group,
                     "equivalents": equivalents,
                     "complete": complete,
                     "mixed": bool((sample.get("metadata") or {}).get("mixed_hash_cohort")),
@@ -1057,6 +1136,9 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             if native:
                 native_counts[str(native)] += 1
         duplicate_native = any(count > 1 for count in native_counts.values())
+        archive_rejected = anchor_source in {Source.DFF.value, Source.DKNFL.value} and any(
+            row["row_status"] == "rejected" for row in anchor_rows
+        )
         flags_for = {}
         disagreement = False
         nonpositive = False
@@ -1123,6 +1205,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             or unresolved_member
             or duplicate_pool
             or duplicate_native
+            or archive_rejected
             or nonpositive
             or membership
             or anchor_source == Source.DFF.value
@@ -1194,6 +1277,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                     "slate_revision_sha256": shown_rev,
                     "entity_key": entity["entity_key"],
                     "entity_status": entity["status"],
+                "slate_status": slate_meta[row["snapshot_id"]]["status"],
                 "is_selected": selected,
                     "pool_ready": pool_ok,
                     "optimizer_ready": pool_ok and anchor_source != Source.DFF.value,
@@ -1225,6 +1309,9 @@ def _empty_coverage() -> dict:
         "unmapped": 0,
         "unresolved": 0,
         "ambiguous": 0,
+        "dst_unresolved": 0,
+        "excluded_duplicates": 0,
+        "ready_pools": 0,
         "slate_verified": 0,
         "slate_unknown": 0,
         "full_export": 0,
@@ -1261,12 +1348,18 @@ def _summary(rows, output, disagreement_count) -> dict:
                     bucket["skill"] += 1
         item = produced.get((str(row["snapshot_id"]), int(row["row_number"])))
         status = None if item is None else item.get("entity_status")
-        verified_slate = bool(item and item.get("slate_revision_sha256") and item.get("entity_status") != "legacy_unknown")
+        slate_status = None if item is None else item.get("slate_status")
+        flags = [] if item is None else item.get("quality_flags", {}).get("flags", [])
         for bucket in (source_bucket, snap_bucket):
-            if verified_slate:
+            if slate_status == "verified":
                 bucket["slate_verified"] += 1
             else:
                 bucket["slate_unknown"] += 1
+            if "duplicate_entity" in flags:
+                bucket["excluded_duplicates"] += 1
+        if row["row_status"] == "valid" and _is_dst_row(row) and status != "verified":
+            source_bucket["dst_unresolved"] += 1
+            snap_bucket["dst_unresolved"] += 1
         if row["row_status"] != "valid":
             continue
         if _is_dst_row(row):
@@ -1295,6 +1388,23 @@ def _summary(rows, output, disagreement_count) -> dict:
         return {"numerator": num, "denominator": den}
 
     valid = [row for row in rows if row["row_status"] == "valid"]
+    ready_pools = {
+        (row.get("canonical_slate_key"), row.get("slate_revision_sha256"))
+        for row in output
+        if row["pool_ready"]
+    }
+    for source, bucket in by_source.items():
+        bucket["ready_pools"] = len(
+            {
+                (row.get("canonical_slate_key"), row.get("slate_revision_sha256"))
+                for row in output
+                if row["pool_ready"] and row["source"] == source
+            }
+        )
+    for snapshot_id, bucket in by_snapshot.items():
+        bucket["ready_pools"] = int(
+            any(row["pool_ready"] and str(row["snapshot_id"]) == snapshot_id for row in output)
+        )
     return {
         "raw_records": len(rows),
         "parsed_records": len(rows),
@@ -1305,6 +1415,7 @@ def _summary(rows, output, disagreement_count) -> dict:
         "ready_rows": sum(1 for row in output if row["optimizer_ready"]),
         "disagreement_count": disagreement_count,
         "blank_placeholders": sum(_blank_placeholder(row) for row in rows),
+        "ready_pools": len(ready_pools),
         "by_source": by_source,
         "by_snapshot": by_snapshot,
         "rates": {"skill_mapped": rate(mapped_skill, skill_total)},
@@ -1404,6 +1515,12 @@ def run(database_url: str, selection_scope: str, as_of: str, mapping_file, trigg
     now = datetime.now(cutoff.tzinfo)
     run_id = None
     summary = {"selected_rows": 0, "ready_rows": 0, "raw_records": 0}
+    try:
+        with engine.connect() as conn:
+            reconcile(conn)
+    except SQLAlchemyError:
+        print("database_unreachable", file=sys.stderr)
+        return 1
     try:
         if not path.is_file():
             with engine.connect() as conn:
@@ -1567,7 +1684,16 @@ def run(database_url: str, selection_scope: str, as_of: str, mapping_file, trigg
         _mark_failed(engine, run_id, reason, cutoff)
         print(f"reason={reason}", file=sys.stderr)
         return 1
-    except (SQLAlchemyError, OSError):
+    except OperationalError as exc:
+        reason = "statement_timeout" if "timeout" in str(exc).lower() else "load_failed"
+        _mark_failed(engine, run_id, reason, cutoff)
+        print(f"reason={reason}", file=sys.stderr)
+        return 1
+    except SQLAlchemyError:
+        _mark_failed(engine, run_id, "load_failed", cutoff)
+        print("reason=load_failed", file=sys.stderr)
+        return 1
+    except OSError:
         print("database_unreachable", file=sys.stderr)
         return 1
     finally:
