@@ -420,7 +420,11 @@ def _current_f004_images(conn) -> dict[str, str]:
     grouped: dict[str, list] = defaultdict(list)
     for row in rows:
         grouped[str(row["source_sha256"])].append(dict(row))
-    return {digest: sha256_bytes(_f004_image(digest, group)) for digest, group in grouped.items()}
+    mixed = len(grouped) > 1
+    return {
+        digest: {"image_sha256": sha256_bytes(_f004_image(digest, group)), "mixed_hash_cohort": mixed}
+        for digest, group in grouped.items()
+    }
 
 
 def _adapt_f004(conn, now: datetime, spent: dict) -> None:
@@ -539,12 +543,22 @@ def _candidates(conn) -> list[dict]:
             }
         )
     current_images = _current_f004_images(conn)
-    return [
-        row
-        for row in found
-        if row["source"] != Source.F004_ADAPTER.value
-        or current_images.get((row.get("metadata") or {}).get("source_sha256")) == row["artifact_sha"]
-    ]
+    kept = []
+    for row in found:
+        if row["source"] != Source.F004_ADAPTER.value:
+            row["adapter_identity_ok"] = True
+            kept.append(row)
+            continue
+        meta = row.get("metadata") or {}
+        current = current_images.get(meta.get("source_sha256"))
+        identity_ok = (
+            current is not None
+            and current["image_sha256"] == row["artifact_sha"]
+            and bool(meta.get("mixed_hash_cohort")) == current["mixed_hash_cohort"]
+        )
+        row["adapter_identity_ok"] = identity_ok
+        kept.append(row)
+    return kept
 
 
 def _observations(conn, cutoff: datetime) -> dict:
@@ -646,10 +660,36 @@ def _game_identity(games) -> list:
     )
 
 
-def _same_games(snapshot_games, claim_games) -> bool:
+def _known_game_conflict(snapshot_games, claim_games) -> bool:
+    """Known retained facts must agree. A null kickoff may be filled by the claim."""
     if not snapshot_games:
-        return True
-    return _game_identity(snapshot_games) == _game_identity(claim_games)
+        return False
+    claims = list(claim_games or [])
+    for known in snapshot_games:
+        claim = None
+        if known.get("game_id"):
+            claim = next((item for item in claims if item.get("game_id") == known.get("game_id")), None)
+        if claim is None:
+            claim = next(
+                (
+                    item
+                    for item in claims
+                    if item.get("away") == known.get("away") and item.get("home") == known.get("home")
+                ),
+                None,
+            )
+        if claim is None:
+            return True
+        for field in ("away", "home", "game_id"):
+            known_value = known.get(field)
+            claim_value = claim.get(field)
+            if known_value and claim_value and known_value != claim_value:
+                return True
+        known_kick = known.get("kickoff_at")
+        claim_kick = claim.get("kickoff_at")
+        if known_kick and claim_kick and known_kick != claim_kick:
+            return True
+    return False
 
 
 def _snapshot_context(conn) -> dict[str, dict]:
@@ -796,37 +836,44 @@ def _latest(items: list[dict], key) -> dict:
     return max(items, key=key)
 
 
-def _source_blockers(nodes: list[dict], timeline: list[dict]) -> set[str]:
+def _history_key(item: dict) -> tuple:
+    group = item.get("native_group")
+    if group:
+        return ("group", item["source"], str(group))
+    return ("lone", str(item["snapshot_id"]))
+
+
+def _blocked_snapshot_ids(timeline: list[dict]) -> set:
+    """Only the latest snapshot in one proven history can anchor.
+
+    A null draft group is not a shared history. An older incomplete file does
+    not block a later complete snapshot of that same history.
+    """
+    grouped: dict[tuple, list] = defaultdict(list)
+    for item in timeline:
+        grouped[_history_key(item)].append(item)
     blocked = set()
-    for node in nodes:
-        later = [
-            item
-            for item in timeline
-            if item["source"] == node["source"]
-            and item.get("native_group") == node.get("native_group")
-            and item["snapshot_id"] != node["snapshot_id"]
-            and (item["observed"], item["sha"], str(item["snapshot_id"]))
-            > (node["observed"], node["sha"], str(node["snapshot_id"]))
-            and not item["complete"]
-        ]
-        if later:
-            blocked.add(node["source"])
+    for items in grouped.values():
+        latest = _latest(items, lambda item: (item["observed"], item["sha"], str(item["snapshot_id"])))
+        if latest["complete"]:
+            blocked.update(item["snapshot_id"] for item in items if item["snapshot_id"] != latest["snapshot_id"])
+        else:
+            blocked.update(item["snapshot_id"] for item in items)
     return blocked
 
 
 def _pick_anchor(nodes: list[dict], choice: dict | None, timeline: list[dict] | None = None) -> dict | None:
-    blocked_sources = _source_blockers(nodes, timeline or [])
+    blocked_ids = _blocked_snapshot_ids(timeline or [])
+    eligible = [node for node in nodes if node["snapshot_id"] not in blocked_ids]
     if choice is not None:
-        if choice and blocked_sources:
-            chosen_source = next((node["source"] for node in nodes if str(node["snapshot_id"]) == str(choice["snapshot_id"])), None)
-            if chosen_source in blocked_sources:
-                return None
-        chosen = next((node for node in nodes if str(node["snapshot_id"]) == str(choice["snapshot_id"])), None)
+        if str(choice.get("snapshot_id")) in {str(item) for item in blocked_ids}:
+            return None
+        chosen = next((node for node in eligible if str(node["snapshot_id"]) == str(choice["snapshot_id"])), None)
         if chosen is None or chosen.get("observed") is None:
             raise UnifiedError("bad_mapping_reference")
         return chosen
     by_source: dict[str, list] = defaultdict(list)
-    for node in nodes:
+    for node in eligible:
         if node.get("observed") is None:
             continue
         by_source[node["source"]].append(node)
@@ -834,7 +881,7 @@ def _pick_anchor(nodes: list[dict], choice: dict | None, timeline: list[dict] | 
     blocked = set()
     for source, items in by_source.items():
         shas = {item["sha"] for item in items}
-        if source in blocked_sources or (source in ARCHIVE and len(shas) > 1):
+        if source in ARCHIVE and len(shas) > 1:
             blocked.add(source)
             continue
         if source == Source.DK_LOBBY.value:
@@ -912,7 +959,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
             hash_ok = supplied == revision
             kickoffs_ok = bool(games) and all(_aware_kickoff(game.get("kickoff_at")) for game in games)
             rules_ok = _classic_rules(rules)
-            games_ok = _same_games(sample.get("games"), games)
+            games_ok = not _known_game_conflict(sample.get("games"), games)
             if (
                 claim.get("status") == "verified"
                 and hash_ok
@@ -921,6 +968,7 @@ def _build(conn, mapping: dict, cutoff: datetime) -> tuple[list[dict], dict, lis
                 and rules_ok
                 and games_ok
                 and not group_override
+                and sample.get("adapter_identity_ok", True)
             ):
                 status = "verified"
                 complete = True
@@ -1516,12 +1564,6 @@ def run(database_url: str, selection_scope: str, as_of: str, mapping_file, trigg
     run_id = None
     summary = {"selected_rows": 0, "ready_rows": 0, "raw_records": 0}
     try:
-        with engine.connect() as conn:
-            reconcile(conn)
-    except SQLAlchemyError:
-        print("database_unreachable", file=sys.stderr)
-        return 1
-    try:
         if not path.is_file():
             with engine.connect() as conn:
                 run_id = _open_run(conn, trigger, now)
@@ -1541,6 +1583,7 @@ def run(database_url: str, selection_scope: str, as_of: str, mapping_file, trigg
         with engine.connect() as conn:
             conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": CAPTURE_LOCK})
             try:
+                reconcile(conn)
                 run_id = _open_run(conn, trigger, now)
                 with conn.execution_options(isolation_level="REPEATABLE READ").begin():
                     now = datetime.now(cutoff.tzinfo)

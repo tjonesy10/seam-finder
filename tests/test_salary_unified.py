@@ -1600,3 +1600,235 @@ def test_reachable_sql_failure_and_entrypoint_reconcile(engine, database_url, tm
             )
         ).scalars().all()
         assert statuses[0] == "succeeded"
+
+
+def test_latest_complete_history_and_separate_null_groups(engine, database_url, tmp_path):
+    with engine.begin() as conn:
+        _world(conn)
+        early, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"hist-a",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-1",
+        )
+        _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"hist-b",
+            rows=[{"status": "valid", "salary": "5100", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 2, tzinfo=UTC), draft_group="dg-1",
+        )
+        latest, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"hist-c",
+            rows=[{"status": "valid", "salary": "5200", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 3, tzinfo=UTC), draft_group="dg-1",
+        )
+        lower, _sha = _snapshot(
+            conn, source="dknfl", pool="full_export", body=b"hist-lower",
+            rows=[{"status": "valid", "salary": "1000", "native": "999", "name": "Other", "roster": "QB", "team": "BUF"}],
+            observed_at=datetime(2024, 9, 3, tzinfo=UTC), draft_group="dg-low", week=16,
+        )
+        week_one, _sha = _snapshot(
+            conn, source="dknfl", pool="full_export", body=b"null-week1",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 8, 1, tzinfo=UTC),
+        )
+        week_sixteen, _sha = _snapshot(
+            conn, source="dknfl", pool="full_export", body=b"null-week16",
+            rows=[{"status": "valid", "salary": "4000", "native": "222", "name": "Josh", "roster": "QB", "team": "PHI"}],
+            observed_at=datetime(2024, 12, 1, tzinfo=UTC), week=16,
+        )
+    lobby = {
+        "mapping_version": "v1",
+        "slates": [
+            _slate(early, GAMES, effective="2024-09-01T00:00:00+00:00"),
+            _slate(latest, GAMES, effective="2024-09-03T00:00:00+00:00"),
+            _slate(lower, HOLIDAY, key="low", group="dg-low", week=16, source="dknfl", effective="2024-09-03T00:00:00+00:00"),
+        ],
+        "entities": [
+            _entity(early, 1, gsis="00-0033873"),
+            _entity(latest, 1, gsis="00-0033873"),
+            _entity(lower, 1, gsis="00-0034857", team="BUF", game="2024_16_DAL_PHI", source="dknfl"),
+        ],
+    }
+    # The middle lobby file is a successful snapshot with no verified claim.
+    assert _publish(database_url, _mapping(tmp_path, lobby), scope="recovered") == 0
+    archives = {
+        "mapping_version": "v1",
+        "slates": [
+            _slate(week_one, GAMES, key="week1", group=None, source="dknfl"),
+            _slate(week_sixteen, HOLIDAY, key="week16", group=None, week=16, source="dknfl", complete=False, status="unresolved"),
+        ],
+        "entities": [_entity(week_one, 1, gsis="00-0033873", source="dknfl")],
+    }
+    archives["slates"][0]["draft_group_id"] = None
+    archives["slates"][1]["draft_group_id"] = None
+    assert _publish(database_url, _mapping(tmp_path, archives, "archives.json"), scope="archives") == 0
+    with engine.connect() as conn:
+        selected = [row for row in _view(conn, "recovered") if row["is_selected"]]
+        assert {row["source_snapshot_id"] for row in selected} == {latest}
+        assert all(row["optimizer_ready"] for row in selected)
+        week1 = [row for row in _view(conn, "archives") if row["source_snapshot_id"] == week_one and row["is_selected"]]
+        assert week1
+        assert all(row["optimizer_ready"] for row in week1)
+
+
+def test_null_kickoff_can_be_enriched_without_becoming_ready(engine, database_url, tmp_path):
+    stored = [{"away": "BUF", "home": "KC", "game_id": "2024_01_BUF_KC", "kickoff_at": None}]
+    with engine.begin() as conn:
+        _world(conn)
+        snapshot, _sha = _snapshot(
+            conn, source="dff", pool="subset", body=b"null-kick",
+            rows=[{"status": "valid", "salary": "5000", "native": "D1", "name": "Patrick", "position": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), games=stored,
+        )
+    payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, GAMES, group=None, source="dff")],
+        "entities": [_entity(snapshot, 1, gsis="00-0033873", source="dff")],
+    }
+    payload["slates"][0]["draft_group_id"] = None
+    assert _publish(database_url, _mapping(tmp_path, payload), scope="enrich") == 0
+    with engine.connect() as conn:
+        status = conn.execute(
+            text(
+                """
+                SELECT status FROM salary_private.salary_interpretations
+                WHERE snapshot_id = :snapshot AND row_number IS NULL
+                """
+            ),
+            {"snapshot": snapshot},
+        ).scalar_one()
+        rows = _view(conn, "enrich")
+        assert status == "verified"
+        assert rows
+        assert all(row["source_pool_kind"] == "subset" for row in rows if row["source"] == "dff")
+        assert not any(row["optimizer_ready"] for row in rows)
+
+
+def test_reconcile_waits_for_the_active_attempt(engine, database_url, tmp_path):
+    import time
+
+    with engine.begin() as conn:
+        _world(conn)
+        snapshot, _sha = _snapshot(
+            conn, source="dk_lobby", pool="full_export", body=b"active",
+            rows=[{"status": "valid", "salary": "5000", "native": "111", "name": "Patrick", "roster": "QB", "team": "KC"}],
+            observed_at=datetime(2024, 9, 1, tzinfo=UTC), draft_group="dg-1",
+        )
+    payload = {
+        "mapping_version": "v1",
+        "slates": [_slate(snapshot, GAMES)],
+        "entities": [_entity(snapshot, 1, gsis="00-0033873")],
+    }
+    path = _mapping(tmp_path, payload)
+    held = threading.Event()
+    release = threading.Event()
+
+    def holder():
+        with engine.connect() as conn:
+            conn.execute(text("SELECT pg_advisory_lock(582005)"))
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO load_runs (run_group, dataset, season, status, trigger, started_at, source_url)
+                    VALUES (gen_random_uuid(), 'dk_salary_unified', NULL, 'running', 'local', CURRENT_TIMESTAMP, 'dk_salary_unified')
+                    """
+                )
+            )
+            conn.commit()
+            held.set()
+            assert release.wait(5)
+            conn.execute(text("SELECT pg_advisory_unlock(582005)"))
+            conn.commit()
+
+    threading.Thread(target=holder).start()
+    assert held.wait(3)
+    outcome = {}
+
+    def second():
+        outcome["code"] = _publish(database_url, path, scope="waited")
+
+    follower = threading.Thread(target=second)
+    follower.start()
+    try:
+        time.sleep(0.4)
+        with engine.connect() as conn:
+            status = conn.execute(
+                text(
+                    """
+                    SELECT status FROM load_runs
+                    WHERE dataset = 'dk_salary_unified'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                )
+            ).scalar()
+        assert follower.is_alive()
+        assert status == "running"
+    finally:
+        release.set()
+    follower.join(5)
+    assert outcome["code"] == 0
+
+
+def test_stale_f004_quality_cannot_stay_ready(engine, database_url, tmp_path):
+    with engine.begin() as conn:
+        _world(conn)
+        conn.execute(
+            text(
+                """
+                INSERT INTO dk_classic_slate (
+                    season, week, dk_id, name_raw, position_raw, roster_position_raw, team_raw,
+                    game_info_raw, salary, source_name, source_sha256, source_loaded_at, loaded_at
+                ) VALUES (
+                    2024, 1, '111', 'Patrick', 'QB', 'QB', 'KC', 'BUF@KC', 5000,
+                    'DKSalaries.csv', :sha, '2024-09-01T00:00:00+00:00', CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"sha": "e" * 64},
+        )
+    assert _publish(database_url, _mapping(tmp_path, {"mapping_version": "v1"}), scope="seed") == 0
+    with engine.connect() as conn:
+        old = conn.execute(
+            text(
+                """
+                SELECT s.snapshot_id, o.observed_at
+                FROM salary_private.salary_snapshots s
+                JOIN salary_private.salary_observations o ON o.snapshot_id = s.snapshot_id
+                WHERE s.source = 'f004_adapter' AND s.metadata->>'source_sha256' = :sha
+                """
+            ),
+            {"sha": "e" * 64},
+        ).one()
+    mapped = {
+        "mapping_version": "v1",
+        "slates": [_slate(old.snapshot_id, GAMES, source="f004_adapter")],
+        "entities": [_entity(old.snapshot_id, 1, gsis="00-0033873", source="f004_adapter")],
+    }
+    assert _publish(database_url, _mapping(tmp_path, mapped, "ready.json"), scope="readyA") == 0
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO dk_classic_slate (
+                    season, week, dk_id, name_raw, position_raw, roster_position_raw, team_raw,
+                    game_info_raw, salary, source_name, source_sha256, source_loaded_at, loaded_at
+                ) VALUES (
+                    2024, 1, '222', 'Other', 'RB', 'RB/FLEX', 'BUF', 'BUF@KC', 4000,
+                    'DKSalaries.csv', :sha, '2024-09-02T00:00:00+00:00', CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"sha": "f" * 64},
+        )
+    assert _publish(
+        database_url,
+        _mapping(tmp_path, mapped, "stale.json"),
+        scope="staleA",
+        cutoff=old.observed_at.isoformat(),
+    ) == 0
+    with engine.connect() as conn:
+        ready = [
+            row for row in _view(conn, "staleA")
+            if row["source_snapshot_id"] == old.snapshot_id and row["optimizer_ready"]
+        ]
+        assert ready == []

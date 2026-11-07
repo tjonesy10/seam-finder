@@ -80,3 +80,18 @@ On `68a33f4` the five new tests failed:
 After the retained-context checks, those five tests pass. A supplied source or evidence artifact that does not match the stored snapshot is `bad_mapping_reference`. A claim cannot replace a known draft group. A rehashed kickoff does not agree with the stored game id and kickoff. An RB row cannot become `dst:`. A newer successful snapshot of the same native group blocks an older ready one even when the newer snapshot has no mapping claim. An F004 snapshot is current only when its row image matches the rows that still carry that hash. Any rejected DFF or DKNFL row, including a blank one, blocks readiness. Reused artifact bytes are checked against the invocation total before the stored row is reused. DFF `position_raw` is the roster token used for skill versus DST. `slate_verified` follows the interpretation status. Coverage now includes `dst_unresolved`, `excluded_duplicates`, and `ready_pools`, and the mixed DFF/legacy/unresolved fixture reconciles to `raw_records`. Reachable `OperationalError` finalizes the run as `statement_timeout`. The next `main` invocation reconciles a batch whose public audit did not finish.
 
 `DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication on this head: `249 passed, 2 skipped`. `alembic heads` is `0008`. Mutator remains UNKNOWN. The 26-of-62 DKNFL load is still not a certified season.
+
+## Third gate, four mechanisms
+
+On `8d734f14` these four tests failed:
+
+| Test | Red result |
+|---|---|
+| `test_latest_complete_history_and_separate_null_groups` | Complete A, incomplete B, complete C selected nothing (`ready=0`). A null-group week did not stay selectable beside a later unrelated null-group file |
+| `test_null_kickoff_can_be_enriched_without_becoming_ready` | A stored `kickoff_at` of null left the interpretation `unresolved` when the claim added an explicit kickoff |
+| `test_reconcile_waits_for_the_active_attempt` | The second invocation marked the locked, not-yet-committed run `failed` while that attempt still held the capture lock |
+| `test_stale_f004_quality_cannot_stay_ready` | After a second hash was added, the old single-hash snapshot stayed `optimizer_ready` when the new adapter observation was after the cutoff |
+
+History is now one native draft group, or one snapshot when the group is null. The latest complete snapshot in that history can anchor; an older incomplete file does not block a later complete one, and a null group is not shared across unrelated archives. A known kickoff still contradicts a different claim. A null kickoff can be filled by a reviewed offset and the interpretation can be verified, while a DFF subset stays not optimizer-ready. Reconcile runs only after the capture lock is held, so a second invocation waits and does not finalize the active attempt early. An F004 snapshot matches the current cohort only when the row image and `mixed_hash_cohort` both match. The old single-hash snapshot is not ready once a second hash exists and the new adapter observation is after the cutoff.
+
+`DATABASE_URL=postgresql:///seam_f008 pytest -q` with trust authentication after this correction: `253 passed, 2 skipped`. `alembic heads` is `0008`. Previously closed checks were not reopened. Mutator remains UNKNOWN.
