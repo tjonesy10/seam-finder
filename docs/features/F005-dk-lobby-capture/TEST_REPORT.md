@@ -95,7 +95,9 @@ $ gitleaks detect --source . --redact --log-opts=--all --no-banner
 
 The new test is `tests/test_dk_lobby.py::test_draftables_contract_uses_csv_players_not_slot_rows`. Its fixture has three synthetic slot rows and two salary rows, using the real field names.
 
-Body-read red, then the same two tests after the iterator mapping. Migration head is still `0005`. No external request.
+Migration head is still `0005`. No external request. No `xfail` is collected. The two new tests close their clients and keep their backends local. Reverse order, then `test_login_redirect_keeps_the_body` and `test_tcp_then_tls_share_one_deadline`, passed.
+
+Red, before the iterator mapping. This is not a result of the fixed head:
 
 ```text
 $ DATABASE_URL=postgresql:///seam_test python3 -m pytest -q --tb=line tests/test_dk_lobby.py::test_budget_transport_body_timeout_retries_then_succeeds tests/test_dk_lobby.py::test_budget_transport_body_exhaustion_is_budget_exhausted
@@ -103,7 +105,20 @@ FF
 E   httpcore.ReadTimeout: body
 E   httpcore.ReadTimeout: budget
 2 failed in 0.59s
+```
 
+Green, after the mapping, rerun on `7275915590ecd822b1d5e61c0e2aa0cae1bec983`:
+
+```text
+$ DATABASE_URL=postgresql:///seam_test python3 -m pytest -v --tb=short tests/test_dk_lobby.py::test_budget_transport_body_timeout_retries_then_succeeds tests/test_dk_lobby.py::test_budget_transport_body_exhaustion_is_budget_exhausted
+tests/test_dk_lobby.py::test_budget_transport_body_timeout_retries_then_succeeds PASSED [ 50%]
+tests/test_dk_lobby.py::test_budget_transport_body_exhaustion_is_budget_exhausted PASSED [100%]
+============================== 2 passed in 0.43s ===============================
+```
+
+Full suite on that same code, plus ruff and gitleaks:
+
+```text
 $ python3 -m ruff check loader web tests migrations
 All checks passed!
 
@@ -121,4 +136,4 @@ $ gitleaks detect --source . --redact --log-opts=--all --no-banner
 | Draftables JSON contract vs Classic CSV | PASS | Offline read of the uploaded draftables document and matching CSV. No network. Output below. The private files were not committed. |
 | GitHub's hosted evaluation of the skipped job | UNKNOWN | AT4 forbids a live dispatch. The file gate and the local predicate are tested. |
 | Uncle Bob mutator | UNKNOWN | `mutator` is not on `PATH`. `../crapper` is not present. Go is installed. The mutator tool was not installed. This is not a pass. |
-| Pull request CI | PASS | Both checks on `9458ea98baefe9e0406490ac85f34bdf75f6fda4` succeeded: [run 42327522289](https://github.com/tjonesy10/seam-finder/actions/runs/42327522289) and [run 42327518211](https://github.com/tjonesy10/seam-finder/actions/runs/42327518211). This does not claim the independent gate is cleared. |
+| Pull request CI | PASS | Both checks on `7275915590ecd822b1d5e61c0e2aa0cae1bec983` succeeded: [run 42328553690](https://github.com/tjonesy10/seam-finder/actions/runs/42328553690) (`pull_request`) and [run 42328549429](https://github.com/tjonesy10/seam-finder/actions/runs/42328549429) (`push`). `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN`. This does not claim the independent gate is cleared. |
