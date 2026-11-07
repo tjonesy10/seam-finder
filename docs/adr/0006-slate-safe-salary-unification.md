@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-06). Depends on ADR 0005 and the proposed constitution amendment. No source tables, production schema, or optimizer are changed by this planning package.
+Accepted (2026-11-06) by owner merge of PR #17, with Accepted ADR 0005 and the operative constitution amendment. Docs approval does not create source tables, run migrations, or change production. Build this feature in its own PR after the F005, F006, and F007 PRs merge. That dependency is not a new docs gate and is not permission to skip those merges.
 
 ## Context
 
