@@ -2,7 +2,7 @@
 
 Status: implementation evidence for review. Not release-ready. Blocked on merge of F005 PR 19. No production migration, grant, capture, or schedule activation. No season inventory was certified.
 
-Branch: `cursor/f007-dknfl-historical-loader-bb63`. Pull-request base: `cursor/f006-dff-historical-loader-bb63`. F005 PR 19 head merged underneath is `1faaee6ee0664b671f63859f5c3ccd7d3c7c2d8a`. Migration chain on this branch is `0005` → `0006` → `0007`. `alembic heads` prints only `0007`. The loaders do not import each other; the dependency is the revision line.
+Branch: `cursor/f007-dknfl-historical-loader-bb63`. Pull-request base: `cursor/f006-dff-historical-loader-bb63`. F005 PR 19 head merged underneath is `f9f1dfb965406822b51c9a9100eca457829263c2`. Migration chain on this branch is `0005` → `0006` → `0007`. Alembic head of F005 stays `0005`. `alembic heads` prints only `0007`. The loaders do not import each other; the dependency is the revision line. The savepoint and `BudgetHTTPTransport` stay in the owner's commits.
 
 ## Design
 
@@ -92,3 +92,20 @@ The 35 missing-evidence files do not have an exact `away_team`/`home_team`/`game
 `python -m loader.dff_archive` on `seam_archive` exited 0: `selected=80 succeeded=80 failed=0 rows_read=17026`.
 
 For all 80 manifest-selected DFF files, the snapshot metadata `companion_sha256` and `companion_artifact_id` were read back. The artifact row is `source=dff`, `artifact_kind=html_gzip`, and `sha256(body)` equals the stored `sha256`, the metadata hash, and the SHA-256 of the staged `evidence/dff-{season}-week{ww}.html.gz` bytes. Result: 80/80. The hash values are not copied here.
+
+### Rerun on a fresh database after the f9f1dfb merge
+
+Isolated `seam_validate` was migrated to `0007` and loaded from the same staged nflverse mirror (`games.parquet` sha256 `0bc6e1221d68535848e58b37c3adf298907be2a3759f7d3abb986c7e7f8587e2`, version `2026-11-06 20:46:43 EST`; teams sha256 `46955c6de3ff83e6ce229d278bc56a7772be287854f4b3a9666b151339568266`, version `2026-03-27 11:49:45 EDT`). `loader.run.main` wrote teams 36 and games 2021–2025 REG+POST plus 2026 REG (2022 REG is 271; the other REG seasons are 272). Season and week were not taken from folder names, and no game row was synthesized from a salary line.
+
+With `games` still empty, the same archive command exited 1: `selected=62 succeeded=0 failed=62`, `failed_reasons=game_evidence_missing:61,game_info_unparsed:1`, snapshots 0, ledger 27788. That negative result was kept.
+
+After the schedule load, the same command exited 1:
+
+```
+failed_reasons=game_evidence_missing:35,game_info_unparsed:1
+selected=62 succeeded=26 failed=36 reused=0 not_selected=80 rows_read=27788 rows_valid=27773 rows_rejected=15
+```
+
+Snapshots 26, all `full_export`, `draft_group_id` null, `optimizer_ready` not true. Seasons 2022: 3, 2023: 12, 2024: 11. `dknfl_salaries` 7663 valid rows. A second pass over the 62 files against `public.games` counted matched 26, `LAR`-token-only misses 34, one other missing file, and 1 unparsed. No `LAR`→`LA` alias was applied. Not a certified season.
+
+DFF on that database exited 0: `selected=80 succeeded=80 failed=0 rows_read=17026`. Database readback of companion artifact id, kind `html_gzip`, source `dff`, and body SHA-256 against the staged gzip files: 80/80. Private HTML hashes are not listed here.
