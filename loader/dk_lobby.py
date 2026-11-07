@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from typing import NoReturn
 from urllib.parse import parse_qs, urljoin, urlparse
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -285,18 +286,16 @@ class DeadlineBackend(httpcore.NetworkBackend):
         self._deadline_fn = deadline_fn
         self._inner = inner or httpcore.SyncBackend()
 
-    def _allowed(self, timeout: float | None, *, read: bool) -> float:
+    def _allowed(self, timeout: float | None) -> float:
         left = self._deadline_fn() - time.monotonic()
         if left <= 0:
-            if read:
-                raise httpcore.ReadTimeout("budget")
-            raise httpcore.ConnectTimeout("budget")
+            raise CaptureFailure("http_budget_exhausted")
         if timeout is None:
             return left
         return min(float(timeout), left)
 
     def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
-        allowed = self._allowed(timeout, read=False)
+        allowed = self._allowed(timeout)
         stream = self._inner.connect_tcp(
             host,
             port,
@@ -307,12 +306,12 @@ class DeadlineBackend(httpcore.NetworkBackend):
         return _DeadlineStream(stream, self)
 
     def connect_unix_socket(self, path, timeout=None, socket_options=None):
-        allowed = self._allowed(timeout, read=False)
+        allowed = self._allowed(timeout)
         stream = self._inner.connect_unix_socket(path, timeout=allowed, socket_options=socket_options)
         return _DeadlineStream(stream, self)
 
     def sleep(self, seconds: float) -> None:
-        self._inner.sleep(self._allowed(seconds, read=False))
+        self._inner.sleep(self._allowed(seconds))
 
 
 class _DeadlineStream(httpcore.NetworkStream):
@@ -321,16 +320,16 @@ class _DeadlineStream(httpcore.NetworkStream):
         self._backend = backend
 
     def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
-        return self._inner.read(max_bytes, timeout=self._backend._allowed(timeout, read=True))
+        return self._inner.read(max_bytes, timeout=self._backend._allowed(timeout))
 
     def write(self, buffer: bytes, timeout: float | None = None) -> None:
-        self._inner.write(buffer, timeout=self._backend._allowed(timeout, read=False))
+        self._inner.write(buffer, timeout=self._backend._allowed(timeout))
 
     def close(self) -> None:
         self._inner.close()
 
     def start_tls(self, ssl_context, server_hostname=None, timeout=None):
-        allowed = self._backend._allowed(timeout, read=False)
+        allowed = self._backend._allowed(timeout)
         wrapped = self._inner.start_tls(
             ssl_context,
             server_hostname=server_hostname,
@@ -369,20 +368,13 @@ class BudgetHTTPTransport(httpx.BaseTransport):
         )
         try:
             resp = self._pool.handle_request(req)
-        except httpcore.ConnectTimeout as exc:
-            raise httpx.ConnectTimeout(str(exc)) from exc
-        except httpcore.ReadTimeout as exc:
-            raise httpx.ReadTimeout(str(exc)) from exc
-        except httpcore.WriteTimeout as exc:
-            raise httpx.WriteTimeout(str(exc)) from exc
-        except httpcore.ConnectError as exc:
-            raise httpx.ConnectError(str(exc)) from exc
-        except httpcore.ReadError as exc:
-            raise httpx.ReadError(str(exc)) from exc
-        except httpcore.NetworkError as exc:
-            raise httpx.NetworkError(str(exc)) from exc
-        except httpcore.ProtocolError as exc:
-            raise httpx.RemoteProtocolError(str(exc)) from exc
+        except (
+            CaptureFailure,
+            httpcore.TimeoutException,
+            httpcore.NetworkError,
+            httpcore.ProtocolError,
+        ) as exc:
+            _translate_httpcore(exc)
         return httpx.Response(
             status_code=resp.status,
             headers=resp.headers,
@@ -394,12 +386,45 @@ class BudgetHTTPTransport(httpx.BaseTransport):
         self._pool.close()
 
 
+def _translate_httpcore(exc: BaseException) -> NoReturn:
+    """Map one httpcore error onto the httpx error the client already handles.
+
+    Header setup and a later body read use this same mapping. A deadline that is
+    already spent stays ``http_budget_exhausted`` so it is not retried.
+    """
+    if isinstance(exc, CaptureFailure):
+        raise exc
+    if isinstance(exc, httpcore.ConnectTimeout):
+        raise httpx.ConnectTimeout(str(exc)) from exc
+    if isinstance(exc, httpcore.ReadTimeout):
+        raise httpx.ReadTimeout(str(exc)) from exc
+    if isinstance(exc, httpcore.WriteTimeout):
+        raise httpx.WriteTimeout(str(exc)) from exc
+    if isinstance(exc, httpcore.ConnectError):
+        raise httpx.ConnectError(str(exc)) from exc
+    if isinstance(exc, httpcore.ReadError):
+        raise httpx.ReadError(str(exc)) from exc
+    if isinstance(exc, httpcore.NetworkError):
+        raise httpx.NetworkError(str(exc)) from exc
+    if isinstance(exc, httpcore.ProtocolError):
+        raise httpx.RemoteProtocolError(str(exc)) from exc
+    raise exc
+
+
 class _IterableStream(httpx.SyncByteStream):
     def __init__(self, chunks):
         self._chunks = chunks
 
     def __iter__(self):
-        yield from self._chunks
+        try:
+            yield from self._chunks
+        except (
+            CaptureFailure,
+            httpcore.TimeoutException,
+            httpcore.NetworkError,
+            httpcore.ProtocolError,
+        ) as exc:
+            _translate_httpcore(exc)
 
     def close(self) -> None:
         closer = getattr(self._chunks, "close", None)
