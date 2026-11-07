@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (2026-11-06). License/exposure approved by Cosmo 2026-11-06. Becomes **Accepted** when the constitution amendment naming current-slate DK export storage is merged.
+Accepted (2026-11-06). License/exposure approved by Cosmo 2026-11-06. The original acceptance condition is already fulfilled: the constitution amendment naming current-slate DK export storage was merged before PR #17. This status line is the only change. The context, decision, and consequences below are unchanged.
+
+[ADR 0005](0005-private-salary-capture-and-archives.md) supersedes only the blanket no-DK-auto-download policy for F005's bounded unauthenticated capture. The owner-export CLI/staged-path workflow, replacement semantics, Classic rejection, and privacy rules in this ADR remain in force.
 
 ## Context
 

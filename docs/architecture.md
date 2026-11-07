@@ -1,6 +1,6 @@
 # Architecture: Seam Finder, Part 1 (data prototype)
 
-Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md), [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) (Accepted), [ADR 0004](adr/0004-dk-current-slate-csv.md) (Proposed).
+Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md), [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) (Accepted), [ADR 0004](adr/0004-dk-current-slate-csv.md) (Accepted), [ADR 0005](adr/0005-private-salary-capture-and-archives.md) (Accepted), [ADR 0006](adr/0006-slate-safe-salary-unification.md) (Accepted), [ADR 0007](adr/0007-authoritative-schedule-completeness.md) (Proposed).
 
 ## Components
 
@@ -57,16 +57,16 @@ New tables key on the same `gsis_id`, `team_abbr`, `game_id`, and `(season, week
 
 RotoGuru → loader module for `dk_classic_salaries` → same Neon database. No new host. This pass is data-load only (migration, loader, workflow, tests): no read API endpoints and no browse page. Details in [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) and [F003 SPEC](features/F003-dk-classic-salaries/SPEC.md).
 
-## F004 addition (implemented; ADR 0004 still Proposed)
+## F004 addition (implemented; ADR 0004 Accepted)
 
 Cosmo-supplied DraftKings Classic `DKSalaries.csv` → loader module for `dk_classic_slate` → same Neon database. No draftkings.com fetch. Data-load only until Cosmo says otherwise. Details in [ADR 0004](adr/0004-dk-current-slate-csv.md) and [F004 SPEC](features/F004-dk-current-slate/SPEC.md).
 
 
 
 
-## Proposed F005–F008 private salary pipeline (DRAFT; not deployed)
+## F005–F008 private salary pipeline (approved; not deployed)
 
-Decisions pending owner review: [ADR 0005](adr/0005-private-salary-capture-and-archives.md) and [ADR 0006](adr/0006-slate-safe-salary-unification.md), plus the explicit [constitution amendment](CONSTITUTION.md#proposed-amendment-private-salary-capture-archives-and-unification-pending-owner-approval). Existing READY labels above describe prior features only. F005–F008 are SPEC READY / DOCS APPROVAL PENDING: product questions are closed, ADR 0005/0006 remain Proposed, and the constitution amendment is not effective until owner merge. That status is not a build handoff. ADR 0004's status on main is Proposed, not Accepted; no accepted ADR substance is rewritten here.
+Approved by owner merge of PR #17. [ADR 0005](adr/0005-private-salary-capture-and-archives.md) and [ADR 0006](adr/0006-slate-safe-salary-unification.md) are Accepted. The [constitution](CONSTITUTION.md#data-and-licensing) amendment is operative. F005–F008 specs are READY. ADR 0004 is Accepted on status only; its decision text is unchanged, and ADR 0005 supersedes only its blanket auto-download ban. This status sync does not add a build gate. Build F005 first, then F006 and F007, then F008, each in its own PR. A later feature waits until the PRs it depends on have merged. That order is not permission to skip those merges. Schedule activation and production migration or deploy remain unapproved. The pipeline is not deployed.
 
 ```mermaid
 flowchart LR
@@ -91,4 +91,8 @@ flowchart LR
 - **Free-tier bounds**: bytea exact artifacts in Neon; no new account/storage service. Proposed 5 MiB/object, 64 MiB/invocation, 128 MiB cumulative raw artifacts, 512 MiB DB guards and verified free-allowance headroom checks halt writes without purging prior history. These are application guard proposals, not a current pricing statement.
 - **Scheduling**: Cosmo approved Wednesday 10:00 America/New_York during REG season on 2026-11-06 16:59 EST, and the Sunday-afternoon 1:00–4:30 PM America/New_York exact game-set rule, including holiday weeks, on 17:00 EST. Current GitHub Actions supports `timezone: America/New_York` alongside cron (`0 10 * * 3`); UTC is the default only if timezone is omitted. 10:00 is outside the DST spring-forward gap. Jobs can still delay or drop, and public-repo idle schedules disable after 60 days. This docs package does not add or activate the workflow. No Sunday refresh and no Grok Bot routine. See F005 for the documentation links and fail-closed selection.
 
-Implementation sequence after docs approval/clarification closure: F005 shared persistence/privacy + capture, independent F006 and F007 importers, then F008 view/adapters/selections. Each is a small separate build/migration PR. Tests use real Postgres, isolated roles, synthetic source fixtures and failure injection. Neither docs approval nor future build CI implicitly runs a production load or migration; owner approval remains required for production actions.
+Build order after the PR #17 docs approval: F005 shared persistence/privacy and capture, then F006 and F007 importers, then F008 view/adapters/selections. Each is a separate PR and includes its acceptance tests and a Mutator report. F006 and F007 start after the F005 foundation PR merges. F008 starts after those source PRs merge. Do not skip a dependency merge. This sequence is not a new docs gate. Docs approval and CI do not run a production load, migration, or schedule. Production migration and deploy remain unapproved. PR #19's implementation merge stays held until the ADR 0007 docs amendment is approved.
+
+## F005 schedule completeness (ADR 0007 Proposed)
+
+[ADR 0007](adr/0007-authoritative-schedule-completeness.md) is the completeness contract Cosmo approved on 2026-11-06 19:14 EST. It is Proposed until this docs PR merges. No product question remains, and no season inventory is certified. The chain is an operator-reviewed league reference, a pinned private authority root, exact nflverse raw bytes, an automatic source-to-PG receipt, then a whole-season Postgres comparison and finite timing or gap proof before any DK call. A fresh games load, surviving rows, endpoint dates, a row count, or a self-hash is not that proof. Reference authenticity is the operator review. Completeness is equality with that reviewed inventory. There is no new automatic league-schedule scraper. Positive paths remain a verified in-season capture and a finite supported off-season gap. Incomplete prior-year evidence and an unsupported calendar gap fail closed. PR #19 head `81c43e8cf9619d04ef198772c4b2b23dfd35927a` recorded AT5 FAIL. These docs do not claim a passing run.

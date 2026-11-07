@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed (2026-11-06). Owner docs approval and the constitution amendment in this package are pending. Cosmo authorized planning this private experiment via Groko; that is not production migration or deployment approval.
+Accepted (2026-11-06) by owner merge of PR #17 (`6c26e8dad1f0261a29febaa2cd8311bb36aa893a`). Docs approval of this plan does not activate the schedule, run a migration, or change production.
 
-On acceptance, supersedes **only the blanket no-DK-auto-download policy** in ADR 0004 for F005's bounded unauthenticated capture. ADR 0004's owner-export CLI/staged-path workflow, replacement semantics, Classic rejection, and privacy rules remain in force. ADR 0004 currently says **Proposed** on main despite its merged constitution amendment; do not report it as Accepted. An explicit status-only cleanup can be reviewed separately; this proposal neither rewrites its substance nor marks this partial supersession effective before approval.
+Supersedes **only the blanket no-DK-auto-download policy** in ADR 0004 for F005's bounded unauthenticated capture. ADR 0004 is Accepted on status only. Its owner-export CLI/staged-path workflow, replacement semantics, Classic rejection, and privacy rules remain in force. Its decision text is not rewritten.
 
 ## Context
 
@@ -43,4 +43,4 @@ Separate immutable sources preserve provenance and distinguish an official user 
 
 ## Consequences
 
-The constitution amendment is explicit and pending owner merge. F005–F008 specs are SPEC READY / DOCS APPROVAL PENDING after the 2026-11-06 cadence, slate, and capture-runtime answers. That status does not accept this ADR, activate the schedule, or hand the work to forge. Each feature still needs a later owner-approved implementation/migration PR. F006/F007 can be implemented independently after F005's small shared persistence/privacy foundation exists; neither needs live DK access. Storage caps can halt ingestion rather than evict raw history. Grant changes need real-Postgres regression tests. Future policy changes supersede this ADR; no public raw-salary API, page, or CSV download is authorized.
+The constitution amendment is operative with the owner merge of PR #17. F005–F008 specs are READY. That approval does not activate the schedule or approve production migration or deploy. Build in separate PRs: F005 shared persistence/privacy and capture first; F006 and F007 only after that foundation PR merges; F008 only after those source PRs merge. Later features do not skip those merges. The order is not a new docs gate. Each build PR includes its acceptance tests and a Mutator report. F006/F007 need no live DK access. Storage caps can halt ingestion rather than evict raw history. Grant changes need real-Postgres regression tests. Future policy changes supersede this ADR; no public raw-salary API, page, or CSV download is authorized.
