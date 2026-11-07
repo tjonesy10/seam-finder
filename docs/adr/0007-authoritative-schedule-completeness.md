@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-11-07) by owner merge of PR #20, commit `dc72cc544b575a35420dd1f550babcacb31a248f`, at 2026-11-07T01:10:55Z. Cosmo had approved the contract directly on 2026-11-06 19:14 EST: independent season-schedule verification, reviewed each season and when games change, fail closed without valid evidence. It refines F005's undefined “verified complete season schedule” prerequisite in Accepted ADR 0005 without editing ADR 0005 or ADR 0006 substance. It does not certify any season inventory, activate the schedule, approve production, or reopen the cadence or Sunday slate rule. Acceptance is the contract only. It is not acceptance of an implementation.
+Accepted (2026-11-06) by owner merge of PR #20, commit `dc72cc544b575a35420dd1f550babcacb31a248f`, at 2026-11-06 20:10:55 EST. Cosmo had approved the contract directly on 2026-11-06 19:14 EST: independent season-schedule verification, reviewed each season and when games change, fail closed without valid evidence. It refines F005's undefined “verified complete season schedule” prerequisite in Accepted ADR 0005 without editing ADR 0005 or ADR 0006 substance. It does not certify any season inventory, activate the schedule, approve production, or reopen the cadence or Sunday slate rule. Acceptance is the contract only. It is not acceptance of an implementation.
 
 ## Context
 
