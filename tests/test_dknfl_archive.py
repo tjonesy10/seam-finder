@@ -772,3 +772,50 @@ def test_at12_attribution_and_scanner(database_url, engine, tmp_path, capsys, mo
         check=False,
     )
     assert scan.returncode == 0, scan.stdout + scan.stderr
+
+
+def test_position_and_roster_must_agree(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _pair(conn, 2022, 1, date(2022, 9, 11))
+    good, good_manifest = _archive(
+        tmp_path / "good",
+        [{"path": "raw/good.csv", "season": 2022, "week": 1, "rows": _two_players()}],
+    )
+    assert _load(database_url, good, good_manifest) == 0
+    prior = _scalar(engine, "SELECT count(*) FROM salary_private.dknfl_salaries")
+    prior_snaps = _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots")
+    cases = {
+        "showdown": [
+            _dk(**{"Position": "CPT", "Roster Position": "FLEX", "Game Info": _info("BUF", "KC")}),
+            _dk(**{"ID": "1002", "Position": "WR", "Roster Position": "WR/FLEX", "Game Info": _info("DAL", "PHI", clock="04:25PM"), "TeamAbbrev": "PHI"}),
+        ],
+        "unsupported_roster": [
+            _dk(**{"Position": "QB", "Roster Position": "FLEX", "Game Info": _info("BUF", "KC")}),
+            _dk(**{"ID": "1002", "Position": "RB", "Roster Position": "QB/FLEX", "Game Info": _info("DAL", "PHI", clock="04:25PM"), "TeamAbbrev": "PHI"}),
+        ],
+    }
+    for reason, rows in cases.items():
+        root, manifest = _archive(
+            tmp_path / reason,
+            [{"path": f"raw/{reason}.csv", "season": 2022, "week": 1, "rows": rows}],
+        )
+        assert _load(database_url, root, manifest) == 1
+        observed = _rows(
+            engine,
+            """
+            SELECT reason_code, snapshot_id, artifact_id
+            FROM salary_private.salary_observations
+            WHERE original_path = :path
+            """,
+            path=f"raw/{reason}.csv",
+        )
+        assert observed[-1]["reason_code"] == reason
+        assert observed[-1]["snapshot_id"] is None
+        assert observed[-1]["artifact_id"] is not None
+        assert _scalar(
+            engine,
+            "SELECT count(*) FROM salary_private.salary_source_rows r JOIN salary_private.salary_artifacts a ON a.artifact_id = r.artifact_id WHERE a.sha256 IS NOT NULL AND r.artifact_id = :artifact",
+            artifact=observed[-1]["artifact_id"],
+        ) == 2
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dknfl_salaries") == prior
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == prior_snaps

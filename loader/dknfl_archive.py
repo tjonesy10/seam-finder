@@ -374,6 +374,19 @@ def _kickoff(game_info: str):
     return away, home, parsed
 
 
+def _classic_eligibility(position: str, roster_tokens: list[str]) -> bool:
+    if not roster_tokens or any(token not in CLASSIC_TOKENS for token in roster_tokens):
+        return False
+    if position not in {"QB", "RB", "WR", "TE", "DST"}:
+        return False
+    if position in {"QB", "DST"} and position not in roster_tokens:
+        return False
+    if position in {"RB", "WR", "TE"} and position not in roster_tokens and "FLEX" not in roster_tokens:
+        return False
+    primaries = [token for token in roster_tokens if token in {"QB", "RB", "WR", "TE", "DST"}]
+    return not primaries or position in primaries
+
+
 def classify(records, headers: list[str]) -> tuple[list[ParsedRow], set[str]]:
     parsed: list[ParsedRow] = []
     file_reasons: set[str] = set()
@@ -409,14 +422,14 @@ def classify(records, headers: list[str]) -> tuple[list[ParsedRow], set[str]]:
             row.reasons.append("missing_name")
         if row.dk_id is None:
             row.reasons.append("missing_dk_id")
-        if row.roster is None:
-            row.reasons.append("missing_roster")
-        elif "CPT" in row.roster.upper():
+        position_token = (row.position or "").strip().upper()
+        roster_tokens = [part.strip().upper() for part in (row.roster or "").split("/") if part.strip()]
+        if "CPT" in position_token or any("CPT" in token for token in roster_tokens):
             file_reasons.add("showdown")
-        else:
-            tokens = [part.strip().upper() for part in row.roster.split("/") if part.strip()]
-            if not tokens or any(token not in CLASSIC_TOKENS for token in tokens):
-                file_reasons.add("unsupported_roster")
+        elif row.roster is None:
+            row.reasons.append("missing_roster")
+        elif not _classic_eligibility(position_token, roster_tokens):
+            file_reasons.add("unsupported_roster")
         if row.team is None:
             row.reasons.append("missing_team")
         located = _kickoff(row.game_info or "")

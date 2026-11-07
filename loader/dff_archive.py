@@ -87,8 +87,7 @@ REJECT_REASONS = {
     "missing_name",
     "missing_player_id",
     "invalid_date",
-    "row_date_contradiction",
-    "row_week_contradiction",
+    "invalid_week",
 }
 REASON_PRIORITY = (
     "storage_guard_object",
@@ -408,11 +407,11 @@ def classify(records, entry: ManifestEntry) -> tuple[list[ParsedRow], set[str]]:
         if row.start_date is None:
             row.reasons.append("invalid_date")
         elif row.start_date != entry.slate_date:
-            row.reasons.append("row_date_contradiction")
             file_reasons.add("row_date_contradiction")
         week_token = row.week_raw.strip()
-        if not _INT.fullmatch(week_token) or int(week_token) != entry.week:
-            row.reasons.append("row_week_contradiction")
+        if not _INT.fullmatch(week_token):
+            row.reasons.append("invalid_week")
+        elif int(week_token) != entry.week:
             file_reasons.add("row_week_contradiction")
         parsed.append(row)
     counts = Counter(row.player_id for row in parsed if row.player_id)

@@ -109,3 +109,11 @@ selected=62 succeeded=26 failed=36 reused=0 not_selected=80 rows_read=27788 rows
 Snapshots 26, all `full_export`, `draft_group_id` null, `optimizer_ready` not true. Seasons 2022: 3, 2023: 12, 2024: 11. `dknfl_salaries` 7663 valid rows. A second pass over the 62 files against `public.games` counted matched 26, `LAR`-token-only misses 34, one other missing file, and 1 unparsed. No `LAR`→`LA` alias was applied. Not a certified season.
 
 DFF on that database exited 0: `selected=80 succeeded=80 failed=0 rows_read=17026`. Database readback of companion artifact id, kind `html_gzip`, source `dff`, and body SHA-256 against the staged gzip files: 80/80. Private HTML hashes are not listed here.
+
+## Contract correction: Position and Roster Position together
+
+Classic eligibility was reading only `Roster Position`. With kickoffs that match `public.games`, `Position=CPT` / `Roster Position=FLEX` and `Position=QB` / `Roster Position=FLEX` both exited 0 and published snapshots. `test_position_and_roster_must_agree` was red on that behavior.
+
+CPT in either column is now `showdown`. QB and DST must appear in their own roster tokens. A roster token that names a different primary position, such as `QB/FLEX` on an RB, is `unsupported_roster`. The failed files keep their CSV artifact and two ledger rows. The earlier two-game snapshot and its salary rows stay. No `LAR`→`LA` alias was added; the 35 missing-game files above remain fail-closed.
+
+`DATABASE_URL=postgresql:///seam_f007_fix pytest -q` with trust authentication: `221 passed, 2 skipped`. `alembic heads` is `0007`. AT5 and AT6 still pass. This does not turn the 26-of-62 archive load into a certified season.
