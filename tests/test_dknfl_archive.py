@@ -700,7 +700,10 @@ def test_at11_grants_leave_other_sources(database_url, engine, tmp_path, monkeyp
         assert migrate_production(gated, "true") == "head"
         check = create_engine(gated)
         with check.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0007"
+            from alembic.script import ScriptDirectory
+
+            head_revision = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head_revision
             assert conn.execute(text("SELECT to_regclass('salary_private.dknfl_salaries')")).scalar() is not None
         check.dispose()
     finally:

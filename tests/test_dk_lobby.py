@@ -1022,6 +1022,7 @@ def test_at11_grants_hide_private_and_f004(engine, monkeypatch):
         conn.execute(text(f"GRANT {optimizer} TO CURRENT_USER"))
         apply_readonly_grant(conn)
         apply_readonly_grant(conn)
+    created_probe = False
     try:
         with engine.connect() as conn:
             conn.execute(text(f"SET ROLE {web}"))
@@ -1051,13 +1052,21 @@ def test_at11_grants_hide_private_and_f004(engine, monkeypatch):
             conn.execute(text("RESET ROLE"))
             conn.commit()
         with engine.begin() as conn:
-            conn.execute(
-                text("CREATE VIEW salary_private.dk_salary_unified AS SELECT 1::int AS selection_id")
-            )
+            existing = conn.execute(
+                text("SELECT to_regclass('salary_private.dk_salary_unified')")
+            ).scalar()
+            if existing is None:
+                conn.execute(
+                    text("CREATE VIEW salary_private.dk_salary_unified AS SELECT 1::int AS selection_id")
+                )
+                created_probe = True
             apply_readonly_grant(conn)
         with engine.connect() as conn:
             conn.execute(text(f"SET ROLE {optimizer}"))
-            assert conn.execute(text("SELECT selection_id FROM salary_private.dk_salary_unified")).scalar() == 1
+            selected = conn.execute(text("SELECT count(*) FROM salary_private.dk_salary_unified")).scalar()
+            assert selected is not None
+            if created_probe:
+                assert selected == 1
             with pytest.raises(DBAPIError):
                 conn.execute(text("SELECT count(*) FROM salary_private.salary_artifacts"))
             conn.rollback()
@@ -1095,7 +1104,8 @@ def test_at11_grants_hide_private_and_f004(engine, monkeypatch):
             conn.commit()
     finally:
         with engine.begin() as conn:
-            conn.execute(text("DROP VIEW IF EXISTS salary_private.dk_salary_unified"))
+            if created_probe:
+                conn.execute(text("DROP VIEW IF EXISTS salary_private.dk_salary_unified"))
             conn.execute(text(f"DROP OWNED BY {optimizer}"))
             conn.execute(text(f"DROP OWNED BY {web}"))
             conn.execute(text(f"DROP ROLE IF EXISTS {optimizer}"))
