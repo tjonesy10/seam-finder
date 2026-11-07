@@ -2836,6 +2836,137 @@ def test_tcp_then_tls_share_one_deadline():
     assert time.monotonic() - started <= 4.6
 
 
+def test_budget_transport_body_timeout_retries_then_succeeds():
+    import time
+
+    import httpcore
+
+    from loader.dk_lobby import LOBBY_URL, BoundedClient, BudgetHTTPTransport
+
+    headers = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\n\r\n"
+    body = b"{}"
+
+    class ScriptStream(httpcore.NetworkStream):
+        def __init__(self, events):
+            self._events = list(events)
+
+        def read(self, max_bytes, timeout=None):
+            if not self._events:
+                return b""
+            item = self._events.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        def write(self, buffer, timeout=None):
+            return None
+
+        def close(self):
+            return None
+
+        def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            return self
+
+        def get_extra_info(self, info):
+            return None
+
+    class BodyTimeoutBackend(httpcore.NetworkBackend):
+        def __init__(self):
+            self.connections = 0
+
+        def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            self.connections += 1
+            if self.connections == 1:
+                return ScriptStream([headers, httpcore.ReadTimeout("body")])
+            return ScriptStream([headers + body])
+
+        def connect_unix_socket(self, path, timeout=None, socket_options=None):
+            raise httpcore.ConnectError("unused")
+
+        def sleep(self, seconds):
+            return None
+
+    backend = BodyTimeoutBackend()
+    transport = BudgetHTTPTransport(lambda: time.monotonic() + 30, backend)
+    client = BoundedClient(transport, MutableClock(NOW, 0), lambda _seconds: None)
+    try:
+        fetched = client.get_json(LOBBY_URL)
+    finally:
+        client.close()
+    assert fetched.body == body
+    assert backend.connections == 2
+
+
+def test_budget_transport_body_exhaustion_is_budget_exhausted():
+    import time
+
+    import httpcore
+
+    from loader.dk_lobby import LOBBY_URL, BoundedClient, BudgetHTTPTransport, CaptureFailure
+
+    headers = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\n\r\n"
+
+    class ScriptStream(httpcore.NetworkStream):
+        def __init__(self):
+            self._sent_headers = False
+
+        def read(self, max_bytes, timeout=None):
+            if not self._sent_headers:
+                self._sent_headers = True
+                return headers
+            return b"{}"
+
+        def write(self, buffer, timeout=None):
+            return None
+
+        def close(self):
+            return None
+
+        def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            return self
+
+        def get_extra_info(self, info):
+            return None
+
+    class OneShot(httpcore.NetworkBackend):
+        def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            return ScriptStream()
+
+        def connect_unix_socket(self, path, timeout=None, socket_options=None):
+            raise httpcore.ConnectError("unused")
+
+        def sleep(self, seconds):
+            return None
+
+    state = {"headers": False}
+
+    def deadline():
+        if state["headers"]:
+            return time.monotonic() - 1
+        return time.monotonic() + 30
+
+    class MarkingStream(ScriptStream):
+        def read(self, max_bytes, timeout=None):
+            if not self._sent_headers:
+                self._sent_headers = True
+                state["headers"] = True
+                return headers
+            return b"{}"
+
+    class MarkingBackend(OneShot):
+        def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            return MarkingStream()
+
+    transport = BudgetHTTPTransport(deadline, MarkingBackend())
+    client = BoundedClient(transport, MutableClock(NOW, 0), lambda _seconds: None)
+    try:
+        with pytest.raises(CaptureFailure) as caught:
+            client.get_json(LOBBY_URL)
+    finally:
+        client.close()
+    assert caught.value.reason == "http_budget_exhausted"
+
+
 def test_login_redirect_keeps_the_body(engine):
     _seed(engine)
     evidence = b"synthetic-login-body"

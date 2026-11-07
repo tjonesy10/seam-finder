@@ -17,7 +17,7 @@ Synthetic CSV and JSON only. They are built in `tests/test_dk_lobby.py` and labe
 | AT7 | PASS | `test_at7_failures_keep_the_previous_snapshot`. After a good snapshot, a bad header, one `nope` salary, and a real check-constraint failure inside the publish transaction leave that snapshot's rows unchanged. Ledger keeps the `nope` token and `invalid_salary`. Reasons: `parse_failure`, `invalid_salary`, `constraint_failure`. Snapshot count stays 1. |
 | AT8 | PASS | `test_at8_reconcile_does_not_double_ingest_or_promote_unrelated`. Crash after the normalized commit reconciles that `load_runs` row to `succeeded` without a second snapshot. A running `teams` load stays `running`. An unrelated running lobby observation becomes `failed`/`interrupted` with null `finished_at` and null `duration_ms`. |
 | AT9 | PASS | `test_at9_denial_does_not_retry` and `test_challenge_on_5xx_is_not_retried` each make one call. `test_login_redirect_keeps_the_body` stores the redirect body `synthetic-login-body` in `salary_artifacts`. |
-| AT10 | PASS | Unwrapped httpcore with a backend that spends 2.5s in TCP and 2.5s in TLS returned `LocalProtocolError 5.0`, past a 4s deadline, because both phases reuse the connect timeout. `test_tcp_then_tls_share_one_deadline` runs that backend through `BudgetHTTPTransport`: the deadline is checked before TCP and again before TLS, and the call raises `httpx.TimeoutException` with elapsed time at or under 4.6s. Header and body stall tests still pass. No DraftKings host is contacted. |
+| AT10 | PASS | Before the iterator mapping, `BudgetHTTPTransport` plus a representative `NetworkBackend` failed as raw httpcore: `test_budget_transport_body_timeout_retries_then_succeeds` raised `httpcore.ReadTimeout: body` from the body read, and `test_budget_transport_body_exhaustion_is_budget_exhausted` raised `httpcore.ReadTimeout: budget`. After `_IterableStream` uses the same httpcore-to-httpx mapping as header setup, the body `ReadTimeout` is retried and the second connection returns `{}` (`connections == 2`). A deadline already spent on the body read is `CaptureFailure` reason `http_budget_exhausted`. The backend is not `MockTransport`. `test_tcp_then_tls_share_one_deadline`, the header-delay test, and the stalled-body test still pass. No DraftKings host is contacted. |
 | AT11 | PASS | `test_at11_grants_hide_private_and_f004` on Postgres 16. Web role `seam_web_f005` can SELECT `teams`, `players`, `games`, `player_week_stats`, `load_runs`, and `dk_classic_salaries`. It cannot SELECT `dk_classic_slate`, `salary_private.salary_artifacts`, or a test-only `dk_salary_unified` view. Optimizer role `seam_opt_f005` can SELECT that view only after it exists, cannot SELECT `salary_artifacts`, and cannot INSERT. It is not a member of the web role. Granting slate SELECT and running `apply_readonly_grant` again removes that SELECT. `tests/test_schema.py::test_readonly_role_is_select_only` and `tests/test_readonly.py::test_at18_read_only_role` also pass. |
 | AT12 | PASS | The publication guard is accepted. `assert_actual_ceiling` reads `pg_database_size` and `pg_total_relation_size` after the write and rolls back before commit. A rollback does not reclaim the physical file space Postgres already allocated, and the 256 KiB audit reserve is not guaranteed capacity. No vacuum or purge was added. `test_concurrent_actual_growth_rejects_one_writer` and `test_capture_over_the_ceiling_records_failure` passed. |
 | AT13 | PASS | `test_at13_public_output_has_no_raw_salary` and `test_unexpected_database_error_stays_a_reason_code`. Public output stays reason codes. A raised `RuntimeError` containing `4242` prints `capture_failed` only. `GET /api/dk-lobby` and `GET /dk-lobby.csv` return 404. gitleaks 8.30.1 is part of the suite and passed. |
@@ -95,6 +95,40 @@ $ gitleaks detect --source . --redact --log-opts=--all --no-banner
 
 The new test is `tests/test_dk_lobby.py::test_draftables_contract_uses_csv_players_not_slot_rows`. Its fixture has three synthetic slot rows and two salary rows, using the real field names.
 
+Migration head is still `0005`. No external request. No `xfail` is collected. The two new tests close their clients and keep their backends local. Reverse order, then `test_login_redirect_keeps_the_body` and `test_tcp_then_tls_share_one_deadline`, passed.
+
+Red, before the iterator mapping. This is not a result of the fixed head:
+
+```text
+$ DATABASE_URL=postgresql:///seam_test python3 -m pytest -q --tb=line tests/test_dk_lobby.py::test_budget_transport_body_timeout_retries_then_succeeds tests/test_dk_lobby.py::test_budget_transport_body_exhaustion_is_budget_exhausted
+FF
+E   httpcore.ReadTimeout: body
+E   httpcore.ReadTimeout: budget
+2 failed in 0.59s
+```
+
+Green, after the mapping, rerun on `7275915590ecd822b1d5e61c0e2aa0cae1bec983`:
+
+```text
+$ DATABASE_URL=postgresql:///seam_test python3 -m pytest -v --tb=short tests/test_dk_lobby.py::test_budget_transport_body_timeout_retries_then_succeeds tests/test_dk_lobby.py::test_budget_transport_body_exhaustion_is_budget_exhausted
+tests/test_dk_lobby.py::test_budget_transport_body_timeout_retries_then_succeeds PASSED [ 50%]
+tests/test_dk_lobby.py::test_budget_transport_body_exhaustion_is_budget_exhausted PASSED [100%]
+============================== 2 passed in 0.43s ===============================
+```
+
+Full suite on that same code, plus ruff and gitleaks:
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql:///seam_test python3 -m pytest -q --tb=line
+194 passed, 2 skipped, 1 warning in 22.36s
+
+$ gitleaks detect --source . --redact --log-opts=--all --no-banner
+2:17AM INF no leaks found
+```
+
 ## What this run did not verify
 
 | Item | Result | Reason |
@@ -102,4 +136,4 @@ The new test is `tests/test_dk_lobby.py::test_draftables_contract_uses_csv_playe
 | Draftables JSON contract vs Classic CSV | PASS | Offline read of the uploaded draftables document and matching CSV. No network. Output below. The private files were not committed. |
 | GitHub's hosted evaluation of the skipped job | UNKNOWN | AT4 forbids a live dispatch. The file gate and the local predicate are tested. |
 | Uncle Bob mutator | UNKNOWN | `mutator` is not on `PATH`. `../crapper` is not present. Go is installed. The mutator tool was not installed. This is not a pass. |
-| Pull request CI | PASS | Both checks on `9458ea98baefe9e0406490ac85f34bdf75f6fda4` succeeded: [run 42327522289](https://github.com/tjonesy10/seam-finder/actions/runs/42327522289) and [run 42327518211](https://github.com/tjonesy10/seam-finder/actions/runs/42327518211). This does not claim the independent gate is cleared. |
+| Pull request CI | PASS | Both checks on `7275915590ecd822b1d5e61c0e2aa0cae1bec983` succeeded: [run 42328553690](https://github.com/tjonesy10/seam-finder/actions/runs/42328553690) (`pull_request`) and [run 42328549429](https://github.com/tjonesy10/seam-finder/actions/runs/42328549429) (`push`). `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN`. This does not claim the independent gate is cleared. |
