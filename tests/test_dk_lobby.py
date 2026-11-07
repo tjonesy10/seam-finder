@@ -1409,10 +1409,14 @@ def test_draftables_contract_uses_csv_players_not_slot_rows():
 
 
 def test_production_migrate_stops_before_0004(database_url):
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
     from sqlalchemy import create_engine
     from sqlalchemy.engine import make_url
 
     from loader.migrate import current_revision, migrate_production, upgrade_target
+
+    head_revision = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
 
     assert upgrade_target(None, None) == "0003"
     assert upgrade_target("0002", "") == "0003"
@@ -1450,13 +1454,13 @@ def test_production_migrate_stops_before_0004(database_url):
         assert migrate_production(gated, "true") == "head"
         check = create_engine(gated)
         with check.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head_revision
             assert (
                 conn.execute(text("SELECT to_regclass('salary_private.dk_lobby_salaries')")).scalar()
                 is not None
             )
         check.dispose()
-        assert migrate_production(gated, None) == "0005"
+        assert migrate_production(gated, None) == head_revision
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)
@@ -2245,6 +2249,25 @@ def test_multiseason_parquet_receipt_captures(engine, tmp_path, monkeypatch):
     assert _run(engine, ScriptTransport(_happy_handler(box)), clock=MutableClock(datetime.now(ET))) == 0
     assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2025") == 0
     assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2026") == 2
+    selected = _rows(
+        engine,
+        "SELECT metadata FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["metadata"]["schedule_selected_receipt_sha256"]
+    chosen = _rows(
+        engine,
+        """
+        SELECT body FROM salary_private.salary_artifacts
+        WHERE source = 'control' AND sha256 = :sha
+        """,
+        sha=selected,
+    )[0]["body"]
+    raw_sha = json.loads(bytes(chosen))["source_raw_sha256"]
+    raw_body = _rows(
+        engine,
+        "SELECT body FROM salary_private.salary_artifacts WHERE source = 'control' AND sha256 = :sha",
+        sha=raw_sha,
+    )[0]["body"]
+    assert bytes(raw_body).startswith(b"PAR1")
 
 
 def test_projection_rejects_type_and_time_changes_in_one_snapshot(engine):
@@ -2456,6 +2479,241 @@ def test_proof_write_obeys_capacity_and_failure_readback(engine, monkeypatch):
     assert metadata["observed_reg_count"] == 8
     assert any(item.get("game_id") == "2026_10_DAL_PHI" for item in metadata["schedule_field_differences"])
     assert "4242" not in str(metadata["schedule_field_differences"])
+
+
+def test_later_kickoff_receipt_wins_in_either_order(engine):
+    from loader.schedule_proof import AUTHORITY_ENV, choose_receipt
+
+    _seed(engine)
+    updated = []
+    for row in _proof_rows(_seed_plan()):
+        copied = dict(row)
+        if copied["game_id"] == "2026_10_NYJ_NE":
+            copied["gametime"] = "15:00"
+        updated.append(copied)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE games SET gametime = '15:00' WHERE game_id = '2026_10_NYJ_NE'"))
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _stage_receipt_only(conn, updated, NOW + timedelta(minutes=2), run_id, "synthetic-schedule-v1")
+        bodies = [
+            bytes(row["body"])
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT body FROM salary_private.salary_artifacts
+                    WHERE source = 'control' AND artifact_kind = 'manifest'
+                      AND position('schedule_source_receipt_v1'::bytea in body) > 0
+                    """
+                )
+            ).mappings()
+        ]
+    assert len(bodies) >= 2
+    pin = os.environ[AUTHORITY_ENV]
+    root = json.loads(
+        bytes(
+            _rows(
+                engine,
+                "SELECT body FROM salary_private.salary_artifacts WHERE sha256 = :sha",
+                sha=pin,
+            )[0]["body"]
+        )
+    )
+    inventory_sha = root["season_inventories"][0]["inventory_sha256"]
+    with engine.connect() as conn:
+        forward = choose_receipt(conn, bodies, pin, inventory_sha, 2026, NOW, False)
+        backward = choose_receipt(conn, list(reversed(bodies)), pin, inventory_sha, 2026, NOW, False)
+    assert forward[0] == backward[0] == "ok"
+    assert _sha_receipt(forward[1]) == _sha_receipt(backward[1])
+    assert forward[1]["retrieved_at"] != _proof_rows(_seed_plan())[0]["gametime"]
+    moment = _et(2026, 11, 8, 15, 0)
+    sun2 = _kickoffs()["sun2"]
+    csv_rows = [
+        f"QB,Synthetic Quarterback (900001),{CANARY_NAME},900001,QB,{CANARY_SALARY},{_info('NYJ', 'NE', moment)},NYJ,1.5,Active",
+        f"RB,Synthetic Rusher (900003),Synthetic Rusher,900003,RB,4444,{_info('GB', 'CHI', sun2)},GB,2,Active",
+    ]
+    box = _box(
+        csv=_csv(csv_rows),
+        groups=[_group(90001, [("NYJ", "NE", moment), ("GB", "CHI", sun2)])],
+    )
+    assert _run(engine, ScriptTransport(_happy_handler(box))) == 0
+
+
+def _sha_receipt(receipt: dict) -> str:
+    from loader.schedule_proof import _sha
+
+    return _sha(receipt)
+
+
+def test_header_delay_cannot_restart_the_budget():
+    import socket
+    import threading
+    import time
+
+    from loader.dk_lobby import CaptureFailure, send_for_budget
+
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def serve():
+        time.sleep(2.5)
+        try:
+            conn, _addr = server.accept()
+        except OSError:
+            return
+        time.sleep(2.5)
+        try:
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\n\r\n{}"
+            )
+        except OSError:
+            pass
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    started = time.monotonic()
+    try:
+        with httpx.Client(transport=httpx.HTTPTransport(), timeout=None) as client:
+            request = client.build_request("GET", f"http://127.0.0.1:{port}/slow-headers")
+            with pytest.raises(CaptureFailure) as caught:
+                send_for_budget(client, request, started + 4, client.close)
+    finally:
+        server.close()
+    assert caught.value.reason == "http_budget_exhausted"
+    assert time.monotonic() - started <= 4.7
+
+
+def test_stale_and_wide_damage_keep_the_whole_observed_set(engine):
+    import json
+
+    _seed(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM salary_private.salary_artifacts
+                WHERE source = 'control'
+                  AND position('schedule_source_receipt_v1'::bytea in body) > 0
+                """
+            )
+        )
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            _proof_rows(_seed_plan()),
+            NOW - timedelta(days=10),
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+        )
+    stale = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, stale) == 1
+    stale_meta = _rows(engine, "SELECT metadata FROM salary_private.salary_observations")[0]["metadata"]
+    stale_body = json.loads(
+        bytes(
+            _rows(
+                engine,
+                "SELECT body FROM salary_private.salary_artifacts WHERE sha256 = :sha",
+                sha=stale_meta["schedule_evidence_sha256"],
+            )[0]["body"]
+        )
+    )
+    assert len(stale_body["observed_game_ids"]) == 9
+    assert stale_body["receipt_sha256s"]
+    assert "2026_01_NE_KC" in stale_body["observed_game_ids"]
+    notes = _rows(engine, "SELECT notes FROM load_runs WHERE dataset = 'dk_lobby_salaries'")[0]["notes"]
+    assert "2026_01_NE_KC" not in notes
+    extra = []
+    for index in range(16):
+        extra.append(
+            (
+                f"2026_03_T{index:02d}_H{index:02d}",
+                2026,
+                3,
+                f"T{index:02d}",
+                f"H{index:02d}",
+                _et(2026, 9, 27, 13, 0),
+            )
+        )
+    wide = _proof_rows(_seed_plan() + extra)
+    with engine.begin() as conn:
+        for game_id, season, week, away, home, moment in _seed_plan() + extra:
+            local = moment.astimezone(ET)
+            for abbr in (away, home):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO teams (
+                            team_abbr, team_name, team_nick, team_conf, team_division,
+                            team_id, team_color, team_color2, loaded_at
+                        ) VALUES (
+                            :abbr, :abbr, :abbr, 'NFC', 'East', :abbr, '#000000', '#111111', now()
+                        )
+                        ON CONFLICT DO NOTHING
+                        """
+                    ),
+                    {"abbr": abbr},
+                )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO games (
+                        game_id, season, game_type, season_type, week, gameday, weekday,
+                        gametime, away_team, home_team, location, loaded_at
+                    ) VALUES (
+                        :game_id, :season, 'REG', 'REG', :week, :gameday, :weekday,
+                        '18:05', :away, :home, 'Home', now()
+                    )
+                    ON CONFLICT (game_id) DO UPDATE SET gametime = '18:05'
+                    """
+                ),
+                {
+                    "game_id": game_id,
+                    "season": season,
+                    "week": week,
+                    "gameday": local.date(),
+                    "weekday": WEEKDAYS[local.weekday()],
+                    "away": away,
+                    "home": home,
+                },
+            )
+        conn.execute(text("DELETE FROM salary_private.salary_artifacts WHERE source = 'control'"))
+        run_id = conn.execute(
+            text("SELECT id FROM load_runs WHERE dataset = 'games' AND season = 2026 ORDER BY id DESC LIMIT 1")
+        ).scalar_one()
+        _install_schedule_proof(
+            conn,
+            wide,
+            NOW,
+            load_run_id=run_id,
+            source_version="synthetic-schedule-v1",
+        )
+    damaged = ScriptTransport(_happy_handler(_box()))
+    assert _run(engine, damaged) == 1
+    damaged_meta = _rows(
+        engine,
+        "SELECT metadata FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["metadata"]
+    damaged_body = json.loads(
+        bytes(
+            _rows(
+                engine,
+                "SELECT body FROM salary_private.salary_artifacts WHERE sha256 = :sha",
+                sha=damaged_meta["schedule_evidence_sha256"],
+            )[0]["body"]
+        )
+    )
+    assert len(damaged_body["observed_game_ids"]) == len(wide)
+    assert len(damaged_body["observed_game_ids"]) > 20
+    assert len(damaged_meta["schedule_field_differences"]) <= 20
+    assert "2026_01_NE_KC" not in (
+        _rows(engine, "SELECT notes FROM load_runs WHERE dataset = 'dk_lobby_salaries' ORDER BY id DESC")[0]["notes"]
+    )
 
 
 def test_login_redirect_keeps_the_body(engine):
