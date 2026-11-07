@@ -39,6 +39,8 @@ jobs:
       - name: Load
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SALARY_PRIVATE_MIGRATION: ${{ vars.SALARY_PRIVATE_MIGRATION }}
+          DK_SCHEDULE_AUTHORITY_SHA256: ${{ vars.DK_SCHEDULE_AUTHORITY_SHA256 }}
           TRIGGER: ${{ github.event_name }}
           SEASONS: ${{ github.event.inputs.seasons }}
         run: |

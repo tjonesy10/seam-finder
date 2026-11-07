@@ -69,6 +69,7 @@ jobs:
       - name: Capture
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DK_SCHEDULE_AUTHORITY_SHA256: ${{ vars.DK_SCHEDULE_AUTHORITY_SHA256 }}
           EVENT_NAME: ${{ github.event_name }}
           SEASON: ${{ github.event_name == 'workflow_dispatch' && inputs.season || '' }}
           WEEK: ${{ github.event_name == 'workflow_dispatch' && inputs.week || '' }}
