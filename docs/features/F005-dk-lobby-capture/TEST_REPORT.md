@@ -277,7 +277,7 @@ CONSTRAINT ck_salary_artifacts_body CHECK (
 | AT26 | PASS | `test_gzip_and_identity_round_trip`. A second store of the same source and decoded SHA-256 reuses the row. The artifact count stays 1. |
 | AT27 | PASS | `test_at27_upgrade_backfills_legacy_rows_without_rewriting_bodies`. Downgrade to `0008`, insert a `lobby_json` row and an `html_gzip` row with media type `application/gzip`, upgrade to head. Both stay `identity`. The new columns equal the pre-upgrade `sha256` and `byte_count`. Both bodies are unchanged. |
 | AT28 | PASS | `test_at28_encoded_growth_block_keeps_the_prior_snapshot`. After one successful capture, `encoded_growth_block` is forced to the cumulative guard and then the database guard. Each new body fails closed (`storage_guard_cumulative`, then `storage_guard_database`). Snapshot count and salary count stay at the prior values. The preflight is the block under test. `assert_actual_ceiling` is not what this fixture trips. |
-| AT29 | FAIL | `test_at29_warning_log_does_not_emit_storage_warn` passes, and that is the failure against the AT. At 70% and at 85% of the private guard, still under the guard, stderr is `storage_guard_warning guard=cumulative percent=70 bytes=... limit=...` and the same line with `percent=85`. The public stdout and stderr do not contain `storage_warn=70` or `storage_warn=85`. No artifact row is deleted. Production code was not changed to emit the token the AT names. |
+| AT29 | PASS | `test_at29_public_log_includes_storage_warn_tokens`. A successful capture whose private size is at 70% and still under 536,870,912 logs `storage_warn=70 guard=cumulative percent=70 bytes=... limit=536870912` on stderr. The same capture at 85% and still under the guard logs `storage_warn=85 guard=cumulative percent=85 bytes=... limit=536870912`. The 70% log does not contain `storage_warn=85`, and the 85% log does not contain `storage_warn=70`. Artifact count does not fall, and the four salary rows stay. |
 | AT30 | PASS | `test_at30_identity_trigger_and_explicit_writer`. An insert with `encoding` NULL and the decoded hash and length supplied is stored as `identity`, and `compressed_sha256` equals `decoded_sha256` and `compressed_bytes` equals `decoded_bytes`, via trigger `salary_artifacts_identity_encoding`. A second insert that sets every field, including `encoding=gzip`, is stored as given. |
 | AT31 | PASS | `test_downgrade_refuses_gzip_and_deletes_nothing` refuses a gzip row, leaves it, and stays on `0009`. After the test deletes that fixture, downgrade to `0008` restores a body check that contains `5242880` and not `33554432`, and a kind check that does not contain `lobby_discovery_json`. `test_at31_kind_and_oversize_refuse_without_deleting` refuses an identity `lobby_discovery_json` row and leaves it, then refuses a row with `decoded_bytes=5242881` and leaves that row and its one stored byte. The migration deletes nothing. A decoded body over 5,242,880 bytes that is neither gzip nor `lobby_discovery_json` cannot be inserted: `ck_salary_artifacts_body` rejects it. |
 | First live capture body size | UNKNOWN | Record the first real capture's decoded discovery body size in this file once a capture succeeds. |
@@ -307,7 +307,19 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 17 passed in 2.50s
 ```
 
-`test_at29_warning_log_does_not_emit_storage_warn` is one of those 17 passes. Its pass records that the required `storage_warn=` token is absent. AT29 stays FAIL.
+That command is the mapping run from PR #44, where `test_at29_warning_log_does_not_emit_storage_warn` recorded the missing token and AT29 was FAIL. This branch replaces that test with `test_at29_public_log_includes_storage_warn_tokens`. The log line is now `storage_warn=70` or `storage_warn=85` plus `guard`, `percent`, `bytes`, and `limit`. AT29 is PASS.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line tests/test_dk_lobby.py::test_at29_public_log_includes_storage_warn_tokens
+.                                                                        [100%]
+1 passed in 0.76s
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+328 passed, 3 skipped, 1 warning in 57.44s
+```
 
 ### Mutator (advisory)
 

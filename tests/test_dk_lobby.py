@@ -1325,49 +1325,6 @@ def test_at20_exact_five_mib_discovery_is_stored(engine):
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 1
 
 
-def test_at29_public_log_includes_storage_warn_tokens(engine, monkeypatch, capsys):
-    from loader.salary_private import StorageSizes
-
-    _seed(engine)
-
-    def at_percent(percent):
-        def fake(_conn):
-            return StorageSizes(int(CUMULATIVE_LIMIT * percent) + 1, 1000)
-
-        return fake
-
-    def warning(percent, used):
-        return (
-            f"storage_warn={percent} guard=cumulative percent={percent} "
-            f"bytes={used} limit={CUMULATIVE_LIMIT}"
-        )
-
-    monkeypatch.setattr("loader.salary_private.read_storage_sizes", at_percent(0.70))
-    before = _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts")
-    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
-    first = capsys.readouterr()
-    used70 = int(CUMULATIVE_LIMIT * 0.70) + 1
-    assert warning(70, used70) in first.err
-    assert "storage_warn=85" not in first.err
-    kept = _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts")
-    assert kept > before
-    monkeypatch.setattr("loader.salary_private.read_storage_sizes", at_percent(0.85))
-    assert (
-        _run(
-            engine,
-            ScriptTransport(_happy_handler(_box())),
-            clock=MutableClock(NOW + timedelta(seconds=1)),
-        )
-        == 0
-    )
-    second = capsys.readouterr()
-    used85 = int(CUMULATIVE_LIMIT * 0.85) + 1
-    assert warning(85, used85) in second.err
-    assert "storage_warn=70" not in second.err
-    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts") >= kept
-    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 4
-
-
 def test_at19_other_urls_fail_just_over_five_mib(engine):
     huge = b"x" * (OBJECT_LIMIT + 1)
     _seed(engine)
@@ -1514,7 +1471,7 @@ def test_at28_encoded_growth_block_keeps_the_prior_snapshot(engine, monkeypatch)
     assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == salaries
 
 
-def test_at29_warning_log_does_not_emit_storage_warn(engine, monkeypatch, capsys):
+def test_at29_public_log_includes_storage_warn_tokens(engine, monkeypatch, capsys):
     from loader.salary_private import StorageSizes
 
     _seed(engine)
@@ -1525,18 +1482,36 @@ def test_at29_warning_log_does_not_emit_storage_warn(engine, monkeypatch, capsys
 
         return fake
 
+    def warning(percent, used):
+        return (
+            f"storage_warn={percent} guard=cumulative percent={percent} "
+            f"bytes={used} limit={CUMULATIVE_LIMIT}"
+        )
+
     monkeypatch.setattr("loader.salary_private.read_storage_sizes", at_percent(0.70))
     before = _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts")
     assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
     first = capsys.readouterr()
-    assert "storage_guard_warning" in first.err and "percent=70" in first.err
-    assert "storage_warn=70" not in first.out + first.err
+    used70 = int(CUMULATIVE_LIMIT * 0.70) + 1
+    assert warning(70, used70) in first.err
+    assert "storage_warn=85" not in first.err
+    kept = _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts")
+    assert kept > before
     monkeypatch.setattr("loader.salary_private.read_storage_sizes", at_percent(0.85))
-    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW + timedelta(seconds=1))) == 0
+    assert (
+        _run(
+            engine,
+            ScriptTransport(_happy_handler(_box())),
+            clock=MutableClock(NOW + timedelta(seconds=1)),
+        )
+        == 0
+    )
     second = capsys.readouterr()
-    assert "storage_guard_warning" in second.err and "percent=85" in second.err
-    assert "storage_warn=85" not in second.out + second.err
-    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts") >= before
+    used85 = int(CUMULATIVE_LIMIT * 0.85) + 1
+    assert warning(85, used85) in second.err
+    assert "storage_warn=70" not in second.err
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts") >= kept
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 4
 
 
 def test_at12_storage_guards_and_concurrent_lock(engine):
