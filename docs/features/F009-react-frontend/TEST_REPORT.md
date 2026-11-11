@@ -78,6 +78,39 @@ Peers required by those tools: `@types/react`, `@types/react-dom`, `jsdom`, `typ
 
 UNKNOWN. `mutator` from github.com/unclebob/mutator is not on `PATH` and was not installed. The task said to run it only when it is already available.
 
-## CI
+## CI on a5b465a0
 
-The workflow on this branch is the one reviewed above. The GitHub Actions run for the PR head is recorded after the push.
+Both runs completed successfully for `a5b465a096ef03cb4e8f7a7b9f13b515f9ca332c`.
+
+| Event | Run | Conclusion |
+|---|---|---|
+| push | https://github.com/tjonesy10/seam-finder/actions/runs/42941023141 | success |
+| pull_request | https://github.com/tjonesy10/seam-finder/actions/runs/42941043378 | success |
+
+## After merging origin/main `5500558`
+
+`main` had moved past the branch point `12e23a5` (PRs #29 and #30). Those commits were merged with a normal merge commit. Every existing HANDOFF line was kept.
+
+Post-merge local checks, same database and Node v26.13.0:
+
+```text
+ruff check loader web tests migrations
+All checks passed!
+
+unset SERVE_SPA && pytest -q --tb=line
+280 passed, 2 skipped
+
+SERVE_SPA=true pytest tests/test_api.py -q --tb=line
+12 passed
+
+npx tsc --noEmit
+npx eslint .
+npx vitest run
+Test Files  2 passed (2)
+Tests  10 passed (10)
+
+npm run e2e
+7 passed
+```
+
+The two skips are still `tests/test_dk_classic.py:940` and `tests/test_load.py:93` (`RUN_NETWORK_TESTS` is unset). The two extra passes are the DKNFL tests that arrived with `main`. The AT1–AT16 table above is unchanged: every row stays PASS. Mutator stays UNKNOWN.
