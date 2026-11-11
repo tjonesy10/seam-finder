@@ -4,6 +4,13 @@ import re
 from dataclasses import dataclass
 
 from web.errors import AppError
+from web.grammar import (
+    ADVANCED_KEYS,
+    AdvancedQuery,
+    parse_advanced,
+    reject_advanced_size,
+    reject_duplicate_advanced,
+)
 from web.resources import Resource
 
 _OFFSET_MAX = 2_147_483_647
@@ -16,6 +23,7 @@ class ListParams:
     sort: str
     order: str
     values: dict[str, str]
+    advanced: AdvancedQuery | None = None
 
 
 def reject_unknown(query, allowed: set[str]) -> None:
@@ -24,20 +32,34 @@ def reject_unknown(query, allowed: set[str]) -> None:
             raise AppError(400, "unknown_parameter", f"unknown parameter: {key}", key)
 
 
-def parse_resource(query, resource: Resource) -> ListParams:
+def parse_resource(query, resource: Resource, *, advanced: bool = False) -> ListParams:
     allowed = {"limit", "offset", "sort", "order", *(item.name for item in resource.filters)}
+    if advanced:
+        allowed.update(ADVANCED_KEYS)
     reject_unknown(query, allowed)
     values: dict[str, str] = {}
     for item in resource.filters:
         parsed = _parse_filter(item.name, item.kind, query.get(item.name))
         if parsed is not None:
             values[item.name] = parsed
-    return ListParams(
+    params = ListParams(
         limit=_limit(query.get("limit")),
         offset=_offset(query.get("offset")),
         sort=_sort(query.get("sort"), resource),
         order=_order(query.get("order"), resource),
         values=values,
+    )
+    if not advanced or not any(key in query for key in ADVANCED_KEYS):
+        return params
+    reject_duplicate_advanced(query)
+    reject_advanced_size(query)
+    return ListParams(
+        limit=params.limit,
+        offset=params.offset,
+        sort=params.sort,
+        order=params.order,
+        values=params.values,
+        advanced=parse_advanced(query, resource.slug),
     )
 
 
