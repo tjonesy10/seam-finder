@@ -1280,10 +1280,7 @@ def _kickoff_from_row(token: str) -> GameEvidence | None:
     return GameEvidence(away.upper(), home.upper(), local.astimezone(UTC).replace(microsecond=0))
 
 
-def _decimal(token: str, precision: int, scale: int) -> Decimal | None:
-    text_value = token.strip().replace("$", "").replace(",", "")
-    if text_value == "" or re.fullmatch(r"\d+(\.\d+)?", text_value) is None:
-        return None
+def _fit_decimal(text_value: str, precision: int, scale: int) -> Decimal | None:
     try:
         number = Decimal(text_value)
     except InvalidOperation:
@@ -1295,6 +1292,22 @@ def _decimal(token: str, precision: int, scale: int) -> Decimal | None:
     if len(str(digits)) > precision - scale:
         return None
     return number
+
+
+def _decimal(token: str, precision: int, scale: int) -> Decimal | None:
+    """Nonnegative money. Salary uses this and must not accept a sign."""
+    text_value = token.strip().replace("$", "").replace(",", "")
+    if text_value == "" or re.fullmatch(r"\d+(\.\d+)?", text_value) is None:
+        return None
+    return _fit_decimal(text_value, precision, scale)
+
+
+def _signed_decimal(token: str, precision: int, scale: int) -> Decimal | None:
+    """AvgPointsPerGame only. A leading sign is part of a source average."""
+    text_value = token.strip().replace("$", "").replace(",", "")
+    if text_value == "" or re.fullmatch(r"[+-]?\d+(\.\d+)?", text_value) is None:
+        return None
+    return _fit_decimal(text_value, precision, scale)
 
 
 @dataclass(frozen=True)
@@ -1374,7 +1387,7 @@ def assess_rows(parsed: ParsedCsv) -> tuple[list[dict], list[str]]:
             reasons.append("invalid_salary")
         avg = None
         if avg_token.strip() != "":
-            avg = _decimal(avg_token, 12, 4)
+            avg = _signed_decimal(avg_token, 12, 4)
             if avg is None:
                 reasons.append("invalid_avg")
         if dk_id:
@@ -1432,32 +1445,35 @@ def _game_tuple(game: GameEvidence | None):
     return _club_key(game)
 
 
+_REASON_ORDER = (
+    "parse_failure",
+    "captain_slot",
+    "one_game",
+    "not_classic",
+    "duplicate_dk_id",
+    "invalid_salary",
+    "invalid_avg",
+    "missing_name",
+    "missing_team_or_game",
+    "contradictory_rows",
+    "mismatched_metadata",
+    "inexact_game_set",
+    "wrong_season_week",
+    "missing_rules",
+    "rules_no_roster_slots",
+    "rules_bad_slot_entry",
+    "rules_roster_mismatch",
+    "rules_cap_mismatch",
+    "draftables_mismatch",
+    "ambiguous_slate",
+    "slate_unavailable",
+    "metadata_incomplete",
+    "schedule_evidence_missing",
+)
+
+
 def _priority(reasons: list[str]) -> str:
-    order = (
-        "parse_failure",
-        "captain_slot",
-        "one_game",
-        "not_classic",
-        "duplicate_dk_id",
-        "invalid_salary",
-        "invalid_avg",
-        "missing_name",
-        "missing_team_or_game",
-        "contradictory_rows",
-        "mismatched_metadata",
-        "inexact_game_set",
-        "wrong_season_week",
-        "missing_rules",
-        "rules_no_roster_slots",
-        "rules_bad_slot_entry",
-        "rules_roster_mismatch",
-        "rules_cap_mismatch",
-        "draftables_mismatch",
-        "ambiguous_slate",
-        "slate_unavailable",
-        "metadata_incomplete",
-        "schedule_evidence_missing",
-    )
+    order = _REASON_ORDER
     for reason in order:
         if reason in reasons:
             return reason
@@ -1944,6 +1960,47 @@ def _plan(*, evidence, games, now, season, week, trigger, selection, draft_group
     }
 
 
+def _reason_counts(assessed: list[dict], reasons: list[str]) -> dict[str, int]:
+    """One count per row for row reasons. A file-level reason that no row carries counts once."""
+    counts: dict[str, int] = {}
+    for row in assessed:
+        for reason in dict.fromkeys(row["reasons"]):
+            if isinstance(reason, str) and _REASON.fullmatch(reason):
+                counts[reason] = counts.get(reason, 0) + 1
+    for reason in reasons:
+        if not isinstance(reason, str) or _REASON.fullmatch(reason) is None or reason in counts:
+            continue
+        counts[reason] = 1
+    return counts
+
+
+def format_reason_counts(fields: dict | None) -> str:
+    """Public suffix. Reason codes and row counts only."""
+    if not fields:
+        return ""
+    counts = fields.get("reason_counts")
+    if not isinstance(counts, dict):
+        return ""
+    parts = []
+    used = set()
+    ordered = list(_REASON_ORDER) + sorted(
+        reason for reason in counts if isinstance(reason, str) and reason not in _REASON_ORDER
+    )
+    for reason in ordered:
+        value = counts.get(reason)
+        if (
+            isinstance(reason, str)
+            and _REASON.fullmatch(reason)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+            and reason not in used
+        ):
+            parts.append(f"{reason}={value}")
+            used.add(reason)
+    return " ".join(parts)
+
+
 def _capture_body(state: _State, plan: dict, games: tuple[RegGame, ...]) -> None:
     ensure_pipeline_ownership()
     state.client = BoundedClient(state.transport, state.clock, state.sleeper)
@@ -1975,7 +2032,10 @@ def _capture_body(state: _State, plan: dict, games: tuple[RegGame, ...]) -> None
         if group.draftables is not None:
             reasons.extend(reconcile_draftables(group.draftables, assessed))
         if reasons:
-            raise CaptureFailure(_priority(reasons))
+            raise CaptureFailure(
+                _priority(reasons),
+                guard_fields={"reason_counts": _reason_counts(assessed, reasons)},
+            )
         _publish(state, group, verdict, assessed, games)
     finally:
         if state.client is not None:
@@ -2302,6 +2362,8 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
         suffix = format_inexact(exc.guard_fields)
     elif exc.reason in _RULE_REASONS:
         suffix = format_rules(exc.guard_fields)
+    elif exc.guard_fields and "reason_counts" in exc.guard_fields:
+        suffix = format_reason_counts(exc.guard_fields)
     else:
         suffix = ""
     return AttemptResult(
@@ -2481,7 +2543,12 @@ def _report(result: AttemptResult) -> None:
         flush=True,
     )
     if result.status == "failed":
-        print(reason, file=sys.stderr)
+        if result.guard and all(
+            re.fullmatch(r"[a-z0-9_]+=[1-9][0-9]*", part) for part in result.guard.split()
+        ):
+            print(f"{reason} {result.guard}", file=sys.stderr)
+        else:
+            print(reason, file=sys.stderr)
 
 
 def main(

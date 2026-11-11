@@ -4090,3 +4090,107 @@ def test_cli_help_and_scheduled_alias(engine):
         engine,
         "SELECT trigger FROM load_runs WHERE dataset = 'dk_lobby_salaries'",
     )[-1]["trigger"] == "schedule"
+
+
+def _avg_row(dk_id, avg, salary="5000", team="NYJ", info=None):
+    kicks = _kickoffs()
+    game = info or _info("NYJ", "NE", kicks["sun1"])
+    if team == "GB":
+        game = _info("GB", "CHI", kicks["sun2"])
+    return (
+        f"RB,Synthetic Player ({dk_id}),Synthetic Player,{dk_id},RB,{salary},{game},{team},{avg},Active"
+    )
+
+
+def test_avg_accepts_sign_zero_and_blank_and_salary_does_not():
+    from decimal import Decimal
+
+    from loader.dk_lobby import _decimal, _signed_decimal
+
+    assert _signed_decimal("-0.4", 12, 4) == Decimal("-0.4")
+    assert _signed_decimal("-2", 12, 4) == Decimal(-2)
+    assert _signed_decimal("-0", 12, 4) == Decimal(0)
+    assert _signed_decimal("+0", 12, 4) == Decimal(0)
+    assert _signed_decimal("+1.5", 12, 4) == Decimal("1.5")
+    assert _signed_decimal("nope", 12, 4) is None
+    assert _decimal("-1", 10, 2) is None
+    assert _decimal("5000", 10, 2) == Decimal(5000)
+
+    parsed = parse_csv_bytes(
+        _csv(
+            [
+                _avg_row("910201", "-0.4"),
+                _avg_row("910202", "-2", team="GB"),
+                _avg_row("910203", "-0"),
+                _avg_row("910204", "+0"),
+                _avg_row("910205", ""),
+                _avg_row("910206", "nope"),
+                _avg_row("910207", "1.5", salary="-5"),
+            ]
+        )
+    )
+    assessed, file_reasons = assess_rows(parsed)
+    by_id = {row["dk_id"]: row for row in assessed}
+    assert file_reasons == []
+    assert by_id["910201"]["reasons"] == []
+    assert by_id["910201"]["avg"] == Decimal("-0.4")
+    assert by_id["910202"]["avg"] == Decimal(-2)
+    assert by_id["910203"]["avg"] == Decimal(0)
+    assert by_id["910204"]["avg"] == Decimal(0)
+    assert by_id["910205"]["avg"] is None
+    assert by_id["910205"]["reasons"] == []
+    assert by_id["910206"]["reasons"] == ["invalid_avg"]
+    assert by_id["910207"]["reasons"] == ["invalid_salary"]
+    assert by_id["910207"]["avg"] == Decimal("1.5")
+
+
+def test_validation_reports_every_reason_count(engine, capsys):
+    _seed(engine)
+    rows = [
+        _avg_row("910301", "nope"),
+        _avg_row("910302", "bad", team="GB"),
+        _avg_row("910303", "1.5", salary="-5"),
+    ]
+    box = _box(csv=_csv(rows))
+    assert _run(engine, ScriptTransport(_happy_handler(box))) == 1
+    captured = capsys.readouterr()
+    assert "reason=invalid_salary" in captured.out
+    assert "invalid_avg=2" in captured.out
+    assert "invalid_salary=1" in captured.out
+    assert "invalid_avg=2" in captured.err
+    assert "invalid_salary=1" in captured.err
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+    notes = _rows(
+        engine, "SELECT notes FROM load_runs WHERE dataset = 'dk_lobby_salaries'"
+    )[0]["notes"]
+    assert notes.startswith("reason=invalid_salary;rows=3;snapshots=0")
+
+
+def test_signed_averages_publish(engine):
+    from decimal import Decimal
+
+    _seed(engine)
+    rows = [
+        _avg_row("910401", "-0.4", salary="5000"),
+        _avg_row("910402", "-2", salary="5100", team="GB"),
+        _avg_row("910403", "-0", salary="5200"),
+        _avg_row("910404", "+0", salary="5300"),
+        _avg_row("910405", "", salary="5400"),
+    ]
+    box = _box(csv=_csv(rows))
+    assert _run(engine, ScriptTransport(_happy_handler(box))) == 0
+    stored = _rows(
+        engine,
+        """
+        SELECT dk_id, avg_points_per_game
+        FROM salary_private.dk_lobby_salaries
+        ORDER BY dk_id
+        """,
+    )
+    assert [row["dk_id"] for row in stored] == ["910401", "910402", "910403", "910404", "910405"]
+    assert stored[0]["avg_points_per_game"] == Decimal("-0.4000")
+    assert stored[1]["avg_points_per_game"] == Decimal("-2.0000")
+    assert stored[2]["avg_points_per_game"] == Decimal("0.0000")
+    assert stored[3]["avg_points_per_game"] == Decimal("0.0000")
+    assert stored[4]["avg_points_per_game"] is None
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 1

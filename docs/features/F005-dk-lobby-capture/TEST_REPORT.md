@@ -531,3 +531,56 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 ```
 
 The two skips are the `RUN_NETWORK_TESTS` gates. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client.
+
+## 2026-11-11 signed AvgPointsPerGame
+
+Run [43091650266](https://github.com/tjonesy10/seam-finder/actions/runs/43091650266) on `3cb0284` passed rules and read the Classic CSV for draft group 156416 (512 rows), then failed `invalid_avg`. The public log did not say how many rows or what else failed.
+
+One GET of `https://www.draftkings.com/lineup/getavailableplayerscsv?contestTypeId=21&draftGroupId=156416` returned HTTP 200 and 52,356 bytes. It was not read from production. Every `Salary` token is an unsigned integer. `AvgPointsPerGame` has no blanks. Eleven tokens fail the unsigned parser:
+
+| Class | Shape | Rows |
+|---|---|---|
+| Negative average, one fractional digit, zero integer digit | length 4, leading minus | 8 |
+| Negative integer average | length 2, leading minus, one nonzero digit | 2 |
+| Signed zero | length 2, leading minus, single zero digit | 1 |
+
+No other average shape appears. The signed zero is the unclassified token. Blank averages are absent from this file. The spec already allows a blank `AvgPointsPerGame`, and `avg_points_per_game` is nullable `numeric(12,4)` with no nonnegative check, so a blank stays null. It is not stored as 0. Salary keeps the unsigned parser. `ck_dk_lobby_salaries_salary` still requires `salary >= 0`. No migration.
+
+`_signed_decimal` is used only for `AvgPointsPerGame`. A row can carry more than one reason. The capture still fails if any reason is present. The status line and stderr list every reason with its row count. The stored reason stays the priority code.
+
+Local proof on Postgres 16 at Alembic head `0010`, explicit group 156416, the cached CSV, and synthetic Classic rules:
+
+```text
+rows_parsed=512
+reason_counts=none
+negative_avg_rows=10
+zero_avg_rows=185
+null_avg_rows=0
+distinct_games=10
+dk_lobby_salaries season=2026 week=10 status=succeeded reason=captured rows=512
+snapshots=1
+salary_rows=512
+published_negative_avg=10 published_zero_avg=185 published_null_avg=0
+observation_status=succeeded observation_reason=captured
+```
+
+Nothing else failed behind `invalid_avg`.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Signed average, signed zero, blank, malformed | PASS | `test_avg_accepts_sign_zero_and_blank_and_salary_does_not`. `-0.4`, `-2`, `-0`, and `+0` parse. Blank is null. `nope` is `invalid_avg`. Salary `-1` is `invalid_salary`. |
+| Every reason is counted | PASS | `test_validation_reports_every_reason_count`. Status and stderr include `invalid_avg=2` and `invalid_salary=1`. No snapshot. |
+| Sanitized publish | PASS | `test_signed_averages_publish`. Five synthetic rows, same header, negative average, signed zero, explicit plus zero, and blank. One snapshot. |
+| Real CSV publish | PASS | Proof above. 512 rows, 10 negative averages stored, snapshot published. |
+| Production artifact body | UNKNOWN | Not read. |
+| Mutator `--changed` | ADVISORY | Exit 3. The command ran the three new average tests. 603 sites in `loader/dk_lobby.py`: killed 154, survived 388, uncovered 61, score 28.4%. `_decimal` 100% (2/2). `_signed_decimal` 50% (1/2). `_fit_decimal` 40% (2/5). `assess_rows` 47.4% (9/19). `_reason_counts` 50% (4/8). `format_reason_counts` 90.9% (10/11). The file score is low because `--changed` mutates the whole module and this command does not run the rest of the suite. |
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+368 passed, 2 skipped, 1 warning in 64.32s
+```
+
+The two skips are the `RUN_NETWORK_TESTS` gates. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client.
