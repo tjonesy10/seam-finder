@@ -86,6 +86,7 @@ _GAME_INFO = re.compile(
     r"(\d{1,2}):(\d{2})(AM|PM)\s+ET\s*$",
     re.IGNORECASE,
 )
+_GAME_SET_TEAMS = re.compile(r"^([A-Z]{2,3}) @ ([A-Z]{2,3})$")
 _REASON = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -750,6 +751,7 @@ def _read_capped(
 
 
 _ENDPOINT_PATH = re.compile(r"/[A-Za-z0-9_./-]*")
+_DETAIL_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,40}$")
 
 
 def _endpoint_path(response: httpx.Response) -> str:
@@ -809,6 +811,58 @@ def format_guard(fields: dict | None) -> str:
     return " ".join(parts)
 
 
+def _positive_ids(value: object) -> tuple[int, ...] | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = (value,)
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    ids: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+            return None
+        ids.append(item)
+    return tuple(ids)
+
+
+def format_metadata_detail(fields: dict | None) -> str:
+    """Public suffix for metadata_incomplete. Ids and field names only."""
+    if not fields:
+        return ""
+    branch = fields.get("branch")
+    if branch not in {"parse", "select"}:
+        return ""
+    parts = [f"branch={branch}"]
+    field = fields.get("field")
+    if isinstance(field, str) and _DETAIL_TOKEN.fullmatch(field):
+        parts.append(f"field={field}")
+    raw_ids = fields.get("draft_group_ids", fields.get("draft_group_id"))
+    ids = _positive_ids(raw_ids)
+    if ids:
+        shown = ids[:20]
+        parts.append("draft_group_id=" + ",".join(str(group_id) for group_id in shown))
+        if len(ids) > len(shown):
+            parts.append(f"draft_group_count={len(ids)}")
+    return " ".join(parts)
+
+
+def _incomplete(
+    branch: str,
+    field: str,
+    draft_group_id: int | None = None,
+    draft_group_ids: tuple[int, ...] | None = None,
+) -> CaptureFailure:
+    detail: dict = {"branch": branch, "field": field}
+    if draft_group_ids:
+        detail["draft_group_ids"] = tuple(draft_group_ids)
+    elif (
+        isinstance(draft_group_id, int)
+        and not isinstance(draft_group_id, bool)
+        and draft_group_id > 0
+    ):
+        detail["draft_group_id"] = draft_group_id
+    return CaptureFailure("metadata_incomplete", guard_fields=detail)
+
+
 def _challenge(media: str, body: bytes) -> bool:
     if media in {"text/html", "application/xhtml+xml"}:
         return True
@@ -852,41 +906,96 @@ def parse_iso(value: str) -> datetime | None:
     return parsed.astimezone(UTC).replace(microsecond=0)
 
 
-def _parse_game(item: object) -> GameEvidence:
+def _parse_game(item: object, draft_group_id: int | None = None) -> GameEvidence:
     if not isinstance(item, dict):
-        raise CaptureFailure("metadata_incomplete")
+        raise _incomplete("parse", "Games", draft_group_id)
     away = item.get("AwayTeamAbbrev")
     home = item.get("HomeTeamAbbrev")
     start = item.get("StartDate")
-    if not all(isinstance(value, str) and value.strip() for value in (away, home, start)):
-        raise CaptureFailure("metadata_incomplete")
+    for field, value in (
+        ("AwayTeamAbbrev", away),
+        ("HomeTeamAbbrev", home),
+        ("StartDate", start),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise _incomplete("parse", field, draft_group_id)
     kickoff = parse_iso(start)
     if kickoff is None:
-        raise CaptureFailure("metadata_incomplete")
+        raise _incomplete("parse", "StartDate", draft_group_id)
     return GameEvidence(away.strip().upper(), home.strip().upper(), kickoff)
 
 
-def _parse_group(item: object) -> DraftGroup:
+def _parse_competition(item: object, draft_group_id: int) -> GameEvidence:
     if not isinstance(item, dict):
-        raise CaptureFailure("metadata_incomplete")
+        raise _incomplete("parse", "Competitions", draft_group_id)
+    description = item.get("Description")
+    start = item.get("StartDate")
+    matched = None
+    if isinstance(description, str):
+        matched = _GAME_SET_TEAMS.fullmatch(description.strip())
+    if matched is None:
+        raise _incomplete("parse", "Description", draft_group_id)
+    if not isinstance(start, str) or not start.strip():
+        raise _incomplete("parse", "StartDate", draft_group_id)
+    kickoff = parse_iso(start)
+    if kickoff is None:
+        raise _incomplete("parse", "StartDate", draft_group_id)
+    away, home = matched.group(1), matched.group(2)
+    return GameEvidence(away, home, kickoff)
+
+
+def _games_for_group(item: dict, draft_id: int, game_sets: dict[str, list] | None) -> tuple | None:
+    if "Games" in item and item.get("Games") is not None:
+        raw_games = item.get("Games")
+        if not isinstance(raw_games, list):
+            raise _incomplete("parse", "Games", draft_id)
+        return tuple(_parse_game(game, draft_id) for game in raw_games)
+    key = item.get("GameSetKey")
+    if not isinstance(key, str):
+        return None
+    if game_sets is None or key not in game_sets:
+        raise _incomplete("parse", "GameSetKey", draft_id)
+    return tuple(_parse_competition(comp, draft_id) for comp in game_sets[key])
+
+
+def _game_set_index(payload: dict) -> dict[str, list]:
+    raw = payload.get("GameSets", [])
+    if raw is None:
+        return {}
+    if not isinstance(raw, list):
+        raise _incomplete("parse", "GameSets")
+    index: dict[str, list] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            raise _incomplete("parse", "GameSets")
+        key = item.get("GameSetKey")
+        competitions = item.get("Competitions")
+        if not isinstance(key, str) or not key.strip():
+            raise _incomplete("parse", "GameSetKey")
+        if key in index:
+            raise _incomplete("parse", "GameSetKey")
+        if not isinstance(competitions, list):
+            raise _incomplete("parse", "Competitions")
+        index[key] = competitions
+    return index
+
+
+def _parse_group(item: object, game_sets: dict[str, list] | None = None) -> DraftGroup:
+    if not isinstance(item, dict):
+        raise _incomplete("parse", "DraftGroups")
     draft_id = item.get("DraftGroupId")
     contest = item.get("ContestTypeId")
     game_type = item.get("GameTypeId")
     if not isinstance(draft_id, int) or isinstance(draft_id, bool) or draft_id <= 0:
-        raise CaptureFailure("metadata_incomplete")
+        raise _incomplete("parse", "DraftGroupId")
     if not isinstance(contest, int) or isinstance(contest, bool):
-        raise CaptureFailure("metadata_incomplete")
+        raise _incomplete("parse", "ContestTypeId", draft_id)
     parsed_type = None
     if game_type is not None:
         if not isinstance(game_type, int) or isinstance(game_type, bool) or game_type <= 0:
-            raise CaptureFailure("metadata_incomplete")
+            raise _incomplete("parse", "GameTypeId", draft_id)
         parsed_type = game_type
-    games = None
-    if "Games" in item:
-        raw_games = item.get("Games")
-        if not isinstance(raw_games, list):
-            raise CaptureFailure("metadata_incomplete")
-        games = tuple(_parse_game(game) for game in raw_games)
+    games = _games_for_group(item, draft_id, game_sets)
     return DraftGroup(draft_id, contest, parsed_type, games)
 
 
@@ -894,10 +1003,11 @@ def parse_lobby(body: bytes) -> tuple[DraftGroup, ...]:
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CaptureFailure("metadata_incomplete") from exc
+        raise _incomplete("parse", "json") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("DraftGroups"), list):
-        raise CaptureFailure("metadata_incomplete")
-    return tuple(_parse_group(item) for item in payload["DraftGroups"])
+        raise _incomplete("parse", "DraftGroups")
+    game_sets = _game_set_index(payload)
+    return tuple(_parse_group(item, game_sets) for item in payload["DraftGroups"])
 
 
 def _json_object(body: bytes) -> dict:
@@ -1631,8 +1741,12 @@ def _select_sunday(state: _State, expected: tuple[RegGame, ...]) -> DraftGroup:
     store_discovery_body(state, fetched.body, fetched.media_type or "application/json")
     groups = list(parse_lobby(fetched.body))
     incomplete = [group for group in groups if group.contest_type_id == 21 and group.games is None]
-    if incomplete and len(incomplete) > 1:
-        raise CaptureFailure("metadata_incomplete")
+    if len(incomplete) > 1:
+        raise _incomplete(
+            "select",
+            "Games",
+            draft_group_ids=tuple(group.draft_group_id for group in incomplete),
+        )
     if len(incomplete) == 1:
         groups = [_hydrate(state, group) if group.games is None else group for group in groups]
     reason, chosen = _match_groups(tuple(groups), _keys(expected))
@@ -1644,8 +1758,10 @@ def _select_sunday(state: _State, expected: tuple[RegGame, ...]) -> DraftGroup:
         if again is None:
             raise CaptureFailure(reason)
         chosen = again
-    if chosen.game_type_id is None or chosen.contest_type_id != 21:
-        raise CaptureFailure("metadata_incomplete" if chosen.game_type_id is None else "not_classic")
+    if chosen.game_type_id is None:
+        raise _incomplete("select", "GameTypeId", chosen.draft_group_id)
+    if chosen.contest_type_id != 21:
+        raise CaptureFailure("not_classic")
     if _keys(chosen.games or ()) != _keys(expected):
         raise CaptureFailure("mismatched_metadata")
     return chosen
@@ -1657,7 +1773,7 @@ def _select_explicit(state: _State, plan: dict, games: tuple[RegGame, ...]) -> D
     _keep(state, fetched.body, ArtifactKind.LOBBY_JSON, fetched.media_type or "application/json")
     group = parse_group_document(fetched.body)
     if group.games is None:
-        raise CaptureFailure("metadata_incomplete")
+        raise _incomplete("select", "Games", group.draft_group_id)
     if group.draft_group_id != plan["draft_group_id"]:
         raise CaptureFailure("mismatched_metadata")
     if group.draftables is None and group.contest_type_id != 21:
@@ -1670,7 +1786,7 @@ def _select_explicit(state: _State, plan: dict, games: tuple[RegGame, ...]) -> D
     if not _keys(group.games) <= _keys(week_games):
         raise CaptureFailure("wrong_season_week")
     if group.game_type_id is None:
-        raise CaptureFailure("metadata_incomplete")
+        raise _incomplete("select", "GameTypeId", group.draft_group_id)
     return group
 
 
@@ -1926,6 +2042,12 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
     )
     public_status = "succeeded" if exc.reason == "off_season" else "failed"
     _audit(state, public_status, exc.reason, 0, 0)
+    if exc.reason == "storage_guard_object":
+        suffix = format_guard(exc.guard_fields)
+    elif exc.reason == "metadata_incomplete":
+        suffix = format_metadata_detail(exc.guard_fields)
+    else:
+        suffix = ""
     return AttemptResult(
         exc.reason == "off_season",
         True,
@@ -1934,7 +2056,7 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
         state.season,
         state.week,
         state.rows_read,
-        format_guard(exc.guard_fields) if exc.reason == "storage_guard_object" else "",
+        suffix,
     )
 
 

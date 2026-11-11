@@ -451,6 +451,29 @@ def _group(draft_id, games, contest=21, game_type=7):
     }
 
 
+def _null_games_group(draft_id, contest=21, game_type=1, game_set_key=None):
+    """Discovery shape: Games is present and JSON null. Ids and names are fake."""
+    group = {
+        "DraftGroupId": draft_id,
+        "ContestTypeId": contest,
+        "GameTypeId": game_type,
+        "Games": None,
+    }
+    if game_set_key is not None:
+        group["GameSetKey"] = game_set_key
+    return group
+
+
+def _game_set(key, games):
+    return {
+        "GameSetKey": key,
+        "Competitions": [
+            {"Description": f"{away} @ {home}", "StartDate": _iso(moment)}
+            for away, home, moment in games
+        ],
+    }
+
+
 def _rules(slots=None, cap=50000):
     return json.dumps({"salaryCap": cap, "rosterSlots": slots or CLASSIC_SLOTS}).encode()
 
@@ -3509,6 +3532,282 @@ def test_sunday_hydrate_rejects_a_different_group_id(engine):
         engine, "SELECT reason_code FROM salary_private.salary_observations"
     )[0]["reason_code"] == "mismatched_metadata"
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_parse_lobby_treats_null_games_as_omitted():
+    body = json.dumps(
+        {
+            "DraftGroups": [
+                _null_games_group(91001),
+                _null_games_group(91002),
+                _null_games_group(91003, contest=81, game_type=2),
+            ]
+        }
+    ).encode()
+    parsed = parse_lobby(body)
+    assert [(group.draft_group_id, group.games, group.contest_type_id) for group in parsed] == [
+        (91001, None, 21),
+        (91002, None, 21),
+        (91003, None, 81),
+    ]
+
+
+def _null_games_transport(lobby, details):
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": lobby})
+        if path in details:
+            return _json_response(details[path])
+        if path.startswith("/draftgroups/"):
+            raise AssertionError(path)
+        return _happy_handler(_box())(request)
+
+    return ScriptTransport(handler)
+
+
+def test_null_games_resolve_from_game_sets_without_a_detail_fetch(engine):
+    """Games null plus GameSets is the discovery shape. Exact Sunday set still wins."""
+    _seed(engine)
+    body = {
+        "DraftGroups": [
+            _null_games_group(91001, game_set_key="set-sunday"),
+            _null_games_group(91002, game_set_key="set-saturday"),
+            _null_games_group(91003, contest=81, game_type=2, game_set_key="set-other"),
+        ],
+        "GameSets": [
+            _game_set("set-sunday", _sunday_games()),
+            _game_set("set-saturday", _saturday_games()),
+            _game_set("set-other", _saturday_games()[:1]),
+        ],
+    }
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/getcontests"):
+            return _json_response(body)
+        if path.startswith("/draftgroups/"):
+            raise AssertionError(path)
+        return _happy_handler(_box())(request)
+
+    transport = ScriptTransport(handler)
+    assert _run(engine, transport) == 0
+    paths = [request.url.path for request in transport.calls]
+    assert not any(path.startswith("/draftgroups/") for path in paths)
+    csv_calls = [
+        request for request in transport.calls if request.url.path.endswith("/getavailableplayerscsv")
+    ]
+    assert len(csv_calls) == 1
+    assert csv_calls[0].url.query == b"contestTypeId=21&draftGroupId=91001"
+    assert any("/rules" in path for path in paths)
+    snapshot = _rows(
+        engine,
+        "SELECT draft_group_id, metadata, games FROM salary_private.salary_snapshots",
+    )
+    assert len(snapshot) == 1
+    assert snapshot[0]["draft_group_id"] == "91001"
+    assert snapshot[0]["metadata"]["slate_label"] == "sunday_main"
+    assert {(row["away"], row["home"]) for row in snapshot[0]["games"]} == {("NYJ", "NE"), ("GB", "CHI")}
+
+
+def test_two_identical_game_sets_stay_ambiguous(engine):
+    _seed(engine)
+    body = {
+        "DraftGroups": [
+            _null_games_group(91001, game_set_key="set-a"),
+            _null_games_group(91002, game_set_key="set-b"),
+        ],
+        "GameSets": [
+            _game_set("set-a", _sunday_games()),
+            _game_set("set-b", _sunday_games()),
+        ],
+    }
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response(body)
+        if request.url.path.startswith("/draftgroups/"):
+            raise AssertionError(request.url.path)
+        return _happy_handler(_box())(request)
+
+    assert _run(engine, ScriptTransport(handler)) == 1
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[0]["reason_code"] == "ambiguous_slate"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_several_classic_groups_without_games_log_select(engine, capsys):
+    _seed(engine)
+    lobby = [_null_games_group(91001), _null_games_group(91002)]
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": lobby})
+        raise AssertionError(request.url.path)
+
+    transport = ScriptTransport(handler)
+    assert _run(engine, transport) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "metadata_incomplete"
+    assert "branch=select field=Games draft_group_id=91001,91002" in captured.out
+    assert len(transport.calls) == 1
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_parse_lobby_reads_games_from_game_set_descriptions():
+    body = json.dumps(
+        {
+            "DraftGroups": [_null_games_group(91001, game_set_key="set-sunday")],
+            "GameSets": [_game_set("set-sunday", _sunday_games())],
+        }
+    ).encode()
+    parsed = parse_lobby(body)
+    assert parsed[0].draft_group_id == 91001
+    assert parsed[0].games is not None
+    assert {(game.away, game.home) for game in parsed[0].games} == {("NYJ", "NE"), ("GB", "CHI")}
+
+
+def test_game_set_with_an_extra_kickoff_stays_inexact(engine):
+    _seed(engine)
+    kicks = _kickoffs()
+    body = {
+        "DraftGroups": [_null_games_group(91001, game_set_key="set-wide")],
+        "GameSets": [_game_set("set-wide", _sunday_games() + [("SEA", "SF", kicks["snf"])])],
+    }
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response(body)
+        if request.url.path.startswith("/draftgroups/"):
+            raise AssertionError(request.url.path)
+        return _happy_handler(_box())(request)
+
+    assert _run(engine, ScriptTransport(handler)) == 1
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[0]["reason_code"] == "inexact_game_set"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_bad_game_set_description_logs_the_field_only(engine, capsys):
+    _seed(engine)
+    body = {
+        "DraftGroups": [_null_games_group(91001, game_set_key="set-bad")],
+        "GameSets": [
+            {
+                "GameSetKey": "set-bad",
+                "Competitions": [
+                    {"Description": "not-a-pair", "StartDate": _iso(_kickoffs()["sun1"])}
+                ],
+            }
+        ],
+    }
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response(body)
+        raise AssertionError(request.url.path)
+
+    assert _run(engine, ScriptTransport(handler)) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "metadata_incomplete"
+    assert "branch=parse field=Description draft_group_id=91001" in captured.out
+    assert "not-a-pair" not in captured.out + captured.err
+    assert "set-bad" not in captured.out + captured.err
+
+
+def test_null_games_group_still_makes_two_sunday_sets_ambiguous(engine):
+    _seed(engine)
+    lobby = [
+        _group(91001, _sunday_games(), game_type=1),
+        _null_games_group(91002),
+    ]
+    details = {"/draftgroups/v1/91002": _group(91002, _sunday_games(), game_type=1)}
+    transport = _null_games_transport(lobby, details)
+    assert _run(engine, transport) == 1
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[0]["reason_code"] == "ambiguous_slate"
+    assert "/draftgroups/v1/91001" not in [request.url.path for request in transport.calls]
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_null_games_detail_does_not_accept_an_inexact_set(engine):
+    _seed(engine)
+    kicks = _kickoffs()
+    lobby = [_null_games_group(91001)]
+    details = {
+        "/draftgroups/v1/91001": _group(
+            91001, _sunday_games() + [("SEA", "SF", kicks["snf"])], game_type=1
+        )
+    }
+    assert _run(engine, _null_games_transport(lobby, details)) == 1
+    assert _rows(
+        engine, "SELECT reason_code FROM salary_private.salary_observations"
+    )[0]["reason_code"] == "inexact_game_set"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_metadata_incomplete_log_names_branch_field_and_group(engine, capsys):
+    _seed(engine)
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response(
+                {
+                    "DraftGroups": [
+                        {
+                            "DraftGroupId": 91001,
+                            "ContestTypeId": 21,
+                            "GameTypeId": 1,
+                            "Games": {"not": "a-list"},
+                        }
+                    ]
+                }
+            )
+        raise AssertionError(request.url.path)
+
+    transport = ScriptTransport(handler)
+    assert _run(engine, transport) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "metadata_incomplete"
+    assert (
+        "dk_lobby_salaries season=2026 week=10 status=failed "
+        "reason=metadata_incomplete rows=0 branch=parse field=Games draft_group_id=91001"
+        in captured.out
+    )
+    leaked = captured.out + captured.err
+    assert "not" not in leaked
+    assert "a-list" not in leaked
+    assert len(transport.calls) == 1
+    notes = _rows(
+        engine,
+        "SELECT notes FROM load_runs WHERE dataset = 'dk_lobby_salaries'",
+    )[0]["notes"]
+    assert notes == "reason=metadata_incomplete;rows=0;snapshots=0"
+
+    lobby = _group(91004, _sunday_games(), game_type=1)
+    lobby.pop("GameTypeId")
+    detail = _group(91004, _sunday_games(), game_type=1)
+    detail.pop("GameTypeId")
+
+    def select_handler(request):
+        path = request.url.path
+        if path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": [lobby]})
+        if path.startswith("/draftgroups/v1/"):
+            return _json_response(detail)
+        raise AssertionError(path)
+
+    assert _run(engine, ScriptTransport(select_handler)) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "metadata_incomplete"
+    assert (
+        "branch=select field=GameTypeId draft_group_id=91004" in captured.out
+    )
+    assert "NYJ" not in captured.out + captured.err
+    assert "NE" not in captured.out + captured.err
 
 
 def test_capture_over_the_ceiling_records_failure(engine, monkeypatch):
