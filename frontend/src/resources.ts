@@ -1,6 +1,8 @@
 import type { Row, Search } from "./api";
 
-export type FilterField = { name: string; label: string };
+export type DatasetFilterKind = "season" | "week" | "season_type" | "team" | "position" | "q" | "fold" | "exact";
+
+export type FilterField = { name: string; label: string; kind: DatasetFilterKind };
 
 export type Resource = {
   apiPath: string;
@@ -27,8 +29,8 @@ const teamColumns = [
 ];
 
 const playerColumns = [
-  "gsis_id",
   "display_name",
+  "gsis_id",
   "first_name",
   "last_name",
   "position",
@@ -85,8 +87,8 @@ const gameColumns = [
 ];
 
 const statColumns = [
-  "gsis_id",
   "player_display_name",
+  "gsis_id",
   "season",
   "week",
   "season_type",
@@ -150,8 +152,8 @@ export const teams: Resource = {
   pagePath: "/teams",
   title: "Teams",
   filters: [
-    { name: "conf", label: "Conference" },
-    { name: "division", label: "Division" },
+    { name: "conf", label: "Conference", kind: "fold" },
+    { name: "division", label: "Division", kind: "fold" },
   ],
   columns: teamColumns,
   sorts: ["team_abbr", "team_name"],
@@ -165,10 +167,10 @@ export const players: Resource = {
   pagePath: "/players",
   title: "Players",
   filters: [
-    { name: "q", label: "Name" },
-    { name: "position", label: "Position" },
-    { name: "team", label: "Team" },
-    { name: "status", label: "Status" },
+    { name: "q", label: "Name", kind: "q" },
+    { name: "position", label: "Position", kind: "position" },
+    { name: "team", label: "Team", kind: "team" },
+    { name: "status", label: "Status", kind: "fold" },
   ],
   columns: playerColumns,
   sorts: ["display_name", "position", "latest_team", "rookie_season"],
@@ -182,10 +184,10 @@ export const games: Resource = {
   pagePath: "/games",
   title: "Games",
   filters: [
-    { name: "season", label: "Season" },
-    { name: "week", label: "Week" },
-    { name: "season_type", label: "Season type" },
-    { name: "team", label: "Team" },
+    { name: "season", label: "Season", kind: "season" },
+    { name: "week", label: "Week", kind: "week" },
+    { name: "season_type", label: "Season type", kind: "season_type" },
+    { name: "team", label: "Team", kind: "team" },
   ],
   columns: gameColumns,
   sorts: ["gameday", "week", "season"],
@@ -199,13 +201,13 @@ export const stats: Resource = {
   pagePath: "/stats",
   title: "Player week stats",
   filters: [
-    { name: "season", label: "Season" },
-    { name: "week", label: "Week" },
-    { name: "season_type", label: "Season type" },
-    { name: "team", label: "Team" },
-    { name: "position", label: "Position" },
-    { name: "player", label: "Player" },
-    { name: "game_id", label: "Game" },
+    { name: "season", label: "Season", kind: "season" },
+    { name: "week", label: "Week", kind: "week" },
+    { name: "season_type", label: "Season type", kind: "season_type" },
+    { name: "team", label: "Team", kind: "team" },
+    { name: "position", label: "Position", kind: "position" },
+    { name: "player", label: "Player", kind: "exact" },
+    { name: "game_id", label: "Game", kind: "exact" },
   ],
   columns: statColumns,
   sorts: [
@@ -229,9 +231,9 @@ export const loadRuns: Resource = {
   pagePath: "/load-runs",
   title: "Load runs",
   filters: [
-    { name: "dataset", label: "Dataset" },
-    { name: "status", label: "Status" },
-    { name: "season", label: "Season" },
+    { name: "dataset", label: "Dataset", kind: "fold" },
+    { name: "status", label: "Status", kind: "fold" },
+    { name: "season", label: "Season", kind: "season" },
   ],
   columns: loadRunColumns,
   sorts: ["started_at"],

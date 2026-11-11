@@ -90,7 +90,30 @@ describe("shell attribution", () => {
     expect(document.body.textContent).toContain("Last refresh: none");
   });
 
-  it("shows the bad-parameter message and keeps the filter form", async () => {
+  it("ignores an invalid week in the page URL and still loads games", async () => {
+    const urls: string[] = [];
+    installFetch((url) => {
+      urls.push(url);
+      if (url.includes("/api/games")) {
+        return json({
+          data: [{ game_id: "2026_01_XX_YY", gameday: "2026-09-01" }],
+          page: { limit: 50, offset: 0, total: 1 },
+        });
+      }
+      return json(META);
+    });
+    renderAt("/games?week=abc");
+    expect(await screen.findByText("2026-09-01")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("week must be an integer from 1 to 22");
+    expect(document.body.textContent).not.toContain("Traceback");
+    expect(urls.filter((url) => url.includes("/api/games")).every((url) => !url.includes("week="))).toBe(true);
+    expect((document.querySelector('input[name="week"]') as HTMLInputElement).value).toBe("");
+    expect(document.querySelector('input[name="season"]')).not.toBeNull();
+    expectAttribution();
+    expect(document.body.textContent).toContain("Last refresh: 2026-11-05 12:00:00 ET");
+  });
+
+  it("still shows an API 400 message when a valid request is rejected", async () => {
     installFetch((url) => {
       if (url.includes("/api/games")) {
         return json(
@@ -100,14 +123,11 @@ describe("shell attribution", () => {
       }
       return json(META);
     });
-    renderAt("/games?week=abc");
+    renderAt("/games?week=1");
     expect(await screen.findByText("week must be an integer from 1 to 22")).toBeTruthy();
     expect(document.querySelector("form")).not.toBeNull();
-    expect(document.querySelector('input[name="week"]')).not.toBeNull();
-    expect(document.querySelector('input[name="season"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain("Traceback");
     expectAttribution();
-    expect(document.body.textContent).toContain("Last refresh: 2026-11-05 12:00:00 ET");
   });
 
   it("renders the home page from datasets and last_refresh_et", async () => {

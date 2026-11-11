@@ -71,7 +71,7 @@ export function Footer() {
   const meta = useApiMeta();
   const label = refreshLabel(meta.data?.last_refresh_et, meta.isSuccess);
   return (
-    <footer className={styles.footer}>
+    <footer id="attribution" className={styles.footer}>
       <p>{ATTRIBUTION_TEXT}</p>
       <ul>
         {ATTRIBUTION_LINKS.map((link) => (

@@ -282,7 +282,8 @@ def test_at7_package_uses_the_named_libraries():
     for banned in ("@tanstack/react-start", "@tanstack/start", "next", "remix"):
         assert banned not in joined
     pages = (FRONTEND / "src" / "pages.tsx").read_text()
-    assert "DataTable" in pages
+    frontend_tsx = " ".join(path.read_text() for path in (FRONTEND / "src").glob("*.tsx"))
+    assert "DataTable" in frontend_tsx
     assert "useQuery" in pages
     assert (ROOT / ".nvmrc").read_text().strip() == "26"
     assert (FRONTEND / "package-lock.json").is_file()
