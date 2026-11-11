@@ -50,8 +50,7 @@
 | Artifact | Exact private bytes with source-specific SHA; BOM/CRLF and rejected evidence preserved, not only parsed values. | salary_artifacts |
 | Observation | One capture/ingestion attempt and its timestamps, even when bytes are unchanged. | salary_observations |
 | Capture runtime | Wall-clock `started_at`/`finished_at` and monotonic `duration_ms` for one private capture attempt. Not derived by subtracting clocks. | `salary_observations.duration_ms` |
-| Discovery projection | The `DraftGroups` array from a getcontests discovery body larger than 5 MiB and at most 32 MiB, stored alone as canonical JSON. `Contests` and every other key are discarded. A discovery body of 5 MiB or less is still stored whole. | `discovery_projection` / `lobby_discovery_projection` |
-| Discovery read limit | Decoded-byte ceiling for that same discovery read: 33,554,432 bytes. One byte past it fails closed with `discovery_read_limit` and stores no body. | `DISCOVERY_READ_LIMIT` |
+| Discovery object cap | Decoded-byte cap for the getcontests discovery body only: 33,554,432 bytes. The full body is stored. One byte past the cap fails closed with `storage_guard_object`. Other fetches stay at 5 MiB. Nothing is deleted. | `DISCOVERY_OBJECT_LIMIT` / `lobby_discovery` |
 | Schedule authority root | Operator-reviewed pin of the expected full-season REG inventory and allowed gap proofs. A stored hash does not approve itself. | `DK_SCHEDULE_AUTHORITY_SHA256` |
 | Source-to-PG receipt | Private record binding exact nflverse schedule bytes to the games load and the approved inventory. Not proof that Postgres is still unchanged. | `schedule_source_receipt_v1` |
 | Schedule coverage | Finite reviewed interval that is either an active season or a supported no-REG gap. An unsupported gap is not off-season. | `schedule_coverage_v1` |
