@@ -66,9 +66,21 @@ jobs:
           npm test
           npm run build
 
-      - name: Install Playwright
+      - name: Resolve Playwright version
+        id: playwright-version
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("package-lock.json"))["packages"]["node_modules/@playwright/test"]["version"])')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-ms-playwright-${{ github.job }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/install-playwright-chromium.sh"
 
       - name: Test
         env:
@@ -94,6 +106,8 @@ jobs:
         run: npm run e2e
 
   visual:
+    # ubuntu-24.04 is the font rasterizer the F010/F011 baselines were
+    # captured on. Do not move this job into a Playwright container image.
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -136,9 +150,21 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Install Playwright
+      - name: Resolve Playwright version
+        id: playwright-version
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("package-lock.json"))["packages"]["node_modules/@playwright/test"]["version"])')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-ms-playwright-${{ github.job }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/install-playwright-chromium.sh"
 
       - name: Visual and accessibility comparisons
         working-directory: frontend
