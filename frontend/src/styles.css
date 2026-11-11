@@ -1,0 +1,63 @@
+body {
+  font-family: sans-serif;
+  margin: 1.5rem;
+  color: #1a1a1a;
+}
+
+a {
+  color: #0b3d91;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+th,
+td {
+  border: 1px solid #ccc;
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table-scroll {
+  height: 32rem;
+  overflow: auto;
+}
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  margin: 1rem 0;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.9rem;
+}
+
+.error {
+  color: #8a1f1f;
+  font-weight: bold;
+}
+
+footer {
+  margin-top: 2rem;
+  max-width: 46rem;
+}
+
+.pager {
+  margin-top: 0.75rem;
+}
+
+button.linkish {
+  font: inherit;
+  color: #0b3d91;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
