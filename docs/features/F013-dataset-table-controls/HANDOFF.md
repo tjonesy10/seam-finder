@@ -1,0 +1,1 @@
+[2026-11-11 08:08 ET] [blueprint] DONE -> SPEC.md -> next: [forge] (after F011 and F012 merge) | Analyze: R1–R8 all covered, AT1–AT12 none orphaned, ADR/constitution conflicts none | Decided/Rejected: explicit scopes preserve links; manual server row model; page-only CSV
