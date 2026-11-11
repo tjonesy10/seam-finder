@@ -116,3 +116,12 @@
 | Query admission | Nonwaiting per-process cap on advanced database transactions, not a distributed rate limiter. | two in flight / `query_busy` |
 | Refinement scope | Explicit choice of local page controls or server-wide controls; old links retain page meaning. | `ui_scope=page|dataset` |
 | Dataset page export | CSV of only the returned successful API page even while filtering the whole dataset. | F013 Export this page CSV |
+
+
+## F014 orchestration terms (proposed)
+
+| Term | Definition | Code / data name |
+|---|---|---|
+| Refresh-before-capture pipeline | One execution completes normal nflverse refresh and verifies its bound schedule evidence before invoking private capture; not an on-time guarantee. | F014 orchestration / `pipeline_stage` |
+| Coordination lock | Session-owned exclusion spanning normal refresh and capture, distinct from the private storage lock and acquired before it. | F014 coordination lock (not `CAPTURE_LOCK`) |
+| Same-execution proof binding | Restriction to games receipts from the pipeline's just-completed refresh, in addition to full authority and current-PG verification. | `pipeline_refresh_run_group`, `pipeline_games_load_run_ids` |
