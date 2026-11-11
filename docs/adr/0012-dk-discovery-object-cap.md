@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed (2026-11-11). Decided by the owner 2026-11-11 10:59 AM ET (relayed by Groko: "Raise the limit"). Accepted on owner merge. This is a docs proposal. It does not approve a build, a migration, a capture, schedule activation, or a production change.
+Proposed (2026-11-11). The discovery cap was decided by the owner 2026-11-11 10:59 AM ET (relayed by Groko: "Raise the limit"). The storage plan was decided by the owner 2026-11-11 11:10 AM ET (relayed by Groko: "Stay on current plan for now. Remind me after the next data comes through and evaluate what our best options are."). The contract is accepted on owner merge.
 
-On acceptance, this ADR supersedes [ADR 0005](0005-private-salary-capture-and-archives.md) **only** for the per-object cap as applied to the allowlisted discovery URL `https://www.draftkings.com/lobby/getcontests?sport=NFL`. The cap for that URL becomes 32 MiB of decoded bytes, and a body within the cap is stored in full. Everything else in ADR 0005 stands, including the 5 MiB cap on every other fetch and the rule that nothing is automatically deleted. ADR 0005 is not edited.
+The production migration of `salary_private.salary_artifacts` is approved. Cosmo approved it on 2026-11-11 at 11:10 AM ET, relayed by Groko: "Yes, approve the salary_artifacts migration for production." This docs change does not contain the revision and does not run it. Schedule activation and a live capture are not approved.
+
+On acceptance, this ADR supersedes [ADR 0005](0005-private-salary-capture-and-archives.md) for the discovery object cap, the stored encoding of private artifacts, and the cumulative and database guard numbers in ADR 0005's limits bullet. ADR 0005 keeps a short amended-by note there. Its other decisions stand, including no automatic deletion. The 5 MiB decoded cap remains for every artifact kind except `lobby_discovery_json`.
 
 ## Context
 
@@ -12,54 +14,114 @@ F005 capture run [43049995926](https://github.com/tjonesy10/seam-finder/actions/
 
 Reviewed for this proposal:
 
-- ADR 0005 stores a body that fits in 5 MiB. A larger body stops at limit+1, keeps a truncated-prefix diagnostic, stores no full artifact, and publishes no snapshot. The reason code is `storage_guard_object`. ADR 0005 also forbids automatic deletion.
-- `loader/salary_private.py` sets `OBJECT_LIMIT` to 5,242,880. `store_artifact` rejects a longer body. The invocation raw-bytes guard is 64 MiB.
+- ADR 0005 stores a body that fits in 5 MiB. A larger body stops at limit+1, keeps a truncated-prefix diagnostic, stores no full artifact, and publishes no snapshot. The reason code is `storage_guard_object`. ADR 0005 also forbids automatic deletion. Its limits bullet sets 64 MiB per invocation, 128 MiB cumulative private artifacts, and a 512 MiB database write guard.
+- `loader/salary_private.py` sets `OBJECT_LIMIT` to 5,242,880. `store_artifact` rejects a longer body. The invocation raw-bytes guard is 64 MiB. `AUDIT_HEADROOM` is 256 KiB. After writes, the capture lock remeasures real relation and database size.
 - `loader/dk_lobby.py` reads the discovery URL with `_read_capped`, which stops at 5 MiB. `_accepted` then raises `storage_guard_object` when the read is truncated. The same 5 MiB read is used for `draftgroups/v1`, the rules URL, and the salary CSV. Discovery and `draftgroups/v1` are both stored today as `artifact_kind=lobby_json`.
-- `salary_private.salary_artifacts.body` is `bytea NOT NULL`. Check `ck_salary_artifacts_body` requires `octet_length(body) <= 5242880` for every artifact. Check `ck_salary_artifacts_kind` (migration `0005`) has no discovery-only kind.
+- `salary_private.salary_artifacts.body` is `bytea NOT NULL`. Check `ck_salary_artifacts_body` (migration `0004`) requires `octet_length(body) <= 5242880` for every artifact. Check `ck_salary_artifacts_kind` (migration `0005`) has no discovery-only kind. Unique `(source, sha256)` dedups stored bytes. There is no encoding column.
+- Production workflows on `main` run `python -m loader.migrate`. A revision merged to `main` is applied on the next production migrate.
+- Alembic revisions on this branch's base are `0001` through `0008`. There is no `0009` in the tree.
 
-No week-10 snapshot exists. This proposal does not invent one.
+No week-10 snapshot exists. No getcontests body has been measured. This proposal does not invent one.
 
 ## Decision
 
-Apply a larger object cap only to `https://www.draftkings.com/lobby/getcontests?sport=NFL`.
+### Discovery cap
 
-`DISCOVERY_OBJECT_LIMIT` is 32 MiB, 33,554,432 decoded bytes. Store the full decoded body as a normal private artifact, exactly as ADR 0005 stores a body that fits its cap. Stop reading at limit+1. A discovery body that reaches byte 33,554,433 fails closed with `storage_guard_object`, with ADR 0005's truncated-prefix diagnostic (`truncated=true`, hash and length of the retained prefix, `retained_artifact=false`), no salary snapshot, and zero salary rows.
+Apply a larger object cap only to `GET https://www.draftkings.com/lobby/getcontests?sport=NFL`.
 
-`draftgroups/v1`, the lineups rules document, and the `getavailableplayerscsv` salary CSV stay at `OBJECT_LIMIT` 5,242,880 decoded bytes. A larger body on those URLs still fails closed with `storage_guard_object`.
+`DISCOVERY_OBJECT_LIMIT` is 32 MiB, 33,554,432 decoded bytes. Store the full decoded response. Stop reading at limit+1. A discovery body that reaches byte 33,554,433 fails closed with `storage_guard_object`, with ADR 0005's truncated-prefix diagnostic (`truncated=true`, hash and length of the retained prefix, `retained_artifact=false`), no salary snapshot, and zero salary rows.
 
-The 64 MiB per-invocation raw-bytes guard is unchanged. One discovery body at 32 MiB plus those three other fetches at 5 MiB each is 47 MiB, inside that guard.
+`draftgroups/v1`, the lineups rules document, and the `getavailableplayerscsv` salary CSV stay at 5,242,880 decoded bytes. A larger body on those URLs still fails closed with `storage_guard_object`.
 
-Record the full discovery body's byte length on the private observation (`salary_observations.metadata.discovery_body_bytes`). Add byte counts to the public log. The public log carries no body, no URL that contains a secret, and no response content.
+A discovery body of 5,242,880 decoded bytes or fewer is still stored in full and still follows today's success path.
 
-A discovery body of 5,242,880 bytes or fewer is still stored in full and still follows today's success path. It does not fail the object guard.
+The stored discovery row uses new `artifact_kind=lobby_discovery_json` and `media_type=application/json`. `draftgroups/v1` remains `lobby_json`. `body` stays `bytea NOT NULL`.
 
-The stored discovery row uses `artifact_kind=lobby_discovery` and `media_type=application/json` so the database check can tell it from a `draftgroups/v1` row, which remains `lobby_json` and remains at 5 MiB. `body` stays `bytea NOT NULL`. `sha256` and `byte_count` are the full stored bytes. Existing content-hash dedupe stays.
+Record the discovery body's decoded length on the private observation (`salary_observations.metadata.discovery_body_bytes`). Add byte counts to the public log. The public log carries no body, no URL that contains a secret, and no response content.
 
-Nothing is deleted. Salary CSVs, draft-group and rules bodies, snapshots, salary rows, and archive artifacts all stay.
+### Retention
 
-## Storage at rest and budget: [NEEDS CLARIFICATION: compression encoding and new cumulative/DB guard values pending owner decision on Neon plan]
+Keep every accepted response byte-exact. No eviction, no purge, and no separate discovery quota. When a guard is reached, block new writes only and fail closed with zero salary rows and no snapshot. Existing data is never touched.
 
-Exact values are not in this ADR. Cosmo will send them. Until then this ADR does not choose a compression encoding and does not set a new cumulative private-artifact guard or a new database write guard.
+### Encoding at rest
+
+Stored bodies use gzip level 9 with `mtime=0`. That encoding is deterministic and in the Python 3.12 standard library. If gzip is not smaller, the body is stored as identity. Allowed encodings are `identity` and `gzip`. zstd is a reserved future option, rejected for now because it needs a new dependency or Python 3.14.
+
+Decoded means the HTTP content-decoded bytes, before this application compression.
+
+For every artifact, record `decoded_sha256`, `decoded_bytes`, `compressed_sha256`, and `compressed_bytes`. `sha256` stays equal to `decoded_sha256`, and `byte_count` stays equal to `decoded_bytes`. Those two existing columns are compatibility aliases. Dedup is on source plus decoded SHA-256, which is the existing unique `(source, sha256)` once `sha256` is the decoded hash.
+
+The writer verifies the encoded hash and length, decompresses within the decoded limit, verifies the decoded hash and length, and reads back exactly the bytes it stored.
+
+Legacy rows stay `identity`. Their new columns are backfilled from the existing `sha256` and `byte_count`. No body is rewritten.
+
+Stored `.html.gz` archive companions remain `identity` with media type `application/gzip`. Their stored bytes stay the file as acquired. They are not uncompressed and compressed again.
+
+PostgreSQL TOAST (`pglz`) is not relied on for any limit.
+
+### Limits apply to decoded bytes
+
+- `lobby_discovery_json`: decoded length up to 33,554,432.
+- Every other kind: decoded length up to 5,242,880.
+
+The check `ck_salary_artifacts_body` is rewritten to tie the stored body to those rules:
+
+- `compressed_bytes = octet_length(body)`
+- `identity` requires `compressed_bytes = decoded_bytes`
+- `gzip` requires `compressed_bytes < decoded_bytes`
+- `sha256 = decoded_sha256` and `byte_count = decoded_bytes`
+- `body` is not null
+
+### Guards
+
+This amends the limits bullet in ADR 0005.
+
+- Per invocation stays 64 MiB decoded. The four-request maximum is 32 + 5 + 5 + 5 = 47 MiB.
+- Cumulative `salary_private` rises from 128 MiB to 512 MiB (536,870,912 bytes).
+- The `pg_database_size` write guard rises from 512 MiB to 768 MiB (805,306,368 bytes).
+
+The cumulative guard measures `pg_total_relation_size` across all `salary_private` tables, including indexes and TOAST. It is not the sum of artifact byte lengths. Preflight uses the encoded length plus a relational allowance. The post-write remeasure under the capture lock stays authoritative. The 256 KiB audit headroom stays.
+
+Warn at 70% and 85% of either guard. A warning does not fail the attempt and does not delete anything. The public log may add `storage_warn=70` or `storage_warn=85` and no body. If both thresholds are crossed, report 85.
+
+Crossing either guard blocks the new write, fails closed with the existing cumulative or database reason, leaves zero new salary rows and no new snapshot, and leaves existing rows in place.
+
+### Capacity
+
+The project stays on the Neon Free plan, 1 GiB per project.
+
+Planning estimate, not a measurement: about 6.65 MiB gzip per capture at the full discovery cap with a 20% ratio. The rest of 2026 plus 2027 is 27 captures, about 470 MiB private and about 582 MiB total, which fits the guards above and the free plan.
+
+It does not fit if bodies are incompressible: 9 captures at 47 MiB raw would be about 666 MiB private.
+
+No getcontests body has been measured yet. After the first successful discovery capture, record the measured size and reforecast. Cosmo then evaluates options. His words, relayed by Groko on 2026-11-11 at 11:10 AM ET: "Stay on current plan for now. Remind me after the next data comes through and evaluate what our best options are."
+
+A paid Launch plan is an alternative not chosen now: pay-as-you-go, no minimum, $0.35/GB-month storage and $0.106/CU-hour compute, per <https://neon.com/pricing> (updated 2026-11-04), with 8 GiB private and 12 GiB database guards for a five-season envelope.
 
 ## Reasoning
 
-The owner chose to raise the discovery cap and keep the full response. Salaries still come from the CSV, which stays on the 5 MiB cap. The discovery document is the full allowlisted response, stored like any other in-cap artifact. The read still stops, so an unbounded body cannot be pulled into memory or into Neon.
+The owner chose to raise the discovery cap, keep every accepted byte, and stay on the current free plan until a real discovery body has been measured. Gzip level 9 with a fixed `mtime` is deterministic, needs no new dependency, and shrinks the planning case enough to fit. The decoded hash remains the identity of the response, so dedup and the exact-byte rule survive the wrapper. Guards fail closed by refusing the new write. They do not make room by deleting history.
 
 ## Rejected alternatives and why
 
 - **(b) DraftGroups projection.** Not the owner's choice. It would drop the rest of the response and lose full-response provenance.
 - **(c) A narrower endpoint.** None is verified, and one cannot be checked before the Sunday 15 November 2026 1:00 PM America/New_York lock.
-- **Raise the cap for every fetch.** The CSV, rules, and `draftgroups/v1` documents do not need it, and a wider cap on those objects widens the storage risk.
-- **Eviction.** Rejected by the owner 2026-11-11: keep all data.
+- **Raise the cap for every fetch.** The CSV, rules, and `draftgroups/v1` documents do not need it.
+- **Eviction or a separate discovery quota.** Rejected by the owner 2026-11-11: keep all data.
+- **zstd.** Reserved for later. It needs a new dependency or Python 3.14.
+- **Rely on TOAST.** `pglz` is not a limit the application can treat as its budget.
+- **Paid Launch now.** Not chosen. The free plan remains the plan until Cosmo evaluates the measured body.
 
 ## Consequences
 
-F005 R10 and AT17–AT20 are the behavioral contract once this ADR is accepted. Forge starts after that acceptance, in a separate code change. This proposal does not hand the work to forge by itself.
+F005 R10–R14 and AT17–AT29 are the behavioral contract once this ADR is accepted. Forge writes the revision in its own change. This docs change does not add that file.
 
-**A migration is required** before a discovery body larger than 5,242,880 bytes can be stored. `ck_salary_artifacts_body` caps every artifact at that size, and `ck_salary_artifacts_kind` does not list `lobby_discovery`. Forge widens the kind check and allows `lobby_discovery` bodies up to 33,554,432 bytes, leaving every other kind at 5,242,880. `body` stays `bytea NOT NULL`. No further columns. Production application needs Cosmo's separate approval. This docs change does not add a migration file.
+**Migration.** One Alembic revision on `salary_private.salary_artifacts`. It adds `encoding`, `decoded_sha256`, `decoded_bytes`, `compressed_sha256`, and `compressed_bytes`. It adds `lobby_discovery_json` to `ck_salary_artifacts_kind` and rewrites `ck_salary_artifacts_body` as in the limits section. It backfills legacy rows as `identity` from `sha256` and `byte_count` and does not rewrite bodies. It includes a downgrade, changes no `seamfinder_web` grants, and deletes nothing. Forge supplies the revision id. That id must not collide with `0009`.
 
-ADR 0005's no-deletion rule remains. Schedule proof, F004, grants, the public site, and the Wednesday cadence are unchanged.
+Production application is approved, as recorded in Status. The next production `python -m loader.migrate` after that revision is merged will apply it. Merging this docs change does not apply it, because the revision is not in this change.
+
+ADR 0005's no-deletion rule remains. Schedule proof, F004, the public site, and the Wednesday cadence are unchanged. The free-tier constitution rule remains: Launch is not chosen.
 
 ## Migration
 
-See Consequences. The cap needs a check-constraint migration. `body` stays `bytea NOT NULL`. Production migration needs Cosmo's separate approval.
+See Consequences. The revision is forge's. Production application is approved. This docs change does not add the file and does not run the migrate.
