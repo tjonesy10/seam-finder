@@ -1,6 +1,6 @@
 # Architecture: Seam Finder, Part 1 (data prototype)
 
-Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md), [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) (Accepted), [ADR 0004](adr/0004-dk-current-slate-csv.md) (Accepted), [ADR 0005](adr/0005-private-salary-capture-and-archives.md) (Accepted), [ADR 0006](adr/0006-slate-safe-salary-unification.md) (Accepted), [ADR 0007](adr/0007-authoritative-schedule-completeness.md) (Accepted).
+Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md), [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) (Accepted), [ADR 0004](adr/0004-dk-current-slate-csv.md) (Accepted), [ADR 0005](adr/0005-private-salary-capture-and-archives.md) (Accepted), [ADR 0006](adr/0006-slate-safe-salary-unification.md) (Accepted), [ADR 0007](adr/0007-authoritative-schedule-completeness.md) (Accepted), [ADR 0008](adr/0008-react-frontend-hosting.md) (Proposed, F009 frontend and asset hosting; not accepted until the F009 docs PR merges).
 
 ## Components
 
@@ -8,10 +8,10 @@ Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md)
 |---|---|---|
 | Loader | Python CLI. Downloads nflverse-data release files, validates them, upserts into Postgres, writes `load_runs`. | GitHub Actions (scheduled + manual), or locally |
 | Database | Postgres. Tables in [data-dictionary.md](data-dictionary.md). | Neon free tier |
-| Web app | One FastAPI service. `/api/*` returns JSON; other paths return server-rendered HTML (Jinja2) built from the same query functions. Read-only DB role. | Render free web service |
+| Web app | One FastAPI service. `/api/*` returns JSON. Until Cosmo enables F009 cutover, other paths return Jinja2 HTML from the same query functions. After cutover, the same process serves the built React SPA for those paths. Read-only DB role. | Render free web service |
 | Refresh workflow | GitHub Actions workflow that runs the loader. Holds the DB URL as a secret. | GitHub Actions |
 
-One language (Python) and one web service. No separate frontend build, no CORS, no second host.
+One web service and one public origin. After F009, Python remains the API and loader language, and a Vite build in `frontend/` is served by that same FastAPI process, so there is no CORS and no second host. [ADR 0008](adr/0008-react-frontend-hosting.md) is the proposed frontend and hosting decision.
 
 ## Data flow
 
@@ -29,24 +29,24 @@ flowchart LR
   L -->|upsert in one transaction per dataset+season; write load_runs| DB[(Postgres on Neon)]
   DB -->|read-only role| W[FastAPI web app on Render]
   W -->|/api/* JSON| C1[API clients]
-  W -->|HTML pages| C2[Browser]
+  W -->|SPA assets after cutover, or Jinja pages until then| C2[Browser]
 ```
 
 Load order inside one run: teams, players, games, player_week_stats (foreign keys point backwards in that order).
 
 ## Deployment
 
-- **Repo**: one Python package with `loader/`, `app/`, `migrations/`, `tests/`.
+- **Repo**: one repository with `loader/`, `web/`, `frontend/`, `migrations/`, and `tests/`.
 - **Database**: Neon project, one database. Two roles: a loader role (DDL + write) used only by GitHub Actions and migrations, and a read-only role used by the web app.
 - **Secrets**: `DATABASE_URL` (loader role) as a GitHub Actions secret; `DATABASE_URL` (read-only role) as a Render environment variable. `.env` is git-ignored; `.env.example` holds placeholder values only. The repo is public; see the Secrets rule in the F001 SPEC.
-- **Web app**: Render builds from the repo and runs `uvicorn`. Free instances spin down after 15 minutes with no traffic and take about a minute to start again ([Render docs](https://render.com/docs/free)).
+- **Web app**: Render builds from the repo and runs `uvicorn`. Free instances spin down after 15 minutes with no traffic and take about a minute to start again ([Render docs](https://render.com/docs/free)). Today's dashboard build command stays `pip install .` until Cosmo approves F009 cutover. At cutover the build also installs Node 26 and builds `frontend/`, and `SERVE_SPA=true` starts the SPA. No `render.yaml` is committed.
 - **Refresh**: `.github/workflows/refresh.yml` with a `schedule` cron and `workflow_dispatch` (input: seasons). Details in [ADR 0002](adr/0002-nflverse-load-and-refresh.md).
 - **Migrations**: run by the loader role before loading (see [data-dictionary.md](data-dictionary.md#migration-plan)).
 
 ## Cross-cutting rules
 
 - The web app never writes. Its DB role has `SELECT` only.
-- Every HTML page shows the attribution footer and the last successful refresh time (from `load_runs`).
+- Every page shows the attribution footer and the last successful refresh time (from `load_runs`). After F009 cutover the SPA reads those values from `GET /api`.
 - Team logos and player headshots are not stored or shown (trademark and image rights are not covered by the nflverse license).
 
 ## Future extension points (parts 2-5)
@@ -96,3 +96,10 @@ Build order after the PR #17 docs approval: F005 shared persistence/privacy and 
 ## F005 schedule completeness (ADR 0007 Accepted)
 
 [ADR 0007](adr/0007-authoritative-schedule-completeness.md) is the completeness contract Cosmo approved on 2026-11-06 19:14 EST and that PR #20 merged. No product question remains, and no season inventory is certified. The chain is an operator-reviewed league reference, a pinned private authority root, exact nflverse raw bytes, an automatic source-to-PG receipt, then a whole-season Postgres comparison and finite timing or gap proof before any DK call. A fresh games load, surviving rows, endpoint dates, a row count, or a self-hash is not that proof. Reference authenticity is the operator review. Completeness is equality with that reviewed inventory. There is no new automatic league-schedule scraper. Positive paths remain a verified in-season capture and a finite supported off-season gap. Incomplete prior-year evidence and an unsupported calendar gap fail closed. Contract acceptance is not implementation acceptance. PR #19 remains open, and its implementation merge stays held.
+
+
+## F009 React frontend (Proposed)
+
+Drafted 2026-11-10 against main `36636c2`. Docs only. [F009 SPEC](features/F009-react-frontend/SPEC.md) and [ADR 0008](adr/0008-react-frontend-hosting.md) are Proposed. A [pending constitution amendment](features/F009-react-frontend/CONSTITUTION-AMENDMENT.md) is required because the accepted constitution still names Jinja2 pages and a blanket bundler ban. Nothing here hands the feature to forge or changes the live site.
+
+Phase 1 replaces the Jinja pages at `/`, `/teams`, `/players`, `/games`, `/stats`, and `/load-runs` with a React, TypeScript, and Vite app in `frontend/`. Tables use TanStack Table and TanStack Virtual. Fetching uses TanStack Query. Routing uses TanStack Router because those pages already persist filter, sort, and paging in the URL. There is no TanStack Start and no SSR. FastAPI keeps serving the existing JSON API, plus additive footer fields on `GET /api`. The same Render web service serves the built assets after cutover. The default `SERVE_SPA` switch is off, so Jinja remains until Cosmo enables it. The frontend and the public API never expose `salary_private` or other private salary data. The public web role grants are unchanged.

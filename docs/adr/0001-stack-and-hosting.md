@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-11-05)
+Accepted (2026-11-05). If [ADR 0008](0008-react-frontend-hosting.md) is accepted, it supersedes the Jinja2 pages, "no JS framework", and "no build step" decisions. Neon Free, Python 3.12, FastAPI JSON under `/api/*`, SQLAlchemy Core, Alembic, the Render free web service, and GitHub Actions refresh are unchanged.
 
 ## Context
 

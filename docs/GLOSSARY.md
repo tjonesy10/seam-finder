@@ -67,3 +67,17 @@
 | Selection batch | Atomic, reproducible private read selection at a cutoff; old batches remain pinned/queryable. | selection_id |
 | Optimizer-ready | Row and entire anchor pool satisfy verified identity/slate/completeness and resolved-conflict checks, not merely a non-null GSIS ID. | optimizer_ready / pool_ready |
 | Private salary surface | Single proposed read-only SQL view with provenance and flags; not an API or public table. | salary_private.dk_salary_unified |
+
+
+## F009 frontend terms
+
+| Term | Definition | Code / data name |
+|---|---|---|
+| React frontend | Phase 1 public UI, a static React and TypeScript app that replaces the Jinja pages after cutover. | `frontend/` |
+| Vite | The bundler that builds the frontend into static files FastAPI serves. | `frontend/` Vite config, `npm run build` |
+| TanStack Table | Headless table library used by every public table and by the reusable data-table contract. | `@tanstack/react-table` |
+| TanStack Virtual | Row virtualizer used by every table so a later 500-plus row pool can render without mounting every row. | `@tanstack/react-virtual` |
+| TanStack Query | Client fetch and cache library for public `/api` JSON. | `@tanstack/react-query` |
+| TanStack Router | Client router for the six Phase 1 pages and for URL-persisted filter, sort, and paging state. Not TanStack Start, and not SSR. | `@tanstack/react-router` |
+| Data-table contract | Shared table component API: column defs, stable row id, controlled sort and filter, optional row-toggle hook, and virtualization. | `DataTable` |
+| SERVE_SPA | Cutover switch. The SPA is served only when the value is exactly `true`. Any other value keeps Jinja. | `SERVE_SPA` |

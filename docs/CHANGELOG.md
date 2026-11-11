@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-10
+
+- F009 DRAFT: replace the Jinja public pages with a React, TypeScript, and Vite SPA. Added `docs/features/F009-react-frontend/SPEC.md` (R1-R9, AT1-AT15), `HANDOFF.md` (DRAFT, not handed to forge), pending `CONSTITUTION-AMENDMENT.md`, and Proposed [ADR 0008](adr/0008-react-frontend-hosting.md). ADR 0001 status note records that Jinja, no-JS-framework, and no-build-step clauses are superseded by 0008 once 0008 is accepted. Architecture, PRD, and glossary updated. No implementation, no production deploy, and no live cutover.
+- Hosting choice: FastAPI serves the built assets on the existing Render free web service. A separate Render static site is rejected. Cutover is `SERVE_SPA=true`, default off.
+- Constitution conflict recorded, not silently applied: the accepted Stack bullets still name Jinja2 pages and a blanket bundler ban until Cosmo approves the amendment.
+- Phase 1 keeps the exact current nflverse footer string. The RotoGuru DraftKings disclaimer exists in `web/attribution.py` but is not on the current site, so Phase 1 does not display it.
+
+
 ## 2026-11-05
 
 Added (planning docs, Part 1 data prototype, all DRAFT):

@@ -83,3 +83,14 @@ This extends the original Part 1 scope above, not its public-table/API commitmen
 Acceptance is in each SPEC's requirement-to-AT matrix. Sources/bytes/rows stay intact; current/raw salaries and the unified view are not public APIs/pages/downloads. Optimizer code, projections/scoring, APIs/UI, auth, broad scraping, and production changes are non-goals. Data permissions and conservative merge choices are [ADR 0005](adr/0005-private-salary-capture-and-archives.md), [ADR 0006](adr/0006-slate-safe-salary-unification.md), and the operative constitution amendment. Existing F003 RotoGuru attribution/public allowance is unchanged; new sources are never credited to RotoGuru.
 
 Cosmo approved independent season-schedule verification on 2026-11-06 19:14 EST. Capture must not treat an incomplete database or a truncated upstream file as a smaller valid slate or as off-season. [ADR 0007](adr/0007-authoritative-schedule-completeness.md) is Accepted by the owner merge of PR #20 as a contract only. That acceptance is not acceptance of an implementation. The operator reviews a full published season inventory each season and when games change. The normal nflverse refresh retains exact source bytes and a source-to-PG receipt. F005 checks the whole REG partition and finite timing or gap coverage before any DK call. No new automatic schedule scraper is added. No season inventory is certified. Wednesday 10:00 America/New_York and the Sunday 1:00–4:30 PM America/New_York slate rule are unchanged.
+
+
+## F009 React frontend (DRAFT)
+
+Drafted 2026-11-10. This extends Part 1's public browse goal (US4) without changing the public table or API commitments, except for additive footer fields on `GET /api` that the home page already shows in HTML.
+
+- As a viewer, I want the current home and table pages in a React app, so that lookups and shareable filter URLs keep working.
+- As Cosmo, I want the live Jinja site unchanged until I enable cutover, so that a docs or code merge cannot surprise visitors.
+- As a future optimizer UI author, I want a reusable virtualized table contract, so that a later player pool of hundreds of rows can sort, filter, and hook lock or exclude toggles without a new table primitive.
+
+Phase 1 does not build the optimizer UI, public salary pages, or a second host. Details and acceptance tests are in [F009 SPEC](features/F009-react-frontend/SPEC.md). Hosting is [ADR 0008](adr/0008-react-frontend-hosting.md), Proposed. The constitution amendment is pending. Groko gates the docs PR. Cosmo go-ahead is pending. This section does not authorize a forge build or a live cutover.
