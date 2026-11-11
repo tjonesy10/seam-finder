@@ -1,20 +1,21 @@
 """Public stats order and cohort indexes.
 
-Revision ID: 0009
-Revises: 0008
+Revision ID: 0010
+Revises: 0009
 Create Date: 2026-11-11
 
-Performance-only. Merging this revision causes refresh workflows to run
-alembic upgrade head against production and needs separate approval.
-CREATE INDEX blocks writes on player_week_stats until the build finishes.
-ADR 0011 does not require CONCURRENTLY. Downgrade drops both indexes.
+Performance-only. Renumbered from 0009 after main took that id for discovery
+gzip. Merging this revision causes refresh workflows to run alembic upgrade
+head against production and needs separate approval. CREATE INDEX blocks
+writes on player_week_stats until the build finishes. ADR 0011 does not
+require CONCURRENTLY. Downgrade drops both indexes.
 
 """
 
 from alembic import op
 
-revision = "0009"
-down_revision = "0008"
+revision = "0010"
+down_revision = "0009"
 branch_labels = None
 depends_on = None
 
