@@ -137,3 +137,228 @@ $ gitleaks detect --source . --redact --log-opts=--all --no-banner
 | GitHub's hosted evaluation of the skipped job | UNKNOWN | AT4 forbids a live dispatch. The file gate and the local predicate are tested. |
 | Uncle Bob mutator | UNKNOWN | `mutator` is not on `PATH`. `../crapper` is not present. Go is installed. The mutator tool was not installed. This is not a pass. |
 | Pull request CI | PASS | Both checks on `7275915590ecd822b1d5e61c0e2aa0cae1bec983` succeeded: [run 42328553690](https://github.com/tjonesy10/seam-finder/actions/runs/42328553690) (`pull_request`) and [run 42328549429](https://github.com/tjonesy10/seam-finder/actions/runs/42328549429) (`push`). `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN`. This does not claim the independent gate is cleared. |
+
+## 2026-11-11 week-10 capture and Wednesday schedule
+
+Date: 2026-11-11. Scope: the failed manual capture in Actions run [43049995926](https://github.com/tjonesy10/seam-finder/actions/runs/43049995926) and the missing Wednesday schedule run. No live DraftKings request, no production database read, no workflow dispatch, and no change to `OBJECT_LIMIT` or the cron.
+
+### Symptom 1: `storage_guard_object`
+
+`storage_guard_object` is the per-object cap in `loader/salary_private.py`: `OBJECT_LIMIT = 5 * 1024 * 1024` and `GuardBlock.OBJECT`. ADR 0005 and the data dictionary set that cap at 5 MiB per stored object, including a rejected body. An oversize HTTP body stops at limit+1, keeps a truncated prefix diagnostic, and does not publish a snapshot.
+
+In `loader/dk_lobby.py`, `_read_capped` returns truncated once the decoded body passes 5 MiB. `_accepted` then raises `storage_guard_object` unless the body is already an HTML challenge (`http_challenge` is checked first). That happens before `parse_lobby`, before the salary CSV, and before any `dk_lobby_salaries` row. `store_artifact` repeats the same length check for a body that arrives whole. Sunday selection's first GET is `https://www.draftkings.com/lobby/getcontests?sport=NFL`. `parse_lobby` reads only `DraftGroups`.
+
+Run 43049995926 was a `workflow_dispatch` of `main` at `1f6047647bbe896794a113c51778ae2b0cd1b3fd`. Checkout, Install, the gate (`DK_LOBBY_CAPTURE_ENABLED` exactly `true`), and Migrate succeeded. The Capture step's environment was `EVENT_NAME=workflow_dispatch`, `SEASON=2026`, `WEEK=10`, `SELECTION=sunday-afternoon`, empty `DRAFT_GROUP_ID`. The step then printed:
+
+```text
+storage_guard_object
+dk_lobby_salaries season=2026 week=10 status=failed reason=storage_guard_object rows=0
+```
+
+and exited 1. Those two lines are `_report`: the status line on stdout, then the reason on stderr. The process window in the log is about 15:36:30.921Z to 15:36:34.022Z. A schedule-evidence failure would have been `schedule_evidence_missing` with no DK call. This reason means one allowlisted response decoded to more than 5,242,880 bytes and was not classified as a challenge.
+
+The live payload shape is **UNKNOWN**. The public log has no URL, content-type, content-length, or byte count. The private observation would have `requests`, `prefix_bytes`, `prefix_sha256`, and `truncated`, and it was not read, because that row is in the production database. No live lobby fetch was made. What is known without that body: the reviewed experiment CSV is 59,802 bytes, so it is not this failure; an HTML challenge would have been `http_challenge`; salary-row validation never ran (`rows=0`). Which of the four allowlisted URLs was the large one, and whether a `Contests` array pushed `getcontests` over the cap, is not in the log.
+
+The cap is the specified fail-closed behavior, not a parser bug that can be fixed from this evidence. Raising `OBJECT_LIMIT`, or reading past 5 MiB to store only `DraftGroups`, would change ADR 0005. That is a product question, recorded as BLOCKED on `HANDOFF.md`. No loader behavior changed.
+
+### Symptom 2: no scheduled run on 2026-11-11
+
+GitHub Actions does honour `timezone` under `on.schedule`. The workflow syntax page says schedules default to UTC and that an IANA `timezone` makes the cron local, including the `America/New_York` example and the spring-forward note. The same text is on the schedule-event page. The changelog entry is [GitHub Actions: Late March 2026 updates](https://github.blog/changelog/2026-03-19-github-actions-late-march-2026-updates) (2026-03-19), "Timezone support for scheduled workflows."
+
+The other zero-run checks:
+
+| Check | Result |
+|---|---|
+| Workflow file on the default branch | Yes. `main` is the default branch. `.github/workflows/dk-lobby-capture.yml` has been on `main` since `6c54c870` (2026-11-06 22:42:57Z). The last edit of that file on `main` is `0942b2ab` (2026-11-07 18:41:14Z). |
+| Cron valid | Yes. `0 10 * * 3` is five-field POSIX. Day 3 is Wednesday. |
+| Disabled for inactivity | No. The repository is public and was created 2026-10-21. Commits landed through 2026-11-11 09:41 ET. Workflow id 410530664 is `active`. `refresh.yml` (`0 11 * * *`, no timezone) has schedule runs on 2026-11-06 through 2026-11-10. |
+| Added after today's 10:00 ET | No. The file was on `main` five days earlier. 2026-11-11 is the first Wednesday after that. 2026-11-01 was the DST fallback, so 10:00 America/New_York on 2026-11-11 is 15:00 UTC. |
+
+At 15:36 UTC the lobby workflow had one run, the manual dispatch, and zero `schedule` events. That is 36 minutes after 15:00 UTC. GitHub's schedule-event note says runs can be delayed or dropped, and that the start of the hour is a high-load time. This repo's minute-0 refresh cron shows the same delay: its 11:00 UTC runs were created at 17:43Z, 16:40Z, 16:48Z, 21:10Z, and 18:21Z on Nov 6–10, and the Nov 11 11:00 UTC refresh had also not appeared by 15:36Z. A missing lobby event at T+36 minutes matches that delay. It does not show that `timezone` was ignored. If the key were ignored, the same cron would be 10:00 UTC, and this repo's delayed schedule runs would still not be expected at exactly 10:00 UTC.
+
+The approved workflow text stays one cron, `0 10 * * 3`, with `timezone: 'America/New_York'`. Dual 14:00 and 15:00 UTC crons were rejected. AT4 forbids a fixed-UTC cron, and a second cron can double-capture unless a later guard skips one of them. The in-job guard was not added because the timezone key is the mechanism GitHub documents.
+
+### Regression tests
+
+`tests/test_dk_lobby.py::test_oversized_discovery_document_fails_closed` builds a synthetic `getcontests` JSON object. It is not a recorded salary payload. A `DraftGroups` array that `parse_lobby` accepts sits under the cap. The same group with a padded `Contests` string of `OBJECT_LIMIT + 1` bytes returns exit 1, stderr `storage_guard_object`, the same public status line as the run, `truncated=true`, `retained_artifact=false`, `prefix_bytes` equal to the cap, one request to `/lobby/getcontests`, and zero lobby artifacts, snapshots, and salary rows. A following under-cap capture of the same group still publishes 4 synthetic salary rows.
+
+`tests/test_dk_lobby.py::test_nov11_wednesday_slot_stays_on_the_timezone_cron` asserts the single approved cron and timezone, asserts 2026-11-11 10:00 America/New_York is 15:00 UTC, and asserts `0 14 * * 3` and `0 15 * * 3` are absent.
+
+### Commands
+
+Local Postgres 16. The URL was a local role on `127.0.0.1`, not a repository secret and not production. The two skips are `RUN_NETWORK_TESTS` gates in `tests/test_load.py` and `tests/test_dk_classic.py`. They were not run. They do not call DraftKings.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+294 passed, 2 skipped, 1 warning in 40.18s
+```
+
+The warning is Starlette's deprecation of the httpx test client. It is not a failure.
+
+### Still unverified until Cosmo reruns the capture
+
+| Item | Result | Reason |
+|---|---|---|
+| Live discovery body shape, URL, and length past 5 MiB | UNKNOWN | Public log has reason codes only. Production observation metadata was not read. No live GET. |
+| Whether the 2026-11-11 10:00 ET schedule event was delayed or dropped | UNKNOWN | Not dispatched. GitHub may still create a late `schedule` run, or it may have dropped the minute-0 slot. |
+| A successful week-10 salary snapshot | UNKNOWN | The object cap was not raised. A rerun hits the same guard if the same body is still over 5 MiB. |
+
+## 2026-11-11 prep: guard log and minute 7
+
+No ADR 0005 change. The object cap is still 5 MiB. The loader does not read past the cap, does not store a `DraftGroups` projection, and does not call a different endpoint.
+
+### Diagnosable `storage_guard_object`
+
+The status line still starts `dk_lobby_salaries season=... week=... status=... reason=storage_guard_object rows=...`. On that failure it now appends fields. Stderr stays the bare reason code. `load_runs` notes stay `reason=...;rows=...;snapshots=...`.
+
+The fields are only what the reader knows when it stops:
+
+| Field | Meaning |
+|---|---|
+| `path` | URL path of the allowlisted request. Query, fragment, headers, and cookies are not printed. A path that is not a plain path becomes `unknown`. |
+| `bytes_read` | Decoded bytes pulled into the buffer when the read stopped. That can be one chunk past the cap. |
+| `cap` | `OBJECT_LIMIT` (5242880). |
+| `content_length` | Present only when the `Content-Length` header is a decimal integer. |
+| `decoded_length` | Present only when the HTTP client already holds the whole decoded body. A stream that stopped at the cap does not get a guessed total. |
+
+Synthetic example from `test_oversized_discovery_document_fails_closed`. The body is `s` padding plus a synthetic `DraftGroups` array, with `Content-Length` set to that length and a cookie the log must not show:
+
+```text
+dk_lobby_salaries season=2026 week=10 status=failed reason=storage_guard_object rows=0 path=/lobby/getcontests bytes_read=5242881 cap=5242880 content_length=5242881 decoded_length=5242881
+```
+
+The test asserts that line, stderr `storage_guard_object`, and that `sport=NFL`, the cookie, `DraftGroupId`, and `Contests` are absent.
+
+### Schedule minute
+
+`.github/workflows/dk-lobby-capture.yml` cron is now `7 10 * * 3` with `timezone: 'America/New_York'`. 2026-11-11 10:07 America/New_York is 15:07 UTC. `test_nov11_wednesday_slot_stays_on_the_timezone_cron` and `test_at4_schedule_text_and_disabled_gate` assert that text. The hour used for the winter/summer check is still 10. No second UTC cron was added. The workflow was not dispatched.
+
+### Commands
+
+Local Postgres 16 on `127.0.0.1`. Not a repository secret and not production.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+294 passed, 2 skipped, 1 warning in 40.77s
+```
+
+The two skips are `RUN_NETWORK_TESTS` in `tests/test_load.py` and `tests/test_dk_classic.py`. They were not run. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client.
+
+## 2026-11-11 ADR 0012 discovery cap and gzip at rest
+
+PR #42 head `7a409f82e1df875f1d8c14521ee88434e283a635` defines R10 and AT17–AT20. The verified constraint on main, created in `migrations/versions/0004_salary_private.py` lines 59-62 on `salary_private.salary_artifacts`, is:
+
+```text
+CONSTRAINT ck_salary_artifacts_body CHECK (
+  byte_count = octet_length(body) AND byte_count >= 0 AND octet_length(body) <= 5242880
+)
+```
+
+`lobby_json` is also the draft-group body, so that check could not single out discovery rows. Revision `0009` (down_revision `0008`) adds kind `lobby_discovery_json` and gzip-at-rest columns. PR #38 also uses revision id `0009` and will renumber; this file is the one that revises `0008`. There is no discovery slice and no PENDING constant. Nothing in the migration deletes a row.
+
+| AT | Result | Evidence |
+|---|---|---|
+| AT17 | PASS | `test_at17_six_mib_discovery_is_stored_and_round_trips`. A synthetic 6,291,456-byte getcontests body is stored as `lobby_discovery_json` with `encoding=gzip`, `decoded_bytes=6291456`, and `decode_stored_body` returns the same bytes. A snapshot and 4 salary rows are published. The public log has `discovery_body_bytes=6291456` and does not contain `CONTEST-PADDING-BLOCK`. |
+| AT18 | PASS | `test_oversized_discovery_document_fails_closed` and `test_gzip_wire_past_discovery_cap_stops_at_limit_plus_one`. A decoded body of 33,554,433 bytes, including one whose gzip wire is under 5 MiB, stops at 33,554,433 decoded bytes, fails `storage_guard_object`, stores no discovery artifact, and writes zero salary rows. |
+| AT19 | PASS | `test_at19_other_urls_fail_just_over_five_mib`. `draftgroups/v1`, rules, and the salary CSV each fail `storage_guard_object` at 5,242,881 decoded bytes with `cap=5242880` and `bytes_read=5242881`. |
+| AT20 | PASS | `test_at20_exact_five_mib_discovery_is_stored`. A discovery body of exactly 5,242,880 decoded bytes is stored and round-trips to those bytes. Gzip at rest means the `bytea` is the gzip member when that member is smaller; the decoded bytes equal the response. |
+| Guards | PASS | Invocation stays 67,108,864 decoded bytes. Private `pg_total_relation_size` guard is 536,870,912. Database guard is 805,306,368. Preflight adds the encoded length. `assert_actual_ceiling` remeasures and is the hard stop. `storage_warning_percent` returns 70 or 85 and is silent at or over the limit. No deletion. |
+| Legacy rows | PASS | `test_legacy_insert_stays_identity_and_body_is_not_rewritten`. An `html_gzip` insert that omits the new columns is filled as identity. The stored body bytes are unchanged. |
+| Downgrade | PASS | `test_downgrade_refuses_gzip_and_deletes_nothing`. A gzip row makes downgrade raise `downgrade refused` and leaves the row and revision `0009`. After that fixture row is removed by the test, downgrade to `0008` drops the columns. |
+| First live capture body size | UNKNOWN | Record the first real capture's decoded discovery body size in this file once a capture succeeds. |
+
+## Neon branch rehearsal — Alembic 0009 (`0009_discovery_gzip_at_rest.py`)
+
+Overall: PASS. Run by forge on Wed Nov 11 2026, 10:46–10:48 AM CT, against PR #41 head 3768590ef908f7ad1cc6e722fef9a5c2be78d3c1.
+
+The migration was rehearsed on a throwaway Neon branch, `rehearsal-0009-20261111`, made from production `main`. It used the real table with 8 legacy rows. Production `main` got no writes. The rehearsal branch was deleted afterwards and is recoverable until Sat Nov 14, 10:48 AM CT.
+
+Method: the `upgrade()` and `downgrade()` code was translated to SQL and run through Neon `run_sql_transaction`, not the Alembic CLI. The database is Postgres 17.11.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Starting revision | PASS | `alembic_version` was 0008 and `salary_private.salary_artifacts` exists |
+| Upgrade applies | PASS | 53 ms; `alembic_version` = 0009 |
+| Legacy backfill | PASS | 8/8 rows are identity; 0 mismatches in decoded/compressed bytes and sha aliases |
+| Bodies and counts untouched | PASS | 8 rows; sum(octet_length(body)) = 3,057,331 before and after; same counts per kind |
+| Discovery row at 6 MiB, identity | PASS | accepted, with the aliases correct |
+| Discovery row decoded to 33,554,433 bytes | PASS | rejected by `ck_salary_artifacts_body` |
+| `lobby_json` at 5,242,881 bytes | PASS | rejected |
+| gzip with compressed ≥ decoded | PASS | rejected for both 100=100 and 101>100 |
+| Downgrade refuses on discovery or gzip rows | PASS | "downgrade refused: ... nothing was deleted" |
+| Downgrade applies | PASS | 16 ms; constraints match the pre-upgrade definitions exactly; columns, trigger and function dropped |
+| Upgrade re-applies after downgrade | PASS | 18 ms |
+| No grant changes | PASS | no grant statements were run |
+| Pre-upgrade sizes | n/a | relation 1,204,224 B; database 118,693,888 B |
+
+Notes:
+- Postgres stores the `IN (...)` checks in the form `= ANY (ARRAY[...])`. The meaning is the same.
+- The migration also creates the trigger `salary_artifacts_identity_encoding`, which fills in identity encoding when an insert leaves it out.
+
+### Production migration
+
+Merging this revision makes a private-schema migrate run `alembic upgrade head`, which applies `0009` on production. That needs Cosmo's explicit approval. No grants change.
+
+Upgrade, after the nullable add and the identity backfill (`encoding='identity'`, hashes and lengths copied from `sha256` and `byte_count`, body not rewritten):
+
+```sql
+ALTER TABLE salary_private.salary_artifacts
+    ALTER COLUMN encoding SET NOT NULL,
+    ALTER COLUMN decoded_sha256 SET NOT NULL,
+    ALTER COLUMN decoded_bytes SET NOT NULL,
+    ALTER COLUMN compressed_sha256 SET NOT NULL,
+    ALTER COLUMN compressed_bytes SET NOT NULL;
+
+ALTER TABLE salary_private.salary_artifacts
+    ADD CONSTRAINT ck_salary_artifacts_encoding
+    CHECK (encoding IN ('identity', 'gzip'));
+
+ALTER TABLE salary_private.salary_artifacts DROP CONSTRAINT ck_salary_artifacts_body;
+ALTER TABLE salary_private.salary_artifacts
+    ADD CONSTRAINT ck_salary_artifacts_body CHECK (
+        byte_count = decoded_bytes
+        AND sha256 = decoded_sha256
+        AND compressed_bytes = octet_length(body)
+        AND decoded_bytes >= 0
+        AND compressed_bytes >= 0
+        AND decoded_sha256 ~ '^[0-9a-f]{64}$'
+        AND compressed_sha256 ~ '^[0-9a-f]{64}$'
+        AND (
+            (encoding = 'identity' AND compressed_bytes = decoded_bytes
+                AND compressed_sha256 = decoded_sha256)
+            OR (encoding = 'gzip' AND compressed_bytes < decoded_bytes)
+        )
+        AND (
+            (artifact_kind = 'lobby_discovery_json' AND decoded_bytes <= 33554432)
+            OR (artifact_kind <> 'lobby_discovery_json' AND decoded_bytes <= 5242880)
+        )
+    );
+
+ALTER TABLE salary_private.salary_artifacts DROP CONSTRAINT ck_salary_artifacts_kind;
+ALTER TABLE salary_private.salary_artifacts
+    ADD CONSTRAINT ck_salary_artifacts_kind CHECK (
+        artifact_kind IN (
+            'csv', 'lobby_json', 'rules_json', 'html_gzip', 'manifest', 'mapping',
+            'adapter_row_image', 'rejected_body', 'schedule_raw', 'schedule_reference',
+            'lobby_discovery_json'
+        )
+    );
+```
+
+Downgrade raises, and deletes nothing, when any row has `encoding = 'gzip'`, `artifact_kind = 'lobby_discovery_json'`, or `decoded_bytes > 5242880`. Otherwise it drops the trigger, the filler function, the new check, the five columns, and restores the 0004 body check and the 0005 kind list.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+304 passed, 2 skipped, 1 warning in 43.90s
+```
+
+The two skips are still the `RUN_NETWORK_TESTS` gates. They do not call DraftKings.

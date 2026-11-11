@@ -351,7 +351,7 @@ def test_at12_synthetic_plans(client, engine):
 
 
 def test_index_revision_roundtrip_when_present(database_url):
-    path = Path("migrations/versions/0009_stats_public_query_indexes.py")
+    path = Path("migrations/versions/0010_stats_public_query_indexes.py")
     if not path.exists():
         pytest.skip("index revision is the stacked PR and is not on this branch")
     source = path.read_text()
@@ -365,7 +365,7 @@ def test_index_revision_roundtrip_when_present(database_url):
     os.environ["DATABASE_URL"] = url
     try:
         command.upgrade(cfg, "head")
-        command.downgrade(cfg, "0008")
+        command.downgrade(cfg, "0009")
         from sqlalchemy import create_engine
 
         from loader.url import normalize_database_url

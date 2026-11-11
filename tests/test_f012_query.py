@@ -95,18 +95,19 @@ def test_budget_constant():
 
 def test_alembic_head_without_index_revision():
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    path = Path("migrations/versions/0009_stats_public_query_indexes.py")
+    path = Path("migrations/versions/0010_stats_public_query_indexes.py")
     if path.exists():
-        assert script.get_heads() == ["0009"]
-        revision = script.get_revision("0009")
-        assert revision.down_revision == "0008"
+        assert script.get_heads() == ["0010"]
+        revision = script.get_revision("0010")
+        assert revision.down_revision == "0009"
         source = path.read_text()
         assert "ix_stats_public_ppr_order" in source
         assert "ix_stats_public_scope_ppr" in source
         assert "GRANT" not in source.upper()
         assert "salary_private" not in source
     else:
-        assert script.get_heads() == ["0008"]
+        assert script.get_heads() == ["0009"]
+        assert script.get_revision("0009").down_revision == "0008"
 
 
 def test_at2_advanced_names_only_on_lists(client, monkeypatch):
