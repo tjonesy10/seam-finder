@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.engine import Engine
 
 from loader.tables import games, load_runs, player_week_stats, players, teams
+from web.dataset_query import arm, count_and_page, run_advanced
 from web.errors import AppError, is_db_unavailable
 from web.params import ListParams
 from web.resources import DATASETS
@@ -73,13 +74,31 @@ def _page(conn, filtered, params: ListParams, tie_break: tuple[str, ...], table,
     return rows, total
 
 
+def _page_advanced(conn, filtered, params: ListParams, slug: str, names: list[str]):
+    count, page = count_and_page(slug, filtered, params)
+    arm(conn)
+    total = int(conn.execute(count).scalar_one())
+    arm(conn)
+    rows = [_dump(mapping, names) for mapping in conn.execute(page).mappings()]
+    return rows, total
+
+
+def run_advanced_list(engine, slug: str, params: ListParams):
+    def work(conn):
+        return FETCH[slug](conn, params)
+
+    return run_advanced(engine, work)
+
+
 def fetch_teams(conn, params: ListParams):
     stmt = select(teams)
     if "conf" in params.values:
         stmt = stmt.where(func.lower(teams.c.team_conf) == params.values["conf"].lower())
     if "division" in params.values:
         stmt = stmt.where(func.lower(teams.c.team_division) == params.values["division"].lower())
-    return _page(conn, stmt, params, ("team_abbr",), teams, _names(teams))
+    if params.advanced is None:
+        return _page(conn, stmt, params, ("team_abbr",), teams, _names(teams))
+    return _page_advanced(conn, stmt, params, "teams", _names(teams))
 
 
 def fetch_players(conn, params: ListParams):
@@ -92,7 +111,9 @@ def fetch_players(conn, params: ListParams):
         stmt = stmt.where(func.upper(players.c.latest_team) == params.values["team"])
     if "status" in params.values:
         stmt = stmt.where(func.lower(players.c.status) == params.values["status"].lower())
-    return _page(conn, stmt, params, ("gsis_id",), players, _names(players))
+    if params.advanced is None:
+        return _page(conn, stmt, params, ("gsis_id",), players, _names(players))
+    return _page_advanced(conn, stmt, params, "players", _names(players))
 
 
 def fetch_games(conn, params: ListParams):
@@ -106,7 +127,9 @@ def fetch_games(conn, params: ListParams):
     if "team" in params.values:
         team = params.values["team"]
         stmt = stmt.where(or_(func.upper(games.c.home_team) == team, func.upper(games.c.away_team) == team))
-    return _page(conn, stmt, params, ("game_id",), games, _names(games))
+    if params.advanced is None:
+        return _page(conn, stmt, params, ("game_id",), games, _names(games))
+    return _page_advanced(conn, stmt, params, "games", _names(games))
 
 
 def _stats_columns():
@@ -139,7 +162,9 @@ def fetch_stats(conn, params: ListParams):
         stmt = stmt.where(player_week_stats.c.gsis_id == params.values["player"])
     if "game_id" in params.values:
         stmt = stmt.where(player_week_stats.c.game_id == params.values["game_id"])
-    return _page(conn, stmt, params, ("gsis_id", "season", "week"), player_week_stats, names)
+    if params.advanced is None:
+        return _page(conn, stmt, params, ("gsis_id", "season", "week"), player_week_stats, names)
+    return _page_advanced(conn, stmt, params, "stats", names)
 
 
 def fetch_load_runs(conn, params: ListParams):
@@ -150,7 +175,9 @@ def fetch_load_runs(conn, params: ListParams):
         stmt = stmt.where(func.lower(load_runs.c.status) == params.values["status"].lower())
     if "season" in params.values:
         stmt = stmt.where(load_runs.c.season == int(params.values["season"]))
-    return _page(conn, stmt, params, ("id",), load_runs, _names(load_runs))
+    if params.advanced is None:
+        return _page(conn, stmt, params, ("id",), load_runs, _names(load_runs))
+    return _page_advanced(conn, stmt, params, "load-runs", _names(load_runs))
 
 
 FETCH = {

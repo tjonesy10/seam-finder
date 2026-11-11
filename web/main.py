@@ -33,6 +33,7 @@ from web.queries import (
     output_names,
     ping,
     refresh_payload,
+    run_advanced_list,
 )
 from web.resources import API_ENDPOINTS, GAMES, LOAD_RUNS, PLAYERS, RESOURCES, STATS, TEAMS
 
@@ -130,14 +131,17 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.middleware("http")
     async def cache_api(request: Request, call_next):
         response = await call_next(request)
-        if _is_api(request.url.path):
+        if _is_api(request.url.path) and response.headers.get("cache-control") != "no-store":
             response.headers["Cache-Control"] = "public, max-age=300"
         return response
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError):
         if _is_api(request.url.path):
-            return _json(error_body(exc), exc.status_code)
+            response = _json(error_body(exc), exc.status_code)
+            if exc.code in {"query_timeout", "query_busy"}:
+                response.headers["Cache-Control"] = "no-store"
+            return response
         return render_message(request, exc.message, exc.status_code, load_footer(request.app.state.engine))
 
     @app.exception_handler(Exception)
@@ -213,9 +217,12 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return _json({"status": "ok", "database": "ok", "last_refresh": refresh_payload(row)})
 
     def _list(request: Request, resource):
-        params = parse_resource(request.query_params, resource)
-        with connection(request.app.state.engine) as conn:
-            rows, total = FETCH[resource.slug](conn, params)
+        params = parse_resource(request.query_params, resource, advanced=True)
+        if params.advanced is None:
+            with connection(request.app.state.engine) as conn:
+                rows, total = FETCH[resource.slug](conn, params)
+        else:
+            rows, total = run_advanced_list(request.app.state.engine, resource.slug, params)
         return _json(
             {
                 "data": rows,
