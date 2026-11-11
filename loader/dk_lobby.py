@@ -30,6 +30,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from loader.salary_private import (
+    DISCOVERY_OBJECT_LIMIT,
+    OBJECT_LIMIT,
     PARSER_VERSION,
     ArtifactKind,
     LedgerRow,
@@ -52,6 +54,7 @@ from loader.salary_private import (
     reconcile,
     sha256_bytes,
     store_artifact,
+    store_discovery_artifact,
     store_ledger,
     unlock_capture,
 )
@@ -99,6 +102,7 @@ class CaptureFailure(Exception):
         body: bytes | None = None,
         truncated: bool = False,
         retry_after: str | None = None,
+        guard_fields: dict | None = None,
     ):
         super().__init__(reason)
         self.reason = reason
@@ -106,6 +110,7 @@ class CaptureFailure(Exception):
         self.body = body
         self.truncated = truncated
         self.retry_after = retry_after
+        self.guard_fields = guard_fields
 
 
 class SlateLabel(StrEnum):
@@ -128,6 +133,7 @@ class AttemptResult:
     season: int | None
     week: int | None
     rows: int
+    guard: str = ""
 
 
 @dataclass(frozen=True)
@@ -555,7 +561,10 @@ class BoundedClient:
         if status in {301, 302, 303, 307, 308}:
             location = response.headers.get("location") or ""
             target = urljoin(str(response.request.url), location)
-            body, truncated = _read_capped(response, deadline=deadline, clock=self.clock)
+            limit = _object_limit(str(response.request.url))
+            body, truncated, _bytes_read = _read_capped(
+                response, deadline=deadline, clock=self.clock, limit=limit
+            )
             if redirected or self._over_budget():
                 reason = "http_budget_exhausted" if self._over_budget() else "http_redirect_rejected"
                 raise CaptureFailure(reason, body=None if truncated else body, truncated=truncated)
@@ -564,7 +573,10 @@ class BoundedClient:
                 raise CaptureFailure(reason, body=None if truncated else body, truncated=truncated)
             response.close()
             return self._accepted(self._send(target, accept), accept, redirected=True)
-        body, truncated = _read_capped(response, deadline=deadline, clock=self.clock)
+        limit = _object_limit(str(response.request.url))
+        body, truncated, bytes_read = _read_capped(
+            response, deadline=deadline, clock=self.clock, limit=limit
+        )
         if self._over_budget():
             raise CaptureFailure("http_budget_exhausted")
         retry_after = response.headers.get("retry-after")
@@ -576,9 +588,10 @@ class BoundedClient:
         if truncated:
             raise CaptureFailure(
                 "storage_guard_object",
-                body=body[: 5 * 1024 * 1024],
+                body=body,
                 truncated=True,
                 retry_after=retry_after,
+                guard_fields=_guard_fields(response, bytes_read, limit),
             )
         if status in {401, 403}:
             raise CaptureFailure("http_denied", body=body, private=f"http_status={status}")
@@ -683,9 +696,27 @@ def _next_bounded(chunks, response: httpx.Response, timeout_s: float):
         timer.cancel()
 
 
-def _read_capped(response: httpx.Response, *, deadline: float, clock: Clock) -> tuple[bytes, bool]:
-    """Stop at 5 MiB. Each chunk read waits at most the seconds left in the 180s budget."""
-    limit = 5 * 1024 * 1024
+def _object_limit(url: str) -> int:
+    """Decoded-byte cap. Discovery is 32 MiB. Every other allowlisted URL is 5 MiB."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (
+        host == "www.draftkings.com"
+        and parsed.path == "/lobby/getcontests"
+        and parse_qs(parsed.query) == {"sport": ["NFL"]}
+    ):
+        return DISCOVERY_OBJECT_LIMIT
+    return OBJECT_LIMIT
+
+
+def _read_capped(
+    response: httpx.Response, *, deadline: float, clock: Clock, limit: int = OBJECT_LIMIT
+) -> tuple[bytes, bool, int]:
+    """Stop at ``limit`` decoded bytes. The third value is how many of those were pulled.
+
+    A chunk larger than the remaining room is copied only through limit+1. No
+    further chunk is read. ``iter_bytes`` is already decompressed.
+    """
     buf = bytearray()
     chunks = None
     while True:
@@ -708,10 +739,74 @@ def _read_capped(response: httpx.Response, *, deadline: float, clock: Clock) -> 
             raise CaptureFailure("http_budget_exhausted") from None
         if not chunk:
             continue
-        buf.extend(chunk)
+        room = limit + 1 - len(buf)
+        if len(chunk) > room:
+            buf.extend(chunk[:room])
+        else:
+            buf.extend(chunk)
         if len(buf) > limit:
-            return bytes(buf[:limit]), True
-    return bytes(buf), False
+            return bytes(buf[:limit]), True, len(buf)
+    return bytes(buf), False, len(buf)
+
+
+_ENDPOINT_PATH = re.compile(r"/[A-Za-z0-9_./-]*")
+
+
+def _endpoint_path(response: httpx.Response) -> str:
+    """Allowlisted path only. Query, fragment, and userinfo stay out of the log."""
+    request = getattr(response, "request", None)
+    url = getattr(request, "url", None)
+    raw = str(getattr(url, "path", "") or "")
+    path = raw.split("?", 1)[0].split("#", 1)[0]
+    if path.startswith("/") and _ENDPOINT_PATH.fullmatch(path):
+        return path
+    return "unknown"
+
+
+def _content_length(response: httpx.Response) -> int | None:
+    raw = response.headers.get("content-length")
+    if raw is None or not re.fullmatch(r"[0-9]+", raw.strip()):
+        return None
+    return int(raw.strip())
+
+
+def _decoded_length(response: httpx.Response) -> int | None:
+    """Decoded size only when the client already holds the whole body."""
+    content = getattr(response, "_content", None)
+    if isinstance(content, (bytes, bytearray)):
+        return len(content)
+    return None
+
+
+def _guard_fields(response: httpx.Response, bytes_read: int, cap: int) -> dict:
+    fields: dict = {
+        "path": _endpoint_path(response),
+        "bytes_read": bytes_read,
+        "cap": cap,
+    }
+    content_length = _content_length(response)
+    if content_length is not None:
+        fields["content_length"] = content_length
+    decoded = _decoded_length(response)
+    if decoded is not None:
+        fields["decoded_length"] = decoded
+    return fields
+
+
+def format_guard(fields: dict | None) -> str:
+    """Public suffix. Path is a validated path; sizes are non-negative integers."""
+    if not fields:
+        return ""
+    parts = []
+    path = fields.get("path")
+    if not isinstance(path, str) or not _ENDPOINT_PATH.fullmatch(path) or not path.startswith("/"):
+        path = "unknown"
+    parts.append(f"path={path}")
+    for key in ("bytes_read", "cap", "content_length", "decoded_length"):
+        value = fields.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
 
 
 def _challenge(media: str, body: bytes) -> bool:
@@ -1433,6 +1528,8 @@ class _State:
     rows_skipped: int = 0
     snapshot_id: UUID | None = None
     headers: tuple[str, ...] = ()
+    discovery_body_bytes: int | None = None
+    guard_meta: dict | None = None
 
     def __post_init__(self):
         self.artifacts = []
@@ -1531,7 +1628,7 @@ def _capture_body(state: _State, plan: dict, games: tuple[RegGame, ...]) -> None
 def _select_sunday(state: _State, expected: tuple[RegGame, ...]) -> DraftGroup:
     fetched = state.client.get_json(LOBBY_URL)
     state.fetched_at = fetched.fetched_at
-    _keep(state, fetched.body, ArtifactKind.LOBBY_JSON, fetched.media_type or "application/json")
+    store_discovery_body(state, fetched.body, fetched.media_type or "application/json")
     groups = list(parse_lobby(fetched.body))
     incomplete = [group for group in groups if group.contest_type_id == 21 and group.games is None]
     if incomplete and len(incomplete) > 1:
@@ -1601,6 +1698,21 @@ def _verify_rules(state: _State, group: DraftGroup) -> RulesVerdict:
     state.game_type_id = group.game_type_id
     state.rules = verdict
     return verdict
+
+
+def store_discovery_body(state: _State, body: bytes, media_type: str):
+    """Only getcontests writes go through here. The kind is lobby_discovery_json."""
+    state.discovery_body_bytes = len(body)
+    state.invocation_bytes += len(body)
+    ref = store_discovery_artifact(
+        state.conn,
+        decoded=body,
+        media_type=media_type,
+        stored_at=state.clock.wall(),
+        invocation_bytes=state.invocation_bytes,
+    )
+    state.artifacts.append(ref.artifact_id)
+    return ref
 
 
 def _keep(state: _State, body: bytes, kind: ArtifactKind, media_type: str):
@@ -1754,8 +1866,11 @@ def _finish_success(state: _State) -> AttemptResult:
         publish=True,
     )
     _audit(state, "succeeded", "captured", state.rows_upserted, 1)
+    guard = ""
+    if state.discovery_body_bytes is not None:
+        guard = f"discovery_body_bytes={state.discovery_body_bytes}"
     return AttemptResult(
-        True, True, "captured", "succeeded", state.season, state.week, state.rows_read
+        True, True, "captured", "succeeded", state.season, state.week, state.rows_read, guard
     )
 
 
@@ -1792,12 +1907,14 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
         private = _bound_private(
             ((private + ";") if private else "") + "retry_after=" + str(exc.retry_after).strip()[:40]
         )
+    guard_fields = exc.guard_fields
     exc = CaptureFailure(
         _public_reason(exc.reason),
         private=private or "",
         body=exc.body,
         truncated=exc.truncated,
         retry_after=None,
+        guard_fields=guard_fields,
     )
     _write_terminal(
         state,
@@ -1817,6 +1934,7 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
         state.season,
         state.week,
         state.rows_read,
+        format_guard(exc.guard_fields) if exc.reason == "storage_guard_object" else "",
     )
 
 
@@ -1828,6 +1946,10 @@ def _note_truncated(state: _State, exc: CaptureFailure) -> None:
         "prefix_bytes": len(prefix),
         "retained_artifact": False,
     }
+    fields = exc.guard_fields or {}
+    for key in ("path", "bytes_read", "cap", "content_length", "decoded_length"):
+        if key in fields:
+            state.truncated_meta[key] = fields[key]
 
 
 def _write_terminal(
@@ -1858,6 +1980,10 @@ def _write_terminal(
     )
     if getattr(state, "truncated_meta", None):
         metadata.update(state.truncated_meta)
+    if state.discovery_body_bytes is not None:
+        metadata["discovery_body_bytes"] = state.discovery_body_bytes
+    if state.guard_meta:
+        metadata.update(state.guard_meta)
     if getattr(state, "schedule_meta", None):
         metadata.update(state.schedule_meta)
     try:
@@ -1966,9 +2092,10 @@ def _report(result: AttemptResult) -> None:
         return
     season = "-" if result.season is None else str(result.season)
     week = "-" if result.week is None else str(result.week)
+    suffix = f" {result.guard}" if result.guard else ""
     print(
         f"dk_lobby_salaries season={season} week={week} "
-        f"status={result.status} reason={reason} rows={result.rows}",
+        f"status={result.status} reason={reason} rows={result.rows}{suffix}",
         flush=True,
     )
     if result.status == "failed":
