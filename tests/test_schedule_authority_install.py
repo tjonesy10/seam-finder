@@ -83,7 +83,8 @@ def test_f004_workflow_is_unchanged_from_main():
 
 def test_one_alembic_head_and_flag_off_targets():
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0009"]
+    assert script.get_heads() == ["0010"]
+    assert script.get_revision("0010").down_revision == "0009"
     assert script.get_revision("0009").down_revision == "0008"
     assert script.get_revision("0008").down_revision == "0007"
     assert script.get_revision("0007").down_revision == "0006"

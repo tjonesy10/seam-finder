@@ -1192,6 +1192,13 @@ def test_oversized_discovery_document_fails_closed(engine, capsys):
     assert b'"DraftGroupId":90001' in huge
 
     _seed(engine)
+    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
+    capsys.readouterr()
+    before = _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots")
+    salaries_before = _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries")
+    artifacts_before = _scalar(
+        engine, "SELECT count(*) FROM salary_private.salary_artifacts WHERE source = 'dk_lobby'"
+    )
 
     def oversized(request):
         assert request.url.path == "/lobby/getcontests"
@@ -1207,7 +1214,7 @@ def test_oversized_discovery_document_fails_closed(engine, capsys):
         )
 
     transport = StreamTransport(oversized)
-    assert _run(engine, transport, clock=MutableClock(NOW)) == 1
+    assert _run(engine, transport, clock=MutableClock(NOW + timedelta(seconds=5))) == 1
     assert len(transport.calls) == 1
     captured = capsys.readouterr()
     assert captured.err.strip() == "storage_guard_object"
@@ -1231,6 +1238,7 @@ def test_oversized_discovery_document_fails_closed(engine, capsys):
         """
         SELECT reason_code, snapshot_id, metadata
         FROM salary_private.salary_observations
+        ORDER BY loaded_at DESC
         """,
     )[0]
     assert obs["reason_code"] == "storage_guard_object"
@@ -1242,14 +1250,13 @@ def test_oversized_discovery_document_fails_closed(engine, capsys):
     assert obs["metadata"]["requests"] == [
         {"host": "www.draftkings.com", "path": "/lobby/getcontests", "status": 200}
     ]
-    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
-    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == before
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == salaries_before
     assert (
         _scalar(
-            engine,
-            "SELECT count(*) FROM salary_private.salary_artifacts WHERE source = 'dk_lobby'",
+            engine, "SELECT count(*) FROM salary_private.salary_artifacts WHERE source = 'dk_lobby'"
         )
-        == 0
+        == artifacts_before
     )
 
     assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
@@ -1407,6 +1414,104 @@ def test_gzip_wire_past_discovery_cap_stops_at_limit_plus_one(engine, capsys):
         )
         == 0
     )
+
+
+def test_at28_encoded_growth_block_keeps_the_prior_snapshot(engine, monkeypatch):
+    from loader.salary_private import GuardBlock
+
+    _seed(engine)
+    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
+    snapshots = _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots")
+    salaries = _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries")
+
+    def cumulative(_conn, _encoded):
+        return GuardBlock.CUMULATIVE
+
+    def database(_conn, _encoded):
+        return GuardBlock.DATABASE
+
+    def shifted(marker):
+        def handler(request):
+            status, headers, body = _happy_handler(_box())(request)
+            if request.url.path.endswith("/getcontests") and isinstance(body, bytes):
+                body = body.replace(b'{"DraftGroups"', b'{"note":"' + marker + b'","DraftGroups"', 1)
+            return status, headers, body
+
+        return handler
+
+    monkeypatch.setattr("loader.salary_private.encoded_growth_block", cumulative)
+    assert (
+        _run(
+            engine,
+            ScriptTransport(shifted(b"cumulative")),
+            clock=MutableClock(NOW + timedelta(seconds=1)),
+        )
+        == 1
+    )
+    reason = _rows(
+        engine,
+        "SELECT reason_code FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["reason_code"]
+    assert reason == "storage_guard_cumulative"
+    monkeypatch.setattr("loader.salary_private.encoded_growth_block", database)
+    assert (
+        _run(
+            engine,
+            ScriptTransport(shifted(b"database")),
+            clock=MutableClock(NOW + timedelta(seconds=2)),
+        )
+        == 1
+    )
+    reason = _rows(
+        engine,
+        "SELECT reason_code FROM salary_private.salary_observations ORDER BY loaded_at DESC",
+    )[0]["reason_code"]
+    assert reason == "storage_guard_database"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == snapshots
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == salaries
+
+
+def test_at29_public_log_includes_storage_warn_tokens(engine, monkeypatch, capsys):
+    from loader.salary_private import StorageSizes
+
+    _seed(engine)
+
+    def at_percent(percent):
+        def fake(_conn):
+            return StorageSizes(int(CUMULATIVE_LIMIT * percent) + 1, 1000)
+
+        return fake
+
+    def warning(percent, used):
+        return (
+            f"storage_warn={percent} guard=cumulative percent={percent} "
+            f"bytes={used} limit={CUMULATIVE_LIMIT}"
+        )
+
+    monkeypatch.setattr("loader.salary_private.read_storage_sizes", at_percent(0.70))
+    before = _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts")
+    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
+    first = capsys.readouterr()
+    used70 = int(CUMULATIVE_LIMIT * 0.70) + 1
+    assert warning(70, used70) in first.err
+    assert "storage_warn=85" not in first.err
+    kept = _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts")
+    assert kept > before
+    monkeypatch.setattr("loader.salary_private.read_storage_sizes", at_percent(0.85))
+    assert (
+        _run(
+            engine,
+            ScriptTransport(_happy_handler(_box())),
+            clock=MutableClock(NOW + timedelta(seconds=1)),
+        )
+        == 0
+    )
+    second = capsys.readouterr()
+    used85 = int(CUMULATIVE_LIMIT * 0.85) + 1
+    assert warning(85, used85) in second.err
+    assert "storage_warn=70" not in second.err
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_artifacts") >= kept
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 4
 
 
 def test_at12_storage_guards_and_concurrent_lock(engine):

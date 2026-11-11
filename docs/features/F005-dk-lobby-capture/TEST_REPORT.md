@@ -11,7 +11,7 @@ Synthetic CSV and JSON only. They are built in `tests/test_dk_lobby.py` and labe
 | AT1 | PASS | `tests/test_dk_lobby.py::test_at1_exact_bytes_and_f004_untouched`. BOM CSV bytes and sha256 read back from `salary_private.salary_artifacts`. Ledger `raw_fields` keeps ordered pairs, including `Status`. Four `dk_lobby_salaries` rows. `dk_classic_slate` stays the seeded `f004-keep` row. `dk_classic_salaries` stays empty. |
 | AT2 | PASS | `test_at2_sunday_set_excludes_saturday_and_explicit_is_not_main` stores only the Sunday pair as `sunday_main`. `test_sunday_hydrate_rejects_a_different_group_id` rejects a hydrated document whose `DraftGroupId` differs even when the games match. Explicit mode is covered by `test_hydrate_is_rechecked_and_explicit_id_must_match`. |
 | AT3 | PASS | `test_at3_fail_closed_reasons` and `test_at3_wrong_week_and_holiday_do_not_substitute`. Reasons asserted with no new snapshot: `ambiguous_slate`, `slate_unavailable`, `inexact_game_set`, `missing_rules`, `captain_slot`, `one_game`, `duplicate_dk_id`, `mismatched_metadata`, `wrong_season_week`. The Dec 23 holiday clock makes no HTTP call. |
-| AT4 | PASS | `test_at4_schedule_text_and_disabled_gate`. Cron `0 10 * * 3` with `timezone: 'America/New_York'`. Next Wednesday 10:00 is 15:00 UTC in January and 14:00 UTC in July. `capture_schedule_enabled('TRUE')` is false. The workflow calls that predicate before `python -m loader.migrate`. GitHub's own `==` was not executed; the AT forbids a live dispatch. |
+| AT4 | PASS | `test_at4_schedule_text_and_disabled_gate` and `test_nov11_wednesday_slot_stays_on_the_timezone_cron`. One cron, `7 10 * * 3`, with `timezone: 'America/New_York'`. 2026-11-11 10:07 America/New_York is 15:07 UTC. The file does not contain `0 10 * * 3`, `0 14 * * 3`, or `0 15 * * 3`. `next_wednesday_10_et` still checks hour 10 for a January and a July Wednesday. `capture_schedule_enabled('TRUE')` is false. The workflow calls that predicate before `python -m loader.migrate`. The test does not dispatch. |
 | AT5 | PASS | Omission cases stay ordinary passes. `test_later_kickoff_receipt_wins_in_either_order` has two fresh receipts and Postgres matching the later kickoff; `choose_receipt` returns that receipt for both body orders and the capture exits 0. `test_multiseason_parquet_receipt_captures` selects the emitted parquet receipt (`PAR1`), not the seeded JSON receipt. `test_stale_and_wide_damage_keep_the_whole_observed_set` reads a private `schedule_verification_v1` artifact: the stale failure keeps all 9 observed ids and the receipt hash, and the 25-row damage keeps every observed id while the metadata diff stays at most 20. Public notes do not contain game ids. `test_capacity_guard_rolls_back_optional_evidence` forces the storage ceiling during the evidence insert: no verification artifact and no snapshot are committed, and the observation is still `failed`. `test_evidence_sql_error_leaves_the_outer_transaction_usable` runs `SELECT 1` in the same transaction after the optional write fails. The fixture reviewer is `synthetic-operator`. That is not a real season certification. |
 | AT6 | PASS | `test_at6_repeat_content_and_identity_revision`. A, A, B, A produce 4 observations and 2 snapshots. The first snapshot's salary `loaded_at` values stay put. Reordered classic roster evidence adds a third snapshot and does not add a third CSV artifact. |
 | AT7 | PASS | `test_at7_failures_keep_the_previous_snapshot`. After a good snapshot, a bad header, one `nope` salary, and a real check-constraint failure inside the publish transaction leave that snapshot's rows unchanged. Ledger keeps the `nope` token and `invalid_salary`. Reasons: `parse_failure`, `invalid_salary`, `constraint_failure`. Snapshot count stays 1. |
@@ -252,7 +252,7 @@ The two skips are `RUN_NETWORK_TESTS` in `tests/test_load.py` and `tests/test_dk
 
 ## 2026-11-11 ADR 0012 discovery cap and gzip at rest
 
-PR #42 head `7a409f82e1df875f1d8c14521ee88434e283a635` defines R10 and AT17–AT20. The verified constraint on main, created in `migrations/versions/0004_salary_private.py` lines 59-62 on `salary_private.salary_artifacts`, is:
+PR #42 head `2a89f83fb3cc15eeb6c7becc768190c576199ebe` (`Merge origin/main into the ADR 0012 docs branch`) is the contract for R10–R14 and AT17–AT31. This replaces the earlier citation of `7a409f82e1df875f1d8c14521ee88434e283a635`. The verified constraint on main, created in `migrations/versions/0004_salary_private.py` lines 59-62 on `salary_private.salary_artifacts`, is:
 
 ```text
 CONSTRAINT ck_salary_artifacts_body CHECK (
@@ -264,14 +264,72 @@ CONSTRAINT ck_salary_artifacts_body CHECK (
 
 | AT | Result | Evidence |
 |---|---|---|
+| AT4 | PASS | `test_at4_schedule_text_and_disabled_gate` and `test_nov11_wednesday_slot_stays_on_the_timezone_cron`. Cron text is `7 10 * * 3` with `timezone: 'America/New_York'`. One cron. 2026-11-11 10:07 America/New_York equals 15:07 UTC. |
 | AT17 | PASS | `test_at17_six_mib_discovery_is_stored_and_round_trips`. A synthetic 6,291,456-byte getcontests body is stored as `lobby_discovery_json` with `encoding=gzip`, `decoded_bytes=6291456`, and `decode_stored_body` returns the same bytes. A snapshot and 4 salary rows are published. The public log has `discovery_body_bytes=6291456` and does not contain `CONTEST-PADDING-BLOCK`. |
-| AT18 | PASS | `test_oversized_discovery_document_fails_closed` and `test_gzip_wire_past_discovery_cap_stops_at_limit_plus_one`. A decoded body of 33,554,433 bytes, including one whose gzip wire is under 5 MiB, stops at 33,554,433 decoded bytes, fails `storage_guard_object`, stores no discovery artifact, and writes zero salary rows. |
-| AT19 | PASS | `test_at19_other_urls_fail_just_over_five_mib`. `draftgroups/v1`, rules, and the salary CSV each fail `storage_guard_object` at 5,242,881 decoded bytes with `cap=5242880` and `bytes_read=5242881`. |
+| AT18 | PASS | `test_oversized_discovery_document_fails_closed` and `test_gzip_wire_past_discovery_cap_stops_at_limit_plus_one`. A prior successful snapshot is counted, then a decoded body of 33,554,433 bytes fails `storage_guard_object` with rows 0. Snapshot, salary, and artifact counts stay at the prior values. The truncated prefix is `prefix_bytes=33554432`. A gzip wire under 5 MiB whose decoded body passes the cap stops at 33,554,433 decoded bytes and stores nothing. |
+| AT19 | PASS | `test_at19_other_urls_fail_just_over_five_mib`. `draftgroups/v1`, rules, and the salary CSV each fail `storage_guard_object` at 5,242,881 decoded bytes with `cap=5242880` and `bytes_read=5242881`. No snapshot. |
 | AT20 | PASS | `test_at20_exact_five_mib_discovery_is_stored`. A discovery body of exactly 5,242,880 decoded bytes is stored and round-trips to those bytes. Gzip at rest means the `bytea` is the gzip member when that member is smaller; the decoded bytes equal the response. |
-| Guards | PASS | Invocation stays 67,108,864 decoded bytes. Private `pg_total_relation_size` guard is 536,870,912. Database guard is 805,306,368. Preflight adds the encoded length. `assert_actual_ceiling` remeasures and is the hard stop. `storage_warning_percent` returns 70 or 85 and is silent at or over the limit. No deletion. |
-| Legacy rows | PASS | `test_legacy_insert_stays_identity_and_body_is_not_rewritten`. An `html_gzip` insert that omits the new columns is filled as identity. The stored body bytes are unchanged. |
-| Downgrade | PASS | `test_downgrade_refuses_gzip_and_deletes_nothing`. A gzip row makes downgrade raise `downgrade refused` and leaves the row and revision `0009`. After that fixture row is removed by the test, downgrade to `0008` drops the columns. |
+| AT21 | PASS | `test_gzip_and_identity_round_trip`. A repetitive body stores as `gzip`. `bytes(row.body)` equals the encoded member returned by the writer, and `decode_stored_body` equals the decoded bytes. |
+| AT22 | PASS | `test_at22_and_at25_identity_and_gzip_lengths`. `store_discovery_artifact` of `b"Q"` stores `encoding=identity` and the `bytea` equals `b"Q"`. |
+| AT23 | PASS | The same test, plus `test_gzip_and_identity_round_trip`. Both the identity row and the gzip row have `decoded_sha256`, `decoded_bytes`, `compressed_sha256`, and `compressed_bytes`. `sha256` equals `decoded_sha256`. `byte_count` equals `decoded_bytes`. |
+| AT24 | PASS | `test_at24_storage_limits_fail_closed_without_a_snapshot`. `store_discovery_artifact` accepts 33,554,432 decoded bytes and raises `storage_guard_object` for 33,554,433. `store_artifact` of a CSV accepts 5,242,880 and raises `storage_guard_object` for 5,242,881. `salary_snapshots` count is unchanged. `test_constraint_boundaries` is the matching CHECK evidence. |
+| AT25 | PASS | `test_at22_and_at25_identity_and_gzip_lengths`. For both stored rows, `compressed_bytes` equals `octet_length(body)`. The identity row has `compressed_bytes = decoded_bytes`. The gzip row has `compressed_bytes < decoded_bytes`. |
+| AT26 | PASS | `test_gzip_and_identity_round_trip`. A second store of the same source and decoded SHA-256 reuses the row. The artifact count stays 1. |
+| AT27 | PASS | `test_at27_upgrade_backfills_legacy_rows_without_rewriting_bodies`. Downgrade to `0008`, insert a `lobby_json` row and an `html_gzip` row with media type `application/gzip`, upgrade to head. Both stay `identity`. The new columns equal the pre-upgrade `sha256` and `byte_count`. Both bodies are unchanged. |
+| AT28 | PASS | `test_at28_encoded_growth_block_keeps_the_prior_snapshot`. After one successful capture, `encoded_growth_block` is forced to the cumulative guard and then the database guard. Each new body fails closed (`storage_guard_cumulative`, then `storage_guard_database`). Snapshot count and salary count stay at the prior values. The preflight is the block under test. `assert_actual_ceiling` is not what this fixture trips. |
+| AT29 | PASS | `test_at29_public_log_includes_storage_warn_tokens`. A successful capture whose private size is at 70% and still under 536,870,912 logs `storage_warn=70 guard=cumulative percent=70 bytes=... limit=536870912` on stderr. The same capture at 85% and still under the guard logs `storage_warn=85 guard=cumulative percent=85 bytes=... limit=536870912`. The 70% log does not contain `storage_warn=85`, and the 85% log does not contain `storage_warn=70`. Artifact count does not fall, and the four salary rows stay. |
+| AT30 | PASS | `test_at30_identity_trigger_and_explicit_writer`. An insert with `encoding` NULL and the decoded hash and length supplied is stored as `identity`, and `compressed_sha256` equals `decoded_sha256` and `compressed_bytes` equals `decoded_bytes`, via trigger `salary_artifacts_identity_encoding`. A second insert that sets every field, including `encoding=gzip`, is stored as given. |
+| AT31 | PASS | `test_downgrade_refuses_gzip_and_deletes_nothing` refuses a gzip row, leaves it, and stays on the current Alembic head. After the test deletes that fixture, downgrade to `0008` restores a body check that contains `5242880` and not `33554432`, and a kind check that does not contain `lobby_discovery_json`. `test_at31_kind_and_oversize_refuse_without_deleting` refuses an identity `lobby_discovery_json` row and leaves it, then refuses a row with `decoded_bytes=5242881` and leaves that row and its one stored byte. Both refusals leave `alembic_version` on the current head. The migration deletes nothing. A decoded body over 5,242,880 bytes that is neither gzip nor `lobby_discovery_json` cannot be inserted: `ck_salary_artifacts_body` rejects it. |
 | First live capture body size | UNKNOWN | Record the first real capture's decoded discovery body size in this file once a capture succeeds. |
+
+Mapped tests, local Postgres, no DraftKings call:
+
+```text
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line \
+  tests/test_dk_lobby.py::test_at4_schedule_text_and_disabled_gate \
+  tests/test_dk_lobby.py::test_nov11_wednesday_slot_stays_on_the_timezone_cron \
+  tests/test_dk_lobby.py::test_at17_six_mib_discovery_is_stored_and_round_trips \
+  tests/test_dk_lobby.py::test_oversized_discovery_document_fails_closed \
+  tests/test_dk_lobby.py::test_gzip_wire_past_discovery_cap_stops_at_limit_plus_one \
+  tests/test_dk_lobby.py::test_at19_other_urls_fail_just_over_five_mib \
+  tests/test_dk_lobby.py::test_at20_exact_five_mib_discovery_is_stored \
+  tests/test_dk_lobby.py::test_at28_encoded_growth_block_keeps_the_prior_snapshot \
+  tests/test_dk_lobby.py::test_at29_warning_log_does_not_emit_storage_warn \
+  tests/test_discovery_storage.py::test_gzip_and_identity_round_trip \
+  tests/test_discovery_storage.py::test_at22_and_at25_identity_and_gzip_lengths \
+  tests/test_discovery_storage.py::test_at24_storage_limits_fail_closed_without_a_snapshot \
+  tests/test_discovery_storage.py::test_constraint_boundaries \
+  tests/test_discovery_storage.py::test_at27_upgrade_backfills_legacy_rows_without_rewriting_bodies \
+  tests/test_discovery_storage.py::test_at30_identity_trigger_and_explicit_writer \
+  tests/test_discovery_storage.py::test_downgrade_refuses_gzip_and_deletes_nothing \
+  tests/test_discovery_storage.py::test_at31_kind_and_oversize_refuse_without_deleting
+.................                                                        [100%]
+17 passed in 2.50s
+```
+
+That command is the mapping run from PR #44, where `test_at29_warning_log_does_not_emit_storage_warn` recorded the missing token and AT29 was FAIL. This branch replaces that test with `test_at29_public_log_includes_storage_warn_tokens`. The log line is now `storage_warn=70` or `storage_warn=85` plus `guard`, `percent`, `bytes`, and `limit`. AT29 is PASS.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line tests/test_dk_lobby.py::test_at29_public_log_includes_storage_warn_tokens
+.                                                                        [100%]
+1 passed in 0.76s
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+329 passed, 2 skipped, 1 warning in 59.28s
+```
+
+### Mutator (advisory)
+
+Uncle Bob's mutator supports Python. Checkout `https://github.com/unclebob/mutator` at `830ec7e9c39664d753f8699015bc796df67727b9`, with `https://github.com/unclebob/crapper` beside it so `../crapper` resolves from `/tmp/mutator`. Neither tree is in this repo.
+
+`--changed` on this branch selects nothing: `No source files to mutate.` The files PR #41 merged (`loader/dk_lobby.py`, `loader/salary_private.py`, `migrations/versions/0009_discovery_gzip_at_rest.py`) are already on main, and mutator skips tests. The run therefore named the two loader files.
+
+`loader/salary_private.py`: 104 sites, 103 killed, 0 survived, 1 uncovered (`budget_block` `0 -> 1`), score 100.0%, exit 0. Test command: `python3 -m pytest -q --tb=no tests/test_discovery_storage.py`. The coverage baseline was the full suite: 311 passed, 2 skipped, 1 warning in 53.48s.
+
+`loader/dk_lobby.py`: scan found 488 sites, 433 covered. A kill run with `--max-workers 1` and `python3 -m pytest -q --tb=line tests/test_discovery_storage.py tests/test_dk_lobby.py` was stopped after 7 minutes with no site outcome. Each site reruns those modules serially. Score UNKNOWN. The migration file was not mutated.
 
 ## Neon branch rehearsal — Alembic 0009 (`0009_discovery_gzip_at_rest.py`)
 
@@ -362,3 +420,13 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 ```
 
 The two skips are still the `RUN_NETWORK_TESTS` gates. They do not call DraftKings.
+
+AT17–AT31 mapping, same database, after the tests added for AT22–AT25, AT27, AT28, AT30, and AT31:
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+311 passed, 2 skipped, 1 warning in 45.16s
+```

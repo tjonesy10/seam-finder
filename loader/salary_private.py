@@ -235,7 +235,7 @@ def warn_storage(conn) -> None:
         if percent is None:
             continue
         print(
-            f"storage_guard_warning guard={name} percent={percent} bytes={used} limit={limit}",
+            f"storage_warn={percent} guard={name} percent={percent} bytes={used} limit={limit}",
             file=sys.stderr,
         )
 
