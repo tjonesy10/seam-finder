@@ -44,7 +44,7 @@ from loader.salary_private import (
 )
 from loader.url import normalize_database_url
 
-PARSER_VERSION = "f007.1"
+PARSER_VERSION = "f007.2"
 DATASET = "dknfl_salaries"
 PUBLIC_SOURCE_URL = "dknfl_salaries"
 SOURCE_NAME = "pureslurp/DKNFL"
@@ -88,6 +88,7 @@ REJECT_REASONS = {
     "missing_dk_id",
     "missing_roster",
     "missing_team",
+    "free_agent_no_game",
 }
 REASON_PRIORITY = (
     "storage_guard_object",
@@ -107,6 +108,7 @@ REASON_PRIORITY = (
     "showdown",
     "unsupported_roster",
     "game_info_unparsed",
+    "free_agent_row_bound",
     "single_game",
     "game_evidence_missing",
     "game_evidence_ambiguous",
@@ -209,6 +211,7 @@ class FileOutcome:
     rows_read: int = 0
     rows_valid: int = 0
     rows_rejected: int = 0
+    free_agent_rows: int = 0
     hung: bool = False
 
 
@@ -461,6 +464,10 @@ def classify(records, headers: list[str]) -> tuple[list[ParsedRow], set[str]]:
             row.reasons.append("missing_roster")
         elif not _classic_eligibility(position_token, roster_tokens):
             file_reasons.add("unsupported_roster")
+        if row.team == "FA" and row.game_info == "-":
+            row.reasons.append("free_agent_no_game")
+            parsed.append(row)
+            continue
         if row.team is None:
             row.reasons.append("missing_team")
         located = _kickoff(row.game_info or "")
@@ -486,11 +493,38 @@ def classify(records, headers: list[str]) -> tuple[list[ParsedRow], set[str]]:
         and "game_info_unparsed" not in file_reasons
     ):
         file_reasons.add("single_game")
+    skips = sum("free_agent_no_game" in row.reasons for row in parsed)
+    if parsed and skips * 100 > 2 * len(parsed):
+        file_reasons.add("free_agent_row_bound")
     return parsed, file_reasons
 
 
-def _map_games(conn, parsed: list[ParsedRow], entry: ManifestEntry) -> tuple[list[dict], str, set[str]]:
+def _schedule_kickoff(gameday, gametime: str) -> datetime:
+    hour, minute = (int(part) for part in gametime[:5].split(":"))
+    return datetime(gameday.year, gameday.month, gameday.day, hour, minute, tzinfo=ET)
+
+
+def _free_agent_rows(parsed: list[ParsedRow], path: str) -> list[dict]:
+    rows = []
+    for row in parsed:
+        if "free_agent_no_game" not in row.reasons:
+            continue
+        rows.append(
+            {
+                "original_path": path,
+                "row_number": row.number,
+                "dk_id": _lookup(row.raw_fields, "ID").strip(),
+                "name": _lookup(row.raw_fields, "Name").strip(),
+                "salary": _lookup(row.raw_fields, "Salary").strip(),
+                "reason": "free_agent_no_game",
+            }
+        )
+    return rows
+
+
+def _map_games(conn, parsed: list[ParsedRow], entry: ManifestEntry) -> tuple[list[dict], str, set[str], list[dict]]:
     reasons: set[str] = set()
+    discrepancies: list[dict] = []
     grouped: dict[tuple, dict] = {}
     for row in parsed:
         if row.kickoff is None:
@@ -502,7 +536,6 @@ def _map_games(conn, parsed: list[ParsedRow], entry: ManifestEntry) -> tuple[lis
     for key in sorted(grouped, key=lambda item: (item[2], item[0], item[1])):
         away, home, kickoff = key
         gameday = kickoff.astimezone(ET).date()
-        clock = kickoff.astimezone(ET).strftime("%H:%M")
         matched = conn.execute(
             text(
                 """
@@ -514,6 +547,7 @@ def _map_games(conn, parsed: list[ParsedRow], entry: ManifestEntry) -> tuple[lis
             ),
             {"away": away, "home": home, "gameday": gameday},
         ).mappings().all()
+        canonical = kickoff
         if not matched:
             reasons.add("game_evidence_missing")
             game_id = None
@@ -522,9 +556,24 @@ def _map_games(conn, parsed: list[ParsedRow], entry: ManifestEntry) -> tuple[lis
             game_id = None
         else:
             item = matched[0]
-            stored_time = (str(item["gametime"]).strip()[:5] if item["gametime"] else "")
-            if stored_time and stored_time != clock:
-                reasons.add("game_evidence_missing")
+            stored_time = str(item["gametime"]).strip()[:5] if item["gametime"] else ""
+            if stored_time:
+                schedule = _schedule_kickoff(gameday, stored_time)
+                delta = int((kickoff - schedule).total_seconds() // 60)
+                if abs(delta) > 30:
+                    reasons.add("game_evidence_missing")
+                elif delta != 0:
+                    canonical = schedule
+                    discrepancies.append(
+                        {
+                            "away": away,
+                            "home": home,
+                            "game_id": str(item["game_id"]),
+                            "file_kickoff_at": kickoff.astimezone(UTC).isoformat(),
+                            "schedule_kickoff_at": schedule.astimezone(UTC).isoformat(),
+                            "delta_minutes": delta,
+                        }
+                    )
             if int(item["season"]) != entry.season or int(item["week"]) != entry.week:
                 reasons.add("manifest_game_contradiction")
             else:
@@ -534,7 +583,7 @@ def _map_games(conn, parsed: list[ParsedRow], entry: ManifestEntry) -> tuple[lis
             {
                 "away": away,
                 "home": home,
-                "kickoff_at": kickoff.astimezone(UTC).isoformat(),
+                "kickoff_at": canonical.astimezone(UTC).isoformat(),
                 "game_id": game_id,
             }
         )
@@ -547,7 +596,7 @@ def _map_games(conn, parsed: list[ParsedRow], entry: ManifestEntry) -> tuple[lis
         if season_type not in {"REG", "POST", "UNKNOWN"}:
             reasons.add("manifest_game_contradiction")
             season_type = "UNKNOWN"
-    return games, season_type, reasons
+    return games, season_type, reasons, discrepancies
 
 
 def _pairs(value) -> tuple[tuple[str, str], ...]:
@@ -718,7 +767,8 @@ def _close_run(conn, run_id, *, status, reason, outcome: FileOutcome, finished_a
     notes = (
         f"reason={reason};season={'' if season is None else season};"
         f"week={'' if week is None else week};rows_read={outcome.rows_read};"
-        f"rows_valid={outcome.rows_valid};rows_rejected={outcome.rows_rejected};snapshot={snapshot}"
+        f"rows_valid={outcome.rows_valid};rows_rejected={outcome.rows_rejected};"
+        f"free_agent_rows={outcome.free_agent_rows};snapshot={snapshot}"
     )
     finish_load_run(
         conn,
@@ -847,7 +897,8 @@ def _emit(selected: int, not_selected: int, outcomes: list[FileOutcome]) -> None
     print(f"attribution={ATTRIBUTION}")
     print(
         "selected={selected} succeeded={ok} failed={bad} reused={reused} not_selected={not_selected} "
-        "rows_read={read} rows_valid={valid} rows_rejected={rejected}".format(
+        "rows_read={read} rows_valid={valid} rows_rejected={rejected} "
+        "free_agent_rows={free_agent}".format(
             selected=selected,
             ok=sum(item.status == "succeeded" for item in outcomes),
             bad=sum(item.status == "failed" for item in outcomes),
@@ -856,6 +907,7 @@ def _emit(selected: int, not_selected: int, outcomes: list[FileOutcome]) -> None
             read=sum(item.rows_read for item in outcomes),
             valid=sum(item.rows_valid for item in outcomes),
             rejected=sum(item.rows_rejected for item in outcomes),
+            free_agent=sum(item.free_agent_rows for item in outcomes),
         )
     )
     counts = Counter(item.reason for item in outcomes if item.status == "failed" and item.reason)
@@ -961,6 +1013,11 @@ def _process_file(conn, entry: ManifestEntry, root: Path, *, trigger, run_group,
                         reasons.add("column_schema")
                     parsed, row_reasons = classify(records, headers)
                     reasons.update(row_reasons)
+                    free_rows = _free_agent_rows(parsed, entry.path)
+                    outcome.free_agent_rows = len(free_rows)
+                    if free_rows:
+                        metadata["free_agent_rows"] = free_rows
+                        metadata["free_agent_row_count"] = len(free_rows)
                     if len(parsed) != entry.row_count:
                         reasons.add("count_mismatch")
                     usable = sum(1 for row in parsed if row.salary is not None)
@@ -973,8 +1030,10 @@ def _process_file(conn, entry: ManifestEntry, root: Path, *, trigger, run_group,
                     outcome.rows_rejected = len(parsed) - valid
                     if valid == 0:
                         reasons.add("zero_valid_rows")
-                    games, season_type, game_reasons = _map_games(conn, parsed, entry)
+                    games, season_type, game_reasons, discrepancies = _map_games(conn, parsed, entry)
                     reasons.update(game_reasons)
+                    if discrepancies:
+                        metadata["kickoff_discrepancies"] = discrepancies
                     if reasons:
                         raise _Stop(reasons)
                     identity = {
@@ -1010,6 +1069,11 @@ def _process_file(conn, entry: ManifestEntry, root: Path, *, trigger, run_group,
                     aliases = _aliases_applied(parsed)
                     if aliases:
                         snapshot_meta["team_aliases"] = aliases
+                    if discrepancies:
+                        snapshot_meta["kickoff_discrepancies"] = discrepancies
+                    if free_rows:
+                        snapshot_meta["free_agent_rows"] = free_rows
+                        snapshot_meta["free_agent_row_count"] = len(free_rows)
                     with _tx(conn):
                         existing = conn.execute(
                             text(
