@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -68,9 +69,11 @@ def test_revision_0009_is_head_and_quotes_the_body_check(engine):
     assert "octet_length(body)" in script_head
     kind = _constraint(engine, "ck_salary_artifacts_kind")
     assert "lobby_discovery_json" in kind
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert script.get_revision("0009").down_revision == "0008"
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0009"
+    assert version == script.get_current_head()
     assert CUMULATIVE_LIMIT == 536_870_912
     assert DATABASE_LIMIT == 805_306_368
     assert DISCOVERY_OBJECT_LIMIT == 33_554_432
@@ -268,7 +271,7 @@ def test_downgrade_refuses_gzip_and_deletes_nothing(engine):
         ).one()
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
     assert still.encoding == "gzip"
-    assert version == "0009"
+    assert version == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     with engine.begin() as conn:
         conn.execute(
             text("DELETE FROM salary_private.salary_artifacts WHERE artifact_id = :id"),
