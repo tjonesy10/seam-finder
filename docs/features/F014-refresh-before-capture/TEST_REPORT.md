@@ -2,7 +2,7 @@
 
 SPEC commit: `ccecc396ce28ae732039166d3e5b884055176d86` (`docs: propose ADR 0013 and F014 refresh inside lobby capture`), on main `f64386489be04db75413e2d4d537f39092a22f6b`.
 
-Implementation base: main `f643864`. No Alembic revision. `alembic heads` on that main is `0009`. Coordination is a session advisory lock (`582014`), distinct from `CAPTURE_LOCK` (`582005`).
+Implementation base: main `f643864`, then merged main `7361a0f` (PRs #44 and #45). F014 adds no Alembic revision. After that merge the single head is `0010` (main's stats indexes, revising `0009`). Coordination is a session advisory lock (`582014`), distinct from `CAPTURE_LOCK` (`582005`).
 
 Local command, after `npm run build` in `frontend/`:
 
@@ -11,7 +11,7 @@ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest
 ruff check loader web tests migrations
 ```
 
-Full Python suite during the mutator coverage baseline (frontend dist present): **340 passed, 3 skipped**. `ruff check loader web tests migrations` passed. The 3 skips are the existing network/opt-in skips, not F014.
+Full Python suite after merging main `7361a0f` (frontend dist present): **348 passed, 2 skipped**. `ruff check loader web tests migrations` passed. The skips are the existing network/opt-in skips, not F014.
 
 ## AT1–AT18
 
@@ -31,7 +31,7 @@ Full Python suite during the mutator coverage baseline (frontend dist present): 
 | AT12 | PASS | `test_at12_repeat_reuses_snapshot_and_keeps_attempts`. Two manual captures: one snapshot, two `captured` observations, distinct `pipeline_refresh_run_group` values, same games row count. |
 | AT13 | PASS | `test_at13_crash_does_not_fabricate_duration`. `before_terminal` leaves `finished_at` and `duration_ms` null. Reconcile marks `interrupted` and still leaves both null. The next attempt inserts one snapshot. |
 | AT14 | PASS | `test_at14_and_at18_permissions_inventory_and_no_dispatch`. `contents: read`, `workflow_dispatch` kept, no dispatch API call, checklist present, historical 403 described as a non-goal. No `skip-lock` flag and no `pg_cancel_backend`. |
-| AT15 | PASS | `test_at15_storage_limits_unchanged` plus the existing guard suite in the 340-pass run (`tests/test_discovery_storage.py`, `tests/test_dk_lobby.py`). Limits stay 33554432, 5242880, 67108864, 536870912, and 805306368. |
+| AT15 | PASS | `test_at15_storage_limits_unchanged` plus the existing guard suite in the 348-pass run (`tests/test_discovery_storage.py`, `tests/test_dk_lobby.py`). Limits stay 33554432, 5242880, 67108864, 536870912, and 805306368. |
 | AT16 | PASS | PR #42 is already on main `f643864`. This implementation does not dispatch, does not change repository variables, and does not treat the 403 as a blocker. CI on the PR head is recorded below after the checks finish. |
 | AT17 | PASS | `test_at17_public_output_and_unreachable_database` prints `invalid_season` or `database_unreachable` and does not add an observation when the database is down. Success, refresh failure, proof failure, gap, and repeat metadata are read back in AT1, AT4, AT5, AT6, and AT12. |
 | AT18 | PASS | No Render change, no Neon change, no migration, no grant change. Capture reuses `DATABASE_URL`, `READONLY_ROLE`, `SALARY_PRIVATE_MIGRATION`, `DK_SCHEDULE_AUTHORITY_SHA256`, and `DK_LOBBY_CAPTURE_ENABLED`. This PR does not deploy, so there is no new live-site or `/api/health` check. |
@@ -63,7 +63,7 @@ Final `loader/pipeline.py` score after the boundary tests: **36 killed, 28 survi
 
 `loader/run.py`, `loader/schedule_proof.py`, and `loader/dk_lobby.py` are **UNKNOWN**. A full `--changed` execution is 847 further sites. Each mutant starts a new pytest process against the one shared database, and the coverage baseline alone is about 70 seconds. That run cannot finish in this pass. The full suite (340 passed) still covers those modules.
 
-Remaining pipeline survivors are in `run_pipeline`, `main`, `_report`, and `_record_failure` (`False`/`True` and `and`/`or` on branches the two-test mutant command does not enter). They are not a second product behavior; the 340-pass suite enters those branches.
+Remaining pipeline survivors are in `run_pipeline`, `main`, `_report`, and `_record_failure` (`False`/`True` and `and`/`or` on branches the two-test mutant command does not enter). They are not a second product behavior; the 348-pass suite enters those branches.
 
 ## CI
 

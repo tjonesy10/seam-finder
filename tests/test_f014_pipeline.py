@@ -708,7 +708,13 @@ def test_at14_and_at18_permissions_inventory_and_no_dispatch():
     assert COORDINATION_WAIT_S == 120
     assert PIPELINE_DEADLINE_S == 1800
     assert HTTP_BUDGET_S == 180
-    assert not list((ROOT / "migrations" / "versions").glob("0010*"))
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    # 0010 is main's stats indexes. F014 does not add a revision.
+    assert script.get_heads() == ["0010"]
+    assert script.get_revision("0010").down_revision == "0009"
     assert "render.yaml" not in capture
     assert "fromDatabase" not in refresh
     for name in ("loader/pipeline.py", "loader/dk_lobby.py", "loader/run.py"):
