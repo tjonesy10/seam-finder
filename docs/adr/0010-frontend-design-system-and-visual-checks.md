@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-10). Next free number verified on main `0ab6132` (0001–0009 exist). This is a docs proposal, not an approval, implementation result or deployment. Does not supersede Accepted ADR 0008; its stack/hosting remain.
+Accepted (2026-11-10) by owner merge of PR #33, merge commit `3b61fcd`. Status-only synchronization; decision substance unchanged. Does not supersede Accepted ADR 0008; its stack/hosting remain. Acceptance does not authorize production actions.
 
 ## Context
 
