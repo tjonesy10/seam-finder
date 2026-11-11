@@ -6,6 +6,7 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 import { HomePage, NotFoundPage, TablePage } from "./pages";
+import { normalizeTableSearch } from "./pageState";
 import { games, loadRuns, parseSearch, players, stats, teams } from "./resources";
 import { Shell } from "./shell";
 
@@ -25,7 +26,7 @@ function tableRoute(path: string, resource: typeof teams) {
   return createRoute({
     getParentRoute: () => rootRoute,
     path,
-    validateSearch: parseSearch,
+    validateSearch: (search: Record<string, unknown>) => normalizeTableSearch(search, resource),
     component: () => <TablePage resource={resource} />,
   });
 }

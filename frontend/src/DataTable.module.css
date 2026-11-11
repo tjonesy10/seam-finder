@@ -5,11 +5,13 @@
   border: 1px solid var(--color-divider);
   border-radius: var(--radius-panel);
   background: var(--color-surface);
-  padding: var(--space-1);
+  scroll-padding-top: 11rem;
+  scroll-padding-inline-start: 1rem;
 }
 
 .table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
   line-height: 1.45;
@@ -19,28 +21,57 @@
 .table td {
   border-bottom: 1px solid var(--color-divider);
   padding: 0 var(--space-3);
-  text-align: left;
+  text-align: start;
   white-space: nowrap;
+  background: var(--color-surface);
+  vertical-align: middle;
 }
 
 .table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   font-weight: 600;
   color: var(--color-muted);
 }
 
+.table th:first-child,
+.table td:first-child {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+}
+
+.table th:first-child {
+  z-index: 3;
+}
+
 .table tbody tr {
-  height: 36px;
+  height: var(--row-height, 44px);
   transition: background-color var(--motion);
 }
 
-.table tbody tr:hover,
-.table tbody tr:focus-within {
+.table tbody tr:hover td,
+.table tbody tr:focus-within td {
   background: var(--color-raised);
 }
 
-.table a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 2.75rem;
+.numeric {
+  text-align: end;
+}
+
+.points {
   color: var(--color-text);
+}
+
+.table :focus-visible {
+  scroll-margin-top: 11rem;
+  scroll-margin-inline-start: 1rem;
+}
+
+@media (forced-colors: active) {
+  .points {
+    background: transparent !important;
+    forced-color-adjust: auto;
+  }
 }

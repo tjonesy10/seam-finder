@@ -58,7 +58,7 @@ test("table pages show their filters", async ({ page }) => {
 test("stats filter, sort, and paging keep the shared link", async ({ page }) => {
   await page.goto("/stats?season=2024&week=10&team=CIN");
   await expect(page.getByText("Ja'Marr Chase").first()).toBeVisible();
-  await page.getByRole("link", { name: "receiving_yards", exact: true }).click();
+  await page.getByLabel("Dataset order field").selectOption("receiving_yards");
   await expect(page).toHaveURL(/sort=receiving_yards/);
   await expect(page).toHaveURL(/season=2024/);
   await expect(page).toHaveURL(/week=10/);
@@ -74,13 +74,18 @@ test("stats filter, sort, and paging keep the shared link", async ({ page }) => 
   await page.screenshot({ path: "/opt/cursor/artifacts/f009-stats-page-2.png", fullPage: true });
 });
 
-test("bad parameters and unknown paths stay in the page chrome", async ({ page }) => {
-  const response = page.waitForResponse(
-    (item) => item.url().includes("/api/games") && item.url().includes("week=abc"),
-  );
+test("bad parameters and unknown paths stay in the page chrome", async ({ page, request }) => {
+  const api = await request.get("/api/games?week=abc");
+  expect(api.status()).toBe(400);
+  const games: string[] = [];
+  page.on("request", (item) => {
+    if (new URL(item.url()).pathname === "/api/games") games.push(item.url());
+  });
   await page.goto("/games?week=abc");
-  expect((await response).status()).toBe(400);
-  await expect(page.getByText("week must be an integer from 1 to 22")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Games", level: 1 })).toBeVisible();
+  await expect(page.getByText(/rows \d+-\d+ of /)).toBeVisible();
+  expect(games.some((url) => url.includes("week="))).toBe(false);
+  await expect(page.getByText("week must be an integer from 1 to 22")).toHaveCount(0);
   await expect(page.locator("form")).toBeVisible();
   await expect(page.locator("body")).not.toContainText("Traceback");
   await expectAttribution(page);

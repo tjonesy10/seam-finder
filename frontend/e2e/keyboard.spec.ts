@@ -16,7 +16,7 @@ test("skip link, nav, filters, pager, retry, and the table region are keyboard o
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { level: 1, name: "Teams" })).toBeFocused();
 
-  const filter = page.getByRole("button", { name: "Filter" });
+  const filter = page.getByRole("button", { name: "Filter", exact: true });
   await filter.focus();
   await page.keyboard.press("Enter");
   await expect(filter).toBeFocused();
@@ -95,6 +95,13 @@ test("narrow and zoomed layouts keep overflow inside the table", async ({ page }
   });
   const zoomed = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
   expect(zoomed).toBe(true);
+});
+
+test("forced colors keep the points legend and values", async ({ page }) => {
+  await page.emulateMedia({ forcedColors: "active" });
+  await page.goto("/stats?season=2024&week=10&team=CIN");
+  await expect(page.getByText("Points intensity, relative to this page").first()).toBeVisible();
+  await expect(page.locator("[data-column='fantasy_points']").first()).toBeAttached();
 });
 
 test("reduced motion removes transitions", async ({ page }) => {
