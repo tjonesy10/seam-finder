@@ -205,3 +205,47 @@ The warning is Starlette's deprecation of the httpx test client. It is not a fai
 | Live discovery body shape, URL, and length past 5 MiB | UNKNOWN | Public log has reason codes only. Production observation metadata was not read. No live GET. |
 | Whether the 2026-11-11 10:00 ET schedule event was delayed or dropped | UNKNOWN | Not dispatched. GitHub may still create a late `schedule` run, or it may have dropped the minute-0 slot. |
 | A successful week-10 salary snapshot | UNKNOWN | The object cap was not raised. A rerun hits the same guard if the same body is still over 5 MiB. |
+
+## 2026-11-11 prep: guard log and minute 7
+
+No ADR 0005 change. The object cap is still 5 MiB. The loader does not read past the cap, does not store a `DraftGroups` projection, and does not call a different endpoint.
+
+### Diagnosable `storage_guard_object`
+
+The status line still starts `dk_lobby_salaries season=... week=... status=... reason=storage_guard_object rows=...`. On that failure it now appends fields. Stderr stays the bare reason code. `load_runs` notes stay `reason=...;rows=...;snapshots=...`.
+
+The fields are only what the reader knows when it stops:
+
+| Field | Meaning |
+|---|---|
+| `path` | URL path of the allowlisted request. Query, fragment, headers, and cookies are not printed. A path that is not a plain path becomes `unknown`. |
+| `bytes_read` | Decoded bytes pulled into the buffer when the read stopped. That can be one chunk past the cap. |
+| `cap` | `OBJECT_LIMIT` (5242880). |
+| `content_length` | Present only when the `Content-Length` header is a decimal integer. |
+| `decoded_length` | Present only when the HTTP client already holds the whole decoded body. A stream that stopped at the cap does not get a guessed total. |
+
+Synthetic example from `test_oversized_discovery_document_fails_closed`. The body is `s` padding plus a synthetic `DraftGroups` array, with `Content-Length` set to that length and a cookie the log must not show:
+
+```text
+dk_lobby_salaries season=2026 week=10 status=failed reason=storage_guard_object rows=0 path=/lobby/getcontests bytes_read=5242881 cap=5242880 content_length=5242881 decoded_length=5242881
+```
+
+The test asserts that line, stderr `storage_guard_object`, and that `sport=NFL`, the cookie, `DraftGroupId`, and `Contests` are absent.
+
+### Schedule minute
+
+`.github/workflows/dk-lobby-capture.yml` cron is now `7 10 * * 3` with `timezone: 'America/New_York'`. 2026-11-11 10:07 America/New_York is 15:07 UTC. `test_nov11_wednesday_slot_stays_on_the_timezone_cron` and `test_at4_schedule_text_and_disabled_gate` assert that text. The hour used for the winter/summer check is still 10. No second UTC cron was added. The workflow was not dispatched.
+
+### Commands
+
+Local Postgres 16 on `127.0.0.1`. Not a repository secret and not production.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+294 passed, 2 skipped, 1 warning in 40.77s
+```
+
+The two skips are `RUN_NETWORK_TESTS` in `tests/test_load.py` and `tests/test_dk_classic.py`. They were not run. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client.

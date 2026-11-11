@@ -732,7 +732,7 @@ def test_at3_wrong_week_and_holiday_do_not_substitute(engine):
 
 def test_at4_schedule_text_and_disabled_gate():
     text_value = WORKFLOW.read_text()
-    assert "cron: '0 10 * * 3'" in text_value
+    assert "cron: '7 10 * * 3'" in text_value
     assert "timezone: 'America/New_York'" in text_value
     assert "vars.DK_LOBBY_CAPTURE_ENABLED == 'true'" in text_value
     assert "capture_schedule_enabled" in text_value
@@ -762,21 +762,21 @@ def test_at4_schedule_text_and_disabled_gate():
 
 
 def test_nov11_wednesday_slot_stays_on_the_timezone_cron():
-    """2026-11-11 10:00 America/New_York is 15:00 UTC. Do not add a fixed-UTC cron.
+    """2026-11-11 10:07 America/New_York is 15:07 UTC. Minute 7, same timezone.
 
-    GitHub honours ``timezone`` on ``on.schedule`` (changelog 2026-03-19 and the
-    workflow-syntax page). The approved text stays one Wednesday 10:00 ET cron.
+    GitHub honours ``timezone`` on ``on.schedule``. The cron stays one Wednesday
+    expression at 10:07 America/New_York so it is off the top of the hour.
     """
     text_value = WORKFLOW.read_text()
     assert text_value.count("cron:") == 1
-    assert "cron: '0 10 * * 3'" in text_value
+    assert "cron: '7 10 * * 3'" in text_value
+    assert "cron: '0 10 * * 3'" not in text_value
     assert "timezone: 'America/New_York'" in text_value
     assert "0 14 * * 3" not in text_value
     assert "0 15 * * 3" not in text_value
-    slot = datetime(2026, 11, 11, 10, 0, tzinfo=ET)
+    slot = datetime(2026, 11, 11, 10, 7, tzinfo=ET)
     assert slot.weekday() == 2
-    assert slot.astimezone(UTC) == datetime(2026, 11, 11, 15, 0, tzinfo=UTC)
-    assert next_wednesday_10_et(slot - timedelta(minutes=1)) == slot
+    assert slot.astimezone(UTC) == datetime(2026, 11, 11, 15, 7, tzinfo=UTC)
 
 
 def test_at5_off_season_stale_and_absent_group(engine):
@@ -1181,17 +1181,37 @@ def test_oversized_discovery_document_fails_closed(engine, capsys):
 
     def oversized(request):
         assert request.url.path == "/lobby/getcontests"
-        return 200, {"content-type": "application/json"}, huge
+        assert request.url.query == b"sport=NFL"
+        return (
+            200,
+            {
+                "content-type": "application/json",
+                "content-length": str(len(huge)),
+                "set-cookie": "session=synthetic-secret",
+            },
+            huge,
+        )
 
     transport = ScriptTransport(oversized)
     assert _run(engine, transport, clock=MutableClock(NOW)) == 1
     assert len(transport.calls) == 1
     captured = capsys.readouterr()
     assert captured.err.strip() == "storage_guard_object"
-    assert (
+    status_line = (
         "dk_lobby_salaries season=2026 week=10 status=failed "
-        "reason=storage_guard_object rows=0"
-    ) in captured.out
+        "reason=storage_guard_object rows=0 "
+        f"path=/lobby/getcontests bytes_read={len(huge)} cap={OBJECT_LIMIT} "
+        f"content_length={len(huge)} decoded_length={len(huge)}"
+    )
+    assert captured.out.strip() == status_line
+    assert "reason=storage_guard_object" in status_line
+    leaked = captured.out + captured.err
+    assert "sport=NFL" not in leaked
+    assert "synthetic-secret" not in leaked
+    assert "set-cookie" not in leaked
+    assert "DraftGroupId" not in leaked
+    assert "Contests" not in leaked
+    assert "?" not in captured.out
     obs = _rows(
         engine,
         """

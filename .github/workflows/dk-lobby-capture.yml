@@ -6,7 +6,8 @@ name: dk lobby capture
 
 on:
   schedule:
-    - cron: '0 10 * * 3'
+    # 10:07 America/New_York. Minute 7 stays off the top of the hour.
+    - cron: '7 10 * * 3'
       timezone: 'America/New_York'
   workflow_dispatch:
     inputs:
