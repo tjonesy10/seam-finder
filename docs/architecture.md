@@ -1,6 +1,6 @@
 # Architecture: Seam Finder, Part 1 (data prototype)
 
-Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md), [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) (Accepted), [ADR 0004](adr/0004-dk-current-slate-csv.md) (Accepted), [ADR 0005](adr/0005-private-salary-capture-and-archives.md) (Accepted), [ADR 0006](adr/0006-slate-safe-salary-unification.md) (Accepted), [ADR 0007](adr/0007-authoritative-schedule-completeness.md) (Accepted), [ADR 0008](adr/0008-react-frontend-hosting.md) (Proposed, F009 frontend and asset hosting; not accepted until the F009 docs PR merges).
+Status: READY (2026-11-05). Decisions: [ADR 0001](adr/0001-stack-and-hosting.md), [ADR 0002](adr/0002-nflverse-load-and-refresh.md), [ADR 0003](adr/0003-rotoguru-dk-classic-salaries.md) (Accepted), [ADR 0004](adr/0004-dk-current-slate-csv.md) (Accepted), [ADR 0005](adr/0005-private-salary-capture-and-archives.md) (Accepted), [ADR 0006](adr/0006-slate-safe-salary-unification.md) (Accepted), [ADR 0007](adr/0007-authoritative-schedule-completeness.md) (Accepted), [ADR 0008](adr/0008-react-frontend-hosting.md) (Accepted 2026-11-10 20:05 America/New_York by PR #26 merge `2a72ed0`, contract only; no implementation built).
 
 ## Components
 
@@ -46,7 +46,7 @@ Load order inside one run: teams, players, games, player_week_stats (foreign key
 ## Cross-cutting rules
 
 - The web app never writes. Its DB role has `SELECT` only.
-- Every page shows the attribution footer and the last successful refresh time (from `load_runs`). After F009 cutover the SPA reads those values from `GET /api`.
+- Every page shows the attribution footer and the last successful refresh time (from `load_runs`). After F009 cutover the SPA footer attribution is the static attribution fallback in the bundle, checked against `web/attribution.py`. The SPA reads `last_refresh_et` and `datasets` from `GET /api`, and shows `Last refresh: none` when those fields are missing or the request fails.
 - Team logos and player headshots are not stored or shown (trademark and image rights are not covered by the nflverse license).
 
 ## Future extension points (parts 2-5)
@@ -98,8 +98,8 @@ Build order after the PR #17 docs approval: F005 shared persistence/privacy and 
 [ADR 0007](adr/0007-authoritative-schedule-completeness.md) is the completeness contract Cosmo approved on 2026-11-06 19:14 EST and that PR #20 merged. No product question remains, and no season inventory is certified. The chain is an operator-reviewed league reference, a pinned private authority root, exact nflverse raw bytes, an automatic source-to-PG receipt, then a whole-season Postgres comparison and finite timing or gap proof before any DK call. A fresh games load, surviving rows, endpoint dates, a row count, or a self-hash is not that proof. Reference authenticity is the operator review. Completeness is equality with that reviewed inventory. There is no new automatic league-schedule scraper. Positive paths remain a verified in-season capture and a finite supported off-season gap. Incomplete prior-year evidence and an unsupported calendar gap fail closed. Contract acceptance is not implementation acceptance. PR #19 remains open, and its implementation merge stays held.
 
 
-## F009 React frontend (Proposed)
+## F009 React frontend (DRAFT)
 
-Drafted 2026-11-10 against main `36636c2`. Docs only. [F009 SPEC](features/F009-react-frontend/SPEC.md) and [ADR 0008](adr/0008-react-frontend-hosting.md) are Proposed. A [pending constitution amendment](features/F009-react-frontend/CONSTITUTION-AMENDMENT.md) is required because the accepted constitution still names Jinja2 pages and a blanket bundler ban. Nothing here hands the feature to forge or changes the live site.
+Drafted 2026-11-10 against main `36636c2`. Docs only. [F009 SPEC](features/F009-react-frontend/SPEC.md) is DRAFT rev 2. [ADR 0008](adr/0008-react-frontend-hosting.md) is Accepted as a contract by the PR #26 merge `2a72ed0`. No implementation is built. Cosmo approved the [constitution amendment](features/F009-react-frontend/CONSTITUTION-AMENDMENT.md) on 2026-11-10 20:03 America/New_York. The `docs/CONSTITUTION.md` edit takes effect when this follow-up PR merges. Nothing here hands the feature to forge or changes the live site.
 
 Phase 1 replaces the Jinja pages at `/`, `/teams`, `/players`, `/games`, `/stats`, and `/load-runs` with a React, TypeScript, and Vite app in `frontend/`. Tables use TanStack Table and TanStack Virtual. Fetching uses TanStack Query. Routing uses TanStack Router because those pages already persist filter, sort, and paging in the URL. There is no TanStack Start and no SSR. FastAPI keeps serving the existing JSON API, plus additive footer fields on `GET /api`. The same Render web service serves the built assets after cutover. The default `SERVE_SPA` switch is off, so Jinja remains until Cosmo enables it. The frontend and the public API never expose `salary_private` or other private salary data. The public web role grants are unchanged.

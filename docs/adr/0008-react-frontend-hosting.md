@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (2026-11-10). This decision is not accepted until Cosmo merges the F009 docs PR.
+Accepted (2026-11-10 20:05 America/New_York) by owner merge of PR #26, commit `2a72ed0b1b2620cf399218765f5e326a0af69763`. Acceptance is the contract only. No implementation is built, and this acceptance does not authorize a forge build or a live cutover.
+
+Constitution amendment approval: Cosmo (repo owner), 2026-11-10 20:03 America/New_York, captured on a Groko question card and relayed by Groko. Exact words: "I approve the constitution amendment for the React + TypeScript + Vite frontend." The approved text is applied in `docs/CONSTITUTION.md` and takes effect when the F009 follow-up PR merges.
 
 ## Context
 
@@ -38,4 +40,4 @@ TanStack Router earns its dependency because Phase 1 already has six routes and 
 - The Render dashboard build command must eventually install Node 26 and run the Vite build before `pip install .`. That dashboard change happens only at Cosmo-approved cutover. No `render.yaml` is added.
 - A `SERVE_SPA` flag, default off, keeps Jinja live until Cosmo turns the SPA on. FastAPI gains a static-file mount and a catch-all that must never swallow `/api` or `/api/health`.
 - CI grows a Node 26 path and a lockfile. Free GitHub Actions minutes on the public repo remain the test runner.
-- The accepted constitution still names Jinja and a blanket bundler ban until the F009 amendment merges. This ADR is not a silent constitution change.
+- Cosmo approved the F009 constitution amendment on 2026-11-10 20:03 America/New_York. The approved Stack and Testing bar text is applied in `docs/CONSTITUTION.md` and takes effect when the F009 follow-up PR merges. This ADR is the contract for the framework and bundler. It is not a silent constitution change and it does not build the frontend.

@@ -1,8 +1,10 @@
-# Pending constitution amendment for F009
+# Constitution amendment for F009
 
-Status: **Pending**. This text is not operative. Do not copy it into [CONSTITUTION.md](../../CONSTITUTION.md) until Cosmo approves the F009 docs and this amendment. It is a separate amendment, not a silent edit of the accepted constitution.
+Status: **Approved**.
 
-The accepted constitution, on main `36636c2af8326a11ab3a4cbe4498df487fad78bd`, conflicts with F009 in two Stack sentences and needs a Testing bar addition. No Data and licensing, Security, Process, or Out of scope rule is changed.
+Approval record: approver Cosmo (repo owner), 2026-11-10 20:03 America/New_York, captured on a Groko question card and relayed by Groko. Exact words: "I approve the constitution amendment for the React + TypeScript + Vite frontend."
+
+The approved text below is applied in [CONSTITUTION.md](../../CONSTITUTION.md). That change takes effect when this follow-up PR merges to main. It is a separate amendment, not a silent edit of the accepted constitution. No Data and licensing, Security, Process, or Out of scope rule is changed.
 
 ## Stack, first bullet
 
@@ -34,6 +36,6 @@ Proposed:
 
 > CI (ruff, pytest, gitleaks, and the F009 frontend typecheck, lint, unit, build, and Playwright checks) is green before a PR merges. The new frontend checks do not replace ruff, pytest, or gitleaks.
 
-## Status line of CONSTITUTION.md, after approval
+## Status line of CONSTITUTION.md
 
-When this amendment is merged, append a short note to the constitution Status line, such as: amended 2026-11-10 (React frontend / F009). Do not rewrite earlier amendment history.
+The status line now records amended 2026-11-10 (React frontend / F009). Earlier amendment history is unchanged. The `docs/CONSTITUTION.md` edit takes effect when this follow-up PR merges to main.

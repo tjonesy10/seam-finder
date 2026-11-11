@@ -6,6 +6,8 @@
 - Hosting choice: FastAPI serves the built assets on the existing Render free web service. A separate Render static site is rejected. Cutover is `SERVE_SPA=true`, default off.
 - Constitution conflict recorded, not silently applied: the accepted Stack bullets still name Jinja2 pages and a blanket bundler ban until Cosmo approves the amendment.
 - Phase 1 keeps the exact current nflverse footer string. The RotoGuru DraftKings disclaimer exists in `web/attribution.py` but is not on the current site, so Phase 1 does not display it.
+- F009 SPEC rev 2: footer attribution is a static attribution fallback in the bundle, generated from or checked against `web/attribution.py` `ATTRIBUTION_TEXT` and `ATTRIBUTION_LINKS`, including a first visit during an outage, loading, every error view, and the 404 shell. `GET /api` supplies `last_refresh_et` and `datasets` only as the fields the page reads. A missing value renders `Last refresh: none`. AT16 covers the outage footer, and a drift test locks the bundled constant. AT9 runs unchanged `tests/test_api.py` with `SERVE_SPA` off and on. Phase 1 shows no DraftKings line; any future public historical-salary display must use `ROTOGURU_DK_CLASSIC_ATTRIBUTION`. Counts: R1-R9 (9), AT1-AT16 (16).
+- F009 follow-up: Cosmo approved the constitution amendment on 2026-11-10 20:03 America/New_York ("I approve the constitution amendment for the React + TypeScript + Vite frontend."). The approved Stack and Testing bar text is applied in `docs/CONSTITUTION.md` and takes effect when this follow-up PR merges. ADR 0008 is Accepted as a contract by the PR #26 merge `2a72ed0` at 2026-11-10 20:05 America/New_York. No implementation is built. ADR 0001's Jinja and no-bundler clauses are superseded by ADR 0008.
 
 
 ## 2026-11-05
