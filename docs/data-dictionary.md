@@ -284,7 +284,7 @@ Hash/length verified in application and tested by readback. A DFF CSV is explici
 | observed_at | timestamptz NOT NULL; receipt/ingest time; archives must not present it as salary publication time |
 | source_url, original_path | nullable text; preserve original repository URL/path, including pinned upstream commit |
 | artifact_id, snapshot_id | nullable FKs to artifacts/snapshots, linked when available; no snapshot link on rejected parse |
-| metadata | jsonb NOT NULL; exact manifest row, corrected labels, original labels, parser version, auxiliary artifact IDs, request attempt statuses, response content type/status, provenance uncertainty |
+| metadata | jsonb NOT NULL; exact manifest row, corrected labels, original labels, parser version, auxiliary artifact IDs, request attempt statuses, response content type/status, provenance uncertainty. F007 also stores `kickoff_discrepancies` with the same shape as the snapshot field, and `free_agent_rows` / `free_agent_row_count` for R8 skips. Public `load_runs` notes carry only the reason codes and counts. |
 | status | text NOT NULL: running/succeeded/failed/rejected/skipped |
 | reason_code, error_private | nullable text; bounded sanitized internal diagnostics, never credentials |
 
@@ -302,11 +302,11 @@ F005 capture attempts always write `started_at`. A terminal in-process attempt a
 | source_snapshot_key | text NOT NULL; DK draft group for live, archive original URL/path identity otherwise |
 | season, season_type, week | corrected nullable season/week and required season_type |
 | draft_group_id | nullable text; known for F005; unknown is null, never synthesized |
-| games | jsonb NOT NULL; sorted entries `{away,home,kickoff_at,game_id?}`, unknown kickoff/game stays null; never infer absent games from player subset |
+| games | jsonb NOT NULL; sorted entries `{away,home,kickoff_at,game_id?}`, unknown kickoff/game stays null; never infer absent games from player subset. For an F007 tolerated kickoff match, `kickoff_at` is the schedule instant, not the file clock; the file clock lives only in `metadata.kickoff_discrepancies`. |
 | rules | jsonb NOT NULL; `{rules_id?,roster_slots?,salary_cap?,evidence_artifact_id?}`; unknown fields null |
 | game_set_sha256, rules_sha256 | nullable text; filled only when complete/verified, distinct from raw artifact hash |
 | source_pool_kind | text NOT NULL: full_export/subset/legacy_unknown/adapter_current |
-| metadata | jsonb NOT NULL; dates, correction evidence, original labels, headers, row counts, completeness claims, auxiliary artifact references; `raw_retained` boolean |
+| metadata | jsonb NOT NULL; dates, correction evidence, original labels, headers, row counts, completeness claims, auxiliary artifact references; `raw_retained` boolean. F007 may also store `kickoff_discrepancies` (array of `{away, home, game_id, file_kickoff_at, schedule_kickoff_at, delta_minutes}`, only tolerated nonzero matches) and, when a snapshot is published, `free_agent_rows` (array of `{original_path, row_number, dk_id, name, salary, reason}` with `reason=free_agent_no_game`) plus `free_agent_row_count`. No new column. |
 | created_at | timestamptz NOT NULL; not original source publication time |
 
 UNIQUE `(source, source_snapshot_key, artifact_id, parser_version, metadata_sha256)`. Metadata hash includes identity-relevant group, corrected season/type/week, game/kickoff/rules evidence and manifest facts, but excludes ingestion/retrieval timestamps so identical content and identity replays reuse parsed rows. Two source paths sharing bytes still have separate snapshot identities and observations. Index `(source, season, season_type, week)`, `(draft_group_id)`, `(game_set_sha256, rules_sha256)`.
@@ -315,7 +315,7 @@ No slate verification is implied merely by this table existing. A changed kickof
 
 ### salary_source_rows — lossless row ledger
 
-PK `(artifact_id, parser_version, row_number)`; artifact FK, parser_version text, 1-based data `row_number integer > 0` (CSV logical record, not physical line), `raw_fields jsonb NOT NULL` storing original ordered header/value pairs (not a lossy dict), `parse_status text NOT NULL` (`parsed`/`rejected`), `reason_codes jsonb NOT NULL`. Header bytes, quoting, CRLF, malformed unparseable remainder, and original order are recoverable from the artifact. Byte offsets may be recorded but are not required. For a wholly unreadable CSV keep the artifact and rejected observation; do not invent row counts or ledger rows. Same bytes/parser version reuse ledger entries. A rejected blank-name/blank-salary record has a row ordinal and reason even though it has no normalized salary.
+PK `(artifact_id, parser_version, row_number)`; artifact FK, parser_version text, 1-based data `row_number integer > 0` (CSV logical record, not physical line), `raw_fields jsonb NOT NULL` storing original ordered header/value pairs (not a lossy dict), `parse_status text NOT NULL` (`parsed`/`rejected`), `reason_codes jsonb NOT NULL`. Header bytes, quoting, CRLF, malformed unparseable remainder, and original order are recoverable from the artifact. Byte offsets may be recorded but are not required. For a wholly unreadable CSV keep the artifact and rejected observation; do not invent row counts or ledger rows. Same bytes/parser version reuse ledger entries. A rejected blank-name/blank-salary record has a row ordinal and reason even though it has no normalized salary. An F007 free-agent skip (`TeamAbbrev` exactly `FA` and `Game Info` exactly `-`) is also a ledger `rejected` row with reason_code `free_agent_no_game`; it is counted, never silently dropped, and is not a valid `dknfl_salaries` row. File-fatal over-bound cases use reason `free_agent_row_bound`.
 
 ### Separate source tables
 
