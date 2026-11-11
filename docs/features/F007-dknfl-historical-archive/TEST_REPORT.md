@@ -123,3 +123,44 @@ CPT in either column is now `showdown`. QB and DST must appear in their own rost
 `Position=RB` with `Roster Position=RB/QB`, and `Position=QB` with `Roster Position=QB/FLEX`, still exited 0. A single matching primary token was enough. `test_every_roster_token_must_fit_position` was red on that.
 
 QB and DST now allow only their own token. RB, WR, and TE allow themselves and FLEX, and every token must be in that set. Both counterexamples fail `unsupported_roster`, keep the CSV artifact and two ledger rows, and leave the earlier two-game snapshot in place. CPT and a roster that omits QB or DST were already closed.
+
+## Team alias at the archive parse boundary
+
+The 62 `DKSalaries*.csv` files in the public pureslurp/DKNFL tree were read locally and were not committed. Team tokens in `TeamAbbrev` and `Game Info`:
+
+| Token | Files | Mapping |
+|---|---|---|
+| LAR | 35 | `LA`, the code those games use in the loaded schedule |
+| WAS | 36 | none; the games table already uses WAS |
+| JAX | 34 | none; already JAX |
+| LV | 35 | none; already LV |
+| LAC | 30 | none; already LAC |
+| STL, SD, OAK, WSH, JAC | 0 | not mapped |
+| FA | 1 | not a game token; one row has `Game Info` `-` |
+
+`test_lar_token_matches_the_la_game` was red before the map: the file exited 1 with `failed_reasons=game_evidence_missing:1`. After `TEAM_ALIASES = {"LAR": "LA"}` it publishes, the snapshot games use `LA`, the ledger raw fields still say `LAR` and `LAR@KC`, snapshot metadata records `team_aliases: {"LAR": "LA"}`, and `team_raw` is `LA`. `test_unknown_team_token_fails_closed` keeps `ZZZ` on `game_evidence_missing` with no snapshot. No other alias was added, so there is no further alias test.
+
+Isolated `seam_dknfl62`, flag-on migrate through `0008`, teams and games for 2021–2026 from a local nflverse mirror, then `python3 -m loader.dknfl_archive --archive-root /tmp/dknfl-public --manifest /tmp/dknfl-manifest.csv --trigger local` before the map:
+
+```
+failed_reasons=game_evidence_missing:35,game_info_unparsed:1
+selected=62 succeeded=26 failed=36 reused=0 not_selected=0 rows_read=27788 rows_valid=27773 rows_rejected=15
+```
+
+The same command on a fresh `seam_dknfl_after` after the map:
+
+```
+failed_reasons=game_evidence_missing:1,game_info_unparsed:1
+selected=62 succeeded=60 failed=2 reused=0 not_selected=0 rows_read=27788 rows_valid=27773 rows_rejected=15
+```
+
+Remaining failures:
+
+| File | Reason |
+|---|---|
+| `2023/WEEK19/DKSalaries-Week19.csv` | `game_evidence_missing`. The file's `LAR@DET` on 2024-01-14 is 8:15PM; the schedule row for `LA@DET` that date is 20:00. The alias does not change the clock. |
+| `2024/WEEK1/DKSalaries-Week1.csv` | `game_info_unparsed`. One row is `TeamAbbrev=FA` and `Game Info=-`. |
+
+This is not a certified season. Mutator is not installed: UNKNOWN.
+
+`ruff check loader web tests migrations` passed. `DATABASE_URL=postgresql:///seam_alias pytest -q` with local trust authentication, then restored to peer: `266 passed, 2 skipped`. `alembic heads` is `0008`.
