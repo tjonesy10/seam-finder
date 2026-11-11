@@ -20,7 +20,7 @@ test("home page lists the tables and dataset refreshes", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Seam Finder", level: 1 })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Last refresh per dataset" })).toBeVisible();
   for (const href of ["/teams", "/players", "/games", "/stats", "/load-runs"]) {
-    await expect(page.locator(`a[href="${href}"]`)).toBeVisible();
+    await expect(page.getByRole("main").locator(`a[href="${href}"]`)).toBeVisible();
   }
   for (const dataset of ["teams", "players", "games", "player_week_stats"]) {
     await expect(page.getByText(new RegExp(`${dataset}:`))).toBeVisible();

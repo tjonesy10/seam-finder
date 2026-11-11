@@ -1,0 +1,28 @@
+export const tokenSheet = `:root {
+  color-scheme: dark;
+  --color-canvas: #0b1220;
+  --color-surface: #111c2e;
+  --color-raised: #1b2b42;
+  --color-text: #e8eef7;
+  --color-muted: #a7b5ca;
+  --color-accent: #70d6c5;
+  --color-on-accent: #0b1220;
+  --color-focus: #9bc9ff;
+  --color-success: #87d7a4;
+  --color-warning: #f3cf82;
+  --color-danger: #ffb0b8;
+  --color-control-border: #70839f;
+  --color-divider: #304159;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 2rem;
+  --space-8: 3rem;
+  --radius-control: 6px;
+  --radius-panel: 12px;
+  --font-body: Inter, sans-serif;
+  --motion: 120ms;
+}`;

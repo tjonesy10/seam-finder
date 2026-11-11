@@ -13,3 +13,18 @@ Object.defineProperty(HTMLElement.prototype, "clientWidth", {
 });
 
 window.scrollTo = () => undefined;
+
+Object.defineProperty(window, "matchMedia", {
+  writable: true,
+  value: (query: string) => ({
+    matches: query.includes("1024"),
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent() {
+      return false;
+    },
+  }),
+});
