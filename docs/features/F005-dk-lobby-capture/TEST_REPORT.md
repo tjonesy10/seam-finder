@@ -272,7 +272,34 @@ CONSTRAINT ck_salary_artifacts_body CHECK (
 | Legacy rows | PASS | `test_legacy_insert_stays_identity_and_body_is_not_rewritten`. An `html_gzip` insert that omits the new columns is filled as identity. The stored body bytes are unchanged. |
 | Downgrade | PASS | `test_downgrade_refuses_gzip_and_deletes_nothing`. A gzip row makes downgrade raise `downgrade refused` and leaves the row and revision `0009`. After that fixture row is removed by the test, downgrade to `0008` drops the columns. |
 | First live capture body size | UNKNOWN | Record the first real capture's decoded discovery body size in this file once a capture succeeds. |
-| Neon branch rehearsal | UNKNOWN | Pending. Forge will run it. This test report did not touch a Neon branch or production. |
+
+## Neon branch rehearsal — Alembic 0009 (`0009_discovery_gzip_at_rest.py`)
+
+Overall: PASS. Run by forge on Wed Nov 11 2026, 10:46–10:48 AM CT, against PR #41 head 3768590ef908f7ad1cc6e722fef9a5c2be78d3c1.
+
+The migration was rehearsed on a throwaway Neon branch, `rehearsal-0009-20261111`, made from production `main`. It used the real table with 8 legacy rows. Production `main` got no writes. The rehearsal branch was deleted afterwards and is recoverable until Sat Nov 14, 10:48 AM CT.
+
+Method: the `upgrade()` and `downgrade()` code was translated to SQL and run through Neon `run_sql_transaction`, not the Alembic CLI. The database is Postgres 17.11.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Starting revision | PASS | `alembic_version` was 0008 and `salary_private.salary_artifacts` exists |
+| Upgrade applies | PASS | 53 ms; `alembic_version` = 0009 |
+| Legacy backfill | PASS | 8/8 rows are identity; 0 mismatches in decoded/compressed bytes and sha aliases |
+| Bodies and counts untouched | PASS | 8 rows; sum(octet_length(body)) = 3,057,331 before and after; same counts per kind |
+| Discovery row at 6 MiB, identity | PASS | accepted, with the aliases correct |
+| Discovery row decoded to 33,554,433 bytes | PASS | rejected by `ck_salary_artifacts_body` |
+| `lobby_json` at 5,242,881 bytes | PASS | rejected |
+| gzip with compressed ≥ decoded | PASS | rejected for both 100=100 and 101>100 |
+| Downgrade refuses on discovery or gzip rows | PASS | "downgrade refused: ... nothing was deleted" |
+| Downgrade applies | PASS | 16 ms; constraints match the pre-upgrade definitions exactly; columns, trigger and function dropped |
+| Upgrade re-applies after downgrade | PASS | 18 ms |
+| No grant changes | PASS | no grant statements were run |
+| Pre-upgrade sizes | n/a | relation 1,204,224 B; database 118,693,888 B |
+
+Notes:
+- Postgres stores the `IN (...)` checks in the form `= ANY (ARRAY[...])`. The meaning is the same.
+- The migration also creates the trigger `salary_artifacts_identity_encoding`, which fills in identity encoding when an insert leaves it out.
 
 ### Production migration
 
