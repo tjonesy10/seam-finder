@@ -137,3 +137,71 @@ $ gitleaks detect --source . --redact --log-opts=--all --no-banner
 | GitHub's hosted evaluation of the skipped job | UNKNOWN | AT4 forbids a live dispatch. The file gate and the local predicate are tested. |
 | Uncle Bob mutator | UNKNOWN | `mutator` is not on `PATH`. `../crapper` is not present. Go is installed. The mutator tool was not installed. This is not a pass. |
 | Pull request CI | PASS | Both checks on `7275915590ecd822b1d5e61c0e2aa0cae1bec983` succeeded: [run 42328553690](https://github.com/tjonesy10/seam-finder/actions/runs/42328553690) (`pull_request`) and [run 42328549429](https://github.com/tjonesy10/seam-finder/actions/runs/42328549429) (`push`). `mergeable` is `MERGEABLE` and `mergeStateStatus` is `CLEAN`. This does not claim the independent gate is cleared. |
+
+## 2026-11-11 week-10 capture and Wednesday schedule
+
+Date: 2026-11-11. Scope: the failed manual capture in Actions run [43049995926](https://github.com/tjonesy10/seam-finder/actions/runs/43049995926) and the missing Wednesday schedule run. No live DraftKings request, no production database read, no workflow dispatch, and no change to `OBJECT_LIMIT` or the cron.
+
+### Symptom 1: `storage_guard_object`
+
+`storage_guard_object` is the per-object cap in `loader/salary_private.py`: `OBJECT_LIMIT = 5 * 1024 * 1024` and `GuardBlock.OBJECT`. ADR 0005 and the data dictionary set that cap at 5 MiB per stored object, including a rejected body. An oversize HTTP body stops at limit+1, keeps a truncated prefix diagnostic, and does not publish a snapshot.
+
+In `loader/dk_lobby.py`, `_read_capped` returns truncated once the decoded body passes 5 MiB. `_accepted` then raises `storage_guard_object` unless the body is already an HTML challenge (`http_challenge` is checked first). That happens before `parse_lobby`, before the salary CSV, and before any `dk_lobby_salaries` row. `store_artifact` repeats the same length check for a body that arrives whole. Sunday selection's first GET is `https://www.draftkings.com/lobby/getcontests?sport=NFL`. `parse_lobby` reads only `DraftGroups`.
+
+Run 43049995926 was a `workflow_dispatch` of `main` at `1f6047647bbe896794a113c51778ae2b0cd1b3fd`. Checkout, Install, the gate (`DK_LOBBY_CAPTURE_ENABLED` exactly `true`), and Migrate succeeded. The Capture step's environment was `EVENT_NAME=workflow_dispatch`, `SEASON=2026`, `WEEK=10`, `SELECTION=sunday-afternoon`, empty `DRAFT_GROUP_ID`. The step then printed:
+
+```text
+storage_guard_object
+dk_lobby_salaries season=2026 week=10 status=failed reason=storage_guard_object rows=0
+```
+
+and exited 1. Those two lines are `_report`: the status line on stdout, then the reason on stderr. The process window in the log is about 15:36:30.921Z to 15:36:34.022Z. A schedule-evidence failure would have been `schedule_evidence_missing` with no DK call. This reason means one allowlisted response decoded to more than 5,242,880 bytes and was not classified as a challenge.
+
+The live payload shape is **UNKNOWN**. The public log has no URL, content-type, content-length, or byte count. The private observation would have `requests`, `prefix_bytes`, `prefix_sha256`, and `truncated`, and it was not read, because that row is in the production database. No live lobby fetch was made. What is known without that body: the reviewed experiment CSV is 59,802 bytes, so it is not this failure; an HTML challenge would have been `http_challenge`; salary-row validation never ran (`rows=0`). Which of the four allowlisted URLs was the large one, and whether a `Contests` array pushed `getcontests` over the cap, is not in the log.
+
+The cap is the specified fail-closed behavior, not a parser bug that can be fixed from this evidence. Raising `OBJECT_LIMIT`, or reading past 5 MiB to store only `DraftGroups`, would change ADR 0005. That is a product question, recorded as BLOCKED on `HANDOFF.md`. No loader behavior changed.
+
+### Symptom 2: no scheduled run on 2026-11-11
+
+GitHub Actions does honour `timezone` under `on.schedule`. The workflow syntax page says schedules default to UTC and that an IANA `timezone` makes the cron local, including the `America/New_York` example and the spring-forward note. The same text is on the schedule-event page. The changelog entry is [GitHub Actions: Late March 2026 updates](https://github.blog/changelog/2026-03-19-github-actions-late-march-2026-updates) (2026-03-19), "Timezone support for scheduled workflows."
+
+The other zero-run checks:
+
+| Check | Result |
+|---|---|
+| Workflow file on the default branch | Yes. `main` is the default branch. `.github/workflows/dk-lobby-capture.yml` has been on `main` since `6c54c870` (2026-11-06 22:42:57Z). The last edit of that file on `main` is `0942b2ab` (2026-11-07 18:41:14Z). |
+| Cron valid | Yes. `0 10 * * 3` is five-field POSIX. Day 3 is Wednesday. |
+| Disabled for inactivity | No. The repository is public and was created 2026-10-21. Commits landed through 2026-11-11 09:41 ET. Workflow id 410530664 is `active`. `refresh.yml` (`0 11 * * *`, no timezone) has schedule runs on 2026-11-06 through 2026-11-10. |
+| Added after today's 10:00 ET | No. The file was on `main` five days earlier. 2026-11-11 is the first Wednesday after that. 2026-11-01 was the DST fallback, so 10:00 America/New_York on 2026-11-11 is 15:00 UTC. |
+
+At 15:36 UTC the lobby workflow had one run, the manual dispatch, and zero `schedule` events. That is 36 minutes after 15:00 UTC. GitHub's schedule-event note says runs can be delayed or dropped, and that the start of the hour is a high-load time. This repo's minute-0 refresh cron shows the same delay: its 11:00 UTC runs were created at 17:43Z, 16:40Z, 16:48Z, 21:10Z, and 18:21Z on Nov 6–10, and the Nov 11 11:00 UTC refresh had also not appeared by 15:36Z. A missing lobby event at T+36 minutes matches that delay. It does not show that `timezone` was ignored. If the key were ignored, the same cron would be 10:00 UTC, and this repo's delayed schedule runs would still not be expected at exactly 10:00 UTC.
+
+The approved workflow text stays one cron, `0 10 * * 3`, with `timezone: 'America/New_York'`. Dual 14:00 and 15:00 UTC crons were rejected. AT4 forbids a fixed-UTC cron, and a second cron can double-capture unless a later guard skips one of them. The in-job guard was not added because the timezone key is the mechanism GitHub documents.
+
+### Regression tests
+
+`tests/test_dk_lobby.py::test_oversized_discovery_document_fails_closed` builds a synthetic `getcontests` JSON object. It is not a recorded salary payload. A `DraftGroups` array that `parse_lobby` accepts sits under the cap. The same group with a padded `Contests` string of `OBJECT_LIMIT + 1` bytes returns exit 1, stderr `storage_guard_object`, the same public status line as the run, `truncated=true`, `retained_artifact=false`, `prefix_bytes` equal to the cap, one request to `/lobby/getcontests`, and zero lobby artifacts, snapshots, and salary rows. A following under-cap capture of the same group still publishes 4 synthetic salary rows.
+
+`tests/test_dk_lobby.py::test_nov11_wednesday_slot_stays_on_the_timezone_cron` asserts the single approved cron and timezone, asserts 2026-11-11 10:00 America/New_York is 15:00 UTC, and asserts `0 14 * * 3` and `0 15 * * 3` are absent.
+
+### Commands
+
+Local Postgres 16. The URL was a local role on `127.0.0.1`, not a repository secret and not production. The two skips are `RUN_NETWORK_TESTS` gates in `tests/test_load.py` and `tests/test_dk_classic.py`. They were not run. They do not call DraftKings.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+294 passed, 2 skipped, 1 warning in 40.18s
+```
+
+The warning is Starlette's deprecation of the httpx test client. It is not a failure.
+
+### Still unverified until Cosmo reruns the capture
+
+| Item | Result | Reason |
+|---|---|---|
+| Live discovery body shape, URL, and length past 5 MiB | UNKNOWN | Public log has reason codes only. Production observation metadata was not read. No live GET. |
+| Whether the 2026-11-11 10:00 ET schedule event was delayed or dropped | UNKNOWN | Not dispatched. GitHub may still create a late `schedule` run, or it may have dropped the minute-0 slot. |
+| A successful week-10 salary snapshot | UNKNOWN | The object cap was not raised. A rerun hits the same guard if the same body is still over 5 MiB. |

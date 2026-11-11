@@ -22,6 +22,7 @@ from loader.dk_lobby import (
     next_wednesday_10_et,
     parse_csv_bytes,
     parse_draftables,
+    parse_lobby,
     reconcile_draftables,
     reconcile_open_attempts,
 )
@@ -498,6 +499,22 @@ def _json_response(payload, status=200):
     return status, {"content-type": "application/json"}, body
 
 
+def _contests_padded_lobby(group: dict) -> bytes:
+    """Synthetic discovery document. Not a recorded DraftKings body.
+
+    The live getcontests key order, Contests schema, and byte length are UNKNOWN.
+    This keeps a selectable DraftGroups array and pads Contests past the 5 MiB
+    object cap, which is the capture path that returns storage_guard_object
+    with zero salary rows.
+    """
+    groups = json.dumps([group], separators=(",", ":")).encode()
+    prefix = b'{"Contests":"'
+    suffix = b'","DraftGroups":' + groups + b"}"
+    pad = OBJECT_LIMIT + 1 - len(prefix) - len(suffix)
+    assert pad > 0
+    return prefix + (b"s" * pad) + suffix
+
+
 def _csv_response(body, status=200):
     return status, {"content-type": "text/csv"}, body
 
@@ -742,6 +759,24 @@ def test_at4_schedule_text_and_disabled_gate():
     script = text_value.split("run: |\n", 1)[1]
     checked = subprocess.run(["bash", "-n"], input=script, text=True, check=False)
     assert checked.returncode == 0
+
+
+def test_nov11_wednesday_slot_stays_on_the_timezone_cron():
+    """2026-11-11 10:00 America/New_York is 15:00 UTC. Do not add a fixed-UTC cron.
+
+    GitHub honours ``timezone`` on ``on.schedule`` (changelog 2026-03-19 and the
+    workflow-syntax page). The approved text stays one Wednesday 10:00 ET cron.
+    """
+    text_value = WORKFLOW.read_text()
+    assert text_value.count("cron:") == 1
+    assert "cron: '0 10 * * 3'" in text_value
+    assert "timezone: 'America/New_York'" in text_value
+    assert "0 14 * * 3" not in text_value
+    assert "0 15 * * 3" not in text_value
+    slot = datetime(2026, 11, 11, 10, 0, tzinfo=ET)
+    assert slot.weekday() == 2
+    assert slot.astimezone(UTC) == datetime(2026, 11, 11, 15, 0, tzinfo=UTC)
+    assert next_wednesday_10_et(slot - timedelta(minutes=1)) == slot
 
 
 def test_at5_off_season_stale_and_absent_group(engine):
@@ -1123,6 +1158,67 @@ def test_at11_grants_hide_private_and_f004(engine, monkeypatch):
             conn.execute(text(f"DROP OWNED BY {web}"))
             conn.execute(text(f"DROP ROLE IF EXISTS {optimizer}"))
             conn.execute(text(f"DROP ROLE IF EXISTS {web}"))
+
+
+def test_oversized_discovery_document_fails_closed(engine, capsys):
+    """A DraftGroups lobby under the cap parses. The same group past 5 MiB does not.
+
+    Run 43049995926 printed storage_guard_object and rows=0. The public log does
+    not include the URL or the body. This fixture is synthetic.
+    """
+    group = _group(90001, _sunday_games())
+    small = json.dumps(
+        {"Contests": "synthetic", "DraftGroups": [group]},
+        separators=(",", ":"),
+    ).encode()
+    assert len(small) < OBJECT_LIMIT
+    assert parse_lobby(small)[0].draft_group_id == 90001
+    huge = _contests_padded_lobby(group)
+    assert len(huge) == OBJECT_LIMIT + 1
+    assert b'"DraftGroupId":90001' in huge
+
+    _seed(engine)
+
+    def oversized(request):
+        assert request.url.path == "/lobby/getcontests"
+        return 200, {"content-type": "application/json"}, huge
+
+    transport = ScriptTransport(oversized)
+    assert _run(engine, transport, clock=MutableClock(NOW)) == 1
+    assert len(transport.calls) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "storage_guard_object"
+    assert (
+        "dk_lobby_salaries season=2026 week=10 status=failed "
+        "reason=storage_guard_object rows=0"
+    ) in captured.out
+    obs = _rows(
+        engine,
+        """
+        SELECT reason_code, snapshot_id, metadata
+        FROM salary_private.salary_observations
+        """,
+    )[0]
+    assert obs["reason_code"] == "storage_guard_object"
+    assert obs["snapshot_id"] is None
+    assert obs["metadata"]["truncated"] is True
+    assert obs["metadata"]["retained_artifact"] is False
+    assert obs["metadata"]["prefix_bytes"] == OBJECT_LIMIT
+    assert obs["metadata"]["requests"] == [
+        {"host": "www.draftkings.com", "path": "/lobby/getcontests", "status": 200}
+    ]
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 0
+    assert (
+        _scalar(
+            engine,
+            "SELECT count(*) FROM salary_private.salary_artifacts WHERE source = 'dk_lobby'",
+        )
+        == 0
+    )
+
+    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 4
 
 
 def test_at12_storage_guards_and_concurrent_lock(engine):
