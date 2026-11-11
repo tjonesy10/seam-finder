@@ -14,7 +14,9 @@ Option (b). Keep `test` on `ubuntu-latest` and `visual` on `ubuntu-24.04`.
 
 The official `mcr.microsoft.com/playwright:v1.65.0-noble` image was not used. F010/F011 baselines were captured on the GitHub `ubuntu-24.04` runner (ADR 0010 and the F010 spec). That image is Ubuntu 24.04, but it is not the runner image and ships a different preinstalled font stack. A container that changes font rendering would force a baseline refresh. This change does not regenerate or edit any baseline, and it does not loosen `maxDiffPixels`, `threshold`, or axe rules.
 
-`frontend/package-lock.json` pins `@playwright/test` at 1.65.0. Each job caches `~/.cache/ms-playwright` with key `Linux-ms-playwright-<job>-<that version>`. `.github/scripts/install-playwright-chromium.sh` writes apt `Acquire::Retries "5"` plus 30s HTTP and HTTPS timeouts, then retries `npx playwright install chromium` and `npx playwright install-deps chromium` up to 4 times with backoff (20s, 40s, 80s, capped at 120s). OS packages are installed on every run because they are not in the browser cache. After the last failure the step exits with the installer's status (apt's 100 in the incident).
+`frontend/package-lock.json` pins `@playwright/test` at 1.65.0. Each job caches `~/.cache/ms-playwright` with key `Linux-ms-playwright-<job>-<that version>`. `.github/scripts/install-playwright-chromium.sh` writes apt `Acquire::Retries "5"` plus 30s HTTP and HTTPS timeouts, then retries browser install and OS-deps install up to 4 times with backoff (20s, 40s, 80s, capped at 120s). OS packages are installed on every run because they are not in the browser cache.
+
+Four apt attempts were not enough on their own. Each dead attempt spends about ten minutes failing over `azure.archive.ubuntu.com`, `archive.ubuntu.com`, and `security.ubuntu.com`. On head `bf27d4e` that covered 15:14Z–15:56Z and DNS was still down, so both jobs exited after attempt 4. The helper now probes those three names with a 5s timeout. When all three resolve, the runner mirror list is left as GitHub wrote it. When any of them do not resolve, apt is pointed only at the names that do. When none do, it is pointed at the fallbacks that resolve: `mirrors.kernel.org`, `mirrors.edge.kernel.org`, `mirror.csclub.uwaterloo.ca`, and `mirrors.ocf.berkeley.edu`. Those URLs publish the same Ubuntu archive pool (the noble and resolute `fonts-ipafont-gothic` debs from the failed log return HTTP 200 there). If no name resolves, apt is skipped for that attempt and the backoff runs again. A healthy runner never changes mirrors, so the visual job still installs the same packages from the same archives.
 
 ### Token permissions
 
@@ -27,7 +29,7 @@ Verified locally against the `retry` function in `.github/scripts/install-playwr
 - A command that exits 100 once, then 0: the log shows `attempt 1/4 failed (exit 100); retrying in 1s` and `succeeded on attempt 2/4`. Exit 0.
 - A command that always exits 100, with `set -e` and 2 attempts: the log shows the retry, then `failed after 2 attempts (exit 100)`. The shell exits 100.
 
-The in-CI backoff branch is UNKNOWN until a GitHub log shows a failed attempt followed by a later success. A green run that prints `succeeded on attempt 1/4` only shows that the wrapper ran and the mirror was healthy on the first try.
+In CI, the backoff path ran on [push run 43046117041](https://github.com/tjonesy10/seam-finder/actions/runs/43046117041) (head `bf27d4ed0a7fa9ae9e334ea730519ece612434fa`). In both `test` and `visual`, `npx playwright install chromium` logged `succeeded on attempt 1/4`. `npx playwright install-deps chromium` then logged `attempt 1/4 failed (exit 1); retrying in 20s`, `attempt 2/4 failed (exit 1); retrying in 40s`, and `attempt 3/4 failed (exit 1); retrying in 80s`, and the step ended with `failed after 4 attempts (exit 1)`. Each attempt was apt exit 100, `Temporary failure resolving` the three Ubuntu archive names while fetching the same font packages as run 43040881501. [Pull request run 43046141161](https://github.com/tjonesy10/seam-finder/actions/runs/43046141161) on that head also failed both jobs. That is a real failed-then-retry path. It is not a later success: the outage outlasted the four attempts (about 15:14Z–15:56Z).
 
 ## Baselines unchanged
 
@@ -41,6 +43,12 @@ No path under `frontend/e2e/`, and no `*.png`, is in the diff. `frontend/playwri
 
 ## CI evidence
 
-Head checks for the commit that adds this report are the acceptance runs. Both the `push` and `pull_request` workflows run `ci.yml`. This section is updated with those run URLs and job conclusions when they finish. Until then, the only completed CI evidence is the failed main run linked above.
+| Run | Event | Head | `test` | `visual` |
+|---|---|---|---|---|
+| [43040881501](https://github.com/tjonesy10/seam-finder/actions/runs/43040881501) | push to main, attempts 1 and 2 | `1f6047647bbe896794a113c51778ae2b0cd1b3fd` | failure (apt exit 100, no tests) | failure (apt exit 100, no comparisons) |
+| [43046117041](https://github.com/tjonesy10/seam-finder/actions/runs/43046117041) | push | `bf27d4ed0a7fa9ae9e334ea730519ece612434fa` | failure after 4 dep attempts | failure after 4 dep attempts |
+| [43046141161](https://github.com/tjonesy10/seam-finder/actions/runs/43046141161) | pull_request | `bf27d4ed0a7fa9ae9e334ea730519ece612434fa` | failure | failure |
+| [43049385207](https://github.com/tjonesy10/seam-finder/actions/runs/43049385207) | push | `264f342faa5fb57b37c484fd8aaadce2d08f3a9c` | failure | failure |
+| [43049403544](https://github.com/tjonesy10/seam-finder/actions/runs/43049403544) | pull_request | `264f342faa5fb57b37c484fd8aaadce2d08f3a9c` | failure | failure |
 
-Previous head `bf27d4ed0a7fa9ae9e334ea730519ece612434fa` started [push run 43046117041](https://github.com/tjonesy10/seam-finder/actions/runs/43046117041) and [pull_request run 43046141161](https://github.com/tjonesy10/seam-finder/actions/runs/43046141161). When this report was written, both were still inside `Install Playwright` (`test` and `visual`), so they are not a pass or fail result here. That head still granted `actions: write`; this commit removes it.
+`264f342` removed `actions: write` and added the first copy of this report. It did not change the install script. Both of its workflows were still on the public Actions page as running at 16:15:29Z and failed at 16:16:45Z, about 43 minutes after Install Playwright started (15:33Z). That matches the four-attempt apt exhaustion on `bf27d4e` (15:13Z–15:56Z). The step log for `264f342` was not downloaded: the Actions API rate limit was exhausted until 16:43:56Z. The mirror fallback in this commit is the change aimed at that repeated DNS failure. Passing `test` and `visual` runs for this commit are added here when they finish.

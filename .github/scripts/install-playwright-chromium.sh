@@ -3,9 +3,10 @@
 #
 # GitHub-hosted runners stay in place. The visual job is pinned to
 # ubuntu-24.04 so F010/F011 screenshot baselines keep the same font
-# rasterization. This script only makes the existing install survive a
-# transient Ubuntu mirror or DNS outage: apt retries inside one attempt,
-# then the install commands retry with backoff.
+# rasterization. Apt retries inside one attempt, then the install
+# commands retry with backoff. When the runner's Ubuntu archive names
+# do not resolve, apt is pointed at another mirror of the same archive
+# so the retry does not spend ten minutes on dead DNS.
 set -euo pipefail
 
 MAX_ATTEMPTS="${PLAYWRIGHT_INSTALL_ATTEMPTS:-4}"
@@ -37,6 +38,92 @@ retry() {
   done
 }
 
+probe_host() {
+  timeout 5 getent hosts "$1" >/dev/null 2>&1
+}
+
+archive_host() {
+  local url="$1"
+  url="${url#http://}"
+  url="${url#https://}"
+  url="${url%%/*}"
+  printf '%s\n' "$url"
+}
+
+write_mirrors() {
+  local conf="/etc/apt/apt-mirrors.txt"
+  local body=""
+  local priority=1
+  local url
+  for url in "$@"; do
+    body+="${url}"$'\t'"priority:${priority}"$'\n'
+    priority=$((priority + 1))
+  done
+  if [[ "${EUID}" -eq 0 ]]; then
+    printf '%s' "$body" >"$conf"
+  else
+    printf '%s' "$body" | sudo tee "$conf" >/dev/null
+  fi
+  echo "wrote ${conf}:"
+  cat "$conf"
+}
+
+# Return 0 when at least one mirror resolves. Leave the runner's mirror
+# list untouched when azure, archive, and security all resolve.
+select_ubuntu_mirrors() {
+  local -a defaults=(
+    "http://azure.archive.ubuntu.com/ubuntu/"
+    "https://archive.ubuntu.com/ubuntu/"
+    "https://security.ubuntu.com/ubuntu/"
+  )
+  local -a fallbacks=(
+    "https://mirrors.kernel.org/ubuntu/"
+    "https://mirrors.edge.kernel.org/ubuntu/"
+    "https://mirror.csclub.uwaterloo.ca/ubuntu/"
+    "https://mirrors.ocf.berkeley.edu/ubuntu/"
+  )
+  local -a chosen=()
+  local url host
+  for url in "${defaults[@]}"; do
+    host="$(archive_host "$url")"
+    if probe_host "$host"; then
+      chosen+=("$url")
+      echo "mirror dns ok: ${host}"
+    else
+      echo "mirror dns miss: ${host}"
+    fi
+  done
+  if [[ "${#chosen[@]}" -eq 0 ]]; then
+    echo "runner Ubuntu archive names did not resolve; probing fallbacks"
+    for url in "${fallbacks[@]}"; do
+      host="$(archive_host "$url")"
+      if probe_host "$host"; then
+        chosen+=("$url")
+        echo "fallback dns ok: ${host}"
+      else
+        echo "fallback dns miss: ${host}"
+      fi
+    done
+  fi
+  if [[ "${#chosen[@]}" -eq 0 ]]; then
+    echo "no Ubuntu mirror DNS yet"
+    return 1
+  fi
+  if [[ "${#chosen[@]}" -eq ${#defaults[@]} ]]; then
+    echo "keeping runner apt mirror list"
+    return 0
+  fi
+  write_mirrors "${chosen[@]}"
+}
+
+install_chromium_deps() {
+  if ! select_ubuntu_mirrors; then
+    echo "skipping apt until a Ubuntu mirror resolves"
+    return 100
+  fi
+  npx playwright install-deps chromium
+}
+
 configure_apt_retries() {
   local conf="/etc/apt/apt.conf.d/80-playwright-retries"
   local body
@@ -63,7 +150,7 @@ main() {
   cd "${repo_root}/frontend"
   configure_apt_retries
   retry "$MAX_ATTEMPTS" "$INITIAL_DELAY" npx playwright install chromium
-  retry "$MAX_ATTEMPTS" "$INITIAL_DELAY" npx playwright install-deps chromium
+  retry "$MAX_ATTEMPTS" "$INITIAL_DELAY" install_chromium_deps
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
