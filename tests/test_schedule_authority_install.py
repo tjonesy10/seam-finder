@@ -66,7 +66,7 @@ def test_capture_binds_authority_pin_and_stays_default_off():
         lowered = line.lower()
         assert "database_url" not in lowered or "secrets.database_url" in lowered
         assert "dk_schedule_authority_sha256" not in lowered or "vars.dk_schedule_authority_sha256" in lowered
-    assert workflow.index("capture_schedule_enabled") < workflow.index("python -m loader.migrate")
+    assert workflow.index("capture_schedule_enabled") < workflow.index("python -m loader.pipeline")
 
 
 def test_f004_workflow_is_unchanged_from_main():

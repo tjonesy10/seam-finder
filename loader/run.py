@@ -15,6 +15,12 @@ import polars as pl
 from sqlalchemy import create_engine, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from loader.coordination import (
+    COORDINATION_WAIT_S,
+    CoordinationError,
+    coordination,
+    ensure_pipeline_ownership,
+)
 from loader.source import DirSource, HttpSource, LoadError
 from loader.tables import (
     GAMES_FIELDS,
@@ -197,6 +203,33 @@ def convert_rows(frame: pl.DataFrame, mapped: tuple[Field, ...]) -> list[dict]:
 
 def _read_frame(payload: bytes) -> pl.DataFrame:
     return pl.read_parquet(payload)
+
+
+def _retrieved_at(source, dataset: str):
+    method = getattr(source, "retrieved_at", None)
+    if method is None:
+        return None
+    try:
+        return method(dataset, None)
+    except TypeError:
+        return method(dataset)
+
+
+def _succeeded_games(engine, run_group) -> list[int]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id FROM load_runs
+                WHERE run_group = :run_group
+                  AND dataset = 'games'
+                  AND status = 'succeeded'
+                ORDER BY id
+                """
+            ),
+            {"run_group": run_group},
+        ).scalars().all()
+    return [int(row) for row in rows]
 
 
 def _version(source, dataset: str) -> str | None:
@@ -518,6 +551,7 @@ def load_games(engine, source, seasons: list[int], run_group, trigger: str, secr
     source_url = source.url("games", None)
     try:
         payload = source.fetch_parquet("games", None)
+        retrieved_at = _retrieved_at(source, "games")
         version = _version(source, "games")
         frame = _read_frame(payload)
         ensure_columns(frame, GAMES_FIELDS)
@@ -572,7 +606,7 @@ def load_games(engine, source, seasons: list[int], run_group, trigger: str, secr
                     media_type="application/vnd.apache.parquet",
                     source_url=source_url,
                     source_version=version,
-                    retrieved_at=loaded_at,
+                    retrieved_at=retrieved_at,
                 )
             return {
                 "source_version": version,
@@ -681,6 +715,9 @@ def run_load(
     trigger: str = "local",
     data_dir: Path | None = None,
     source=None,
+    checkpoint=None,
+    out: dict | None = None,
+    wait_seconds: float = COORDINATION_WAIT_S,
 ) -> bool:
     if trigger not in TRIGGERS:
         raise LoadError(f"invalid trigger: {trigger}")
@@ -693,29 +730,52 @@ def run_load(
     engine = create_engine(normalize_database_url(database_url), pool_pre_ping=True)
     run_group = uuid4()
     ok = True
+
+    def _checkpoint() -> None:
+        ensure_pipeline_ownership()
+        if checkpoint is not None:
+            checkpoint()
+
     try:
-        if "teams" in selected and not load_teams(engine, source, run_group, trigger, database_url):
-            ok = False
-        if "players" in selected and not load_players(
-            engine, source, run_group, trigger, database_url
-        ):
-            ok = False
-        failed_games: set[int] = set()
-        if "games" in selected:
-            failed_games = load_games(
-                engine, source, seasons, run_group, trigger, database_url
-            )
-            if failed_games:
-                ok = False
-        if "player_week_stats" in selected:
-            for season in seasons:
-                if season in failed_games:
-                    _skip_stats(engine, source, season, run_group, trigger, database_url)
+        with coordination(engine, wait_seconds=wait_seconds):
+            if out is not None:
+                out["run_group"] = str(run_group)
+            try:
+                _checkpoint()
+                if "teams" in selected and not load_teams(
+                    engine, source, run_group, trigger, database_url
+                ):
                     ok = False
-                    continue
-                if not load_stats(engine, source, season, run_group, trigger, database_url):
+                _checkpoint()
+                if "players" in selected and not load_players(
+                    engine, source, run_group, trigger, database_url
+                ):
                     ok = False
-        return ok
+                _checkpoint()
+                failed_games: set[int] = set()
+                if "games" in selected:
+                    failed_games = load_games(
+                        engine, source, seasons, run_group, trigger, database_url
+                    )
+                    if failed_games:
+                        ok = False
+                if "player_week_stats" in selected:
+                    for season in seasons:
+                        _checkpoint()
+                        if season in failed_games:
+                            _skip_stats(engine, source, season, run_group, trigger, database_url)
+                            ok = False
+                            continue
+                        if not load_stats(
+                            engine, source, season, run_group, trigger, database_url
+                        ):
+                            ok = False
+                _checkpoint()
+            finally:
+                if out is not None:
+                    out["games_load_run_ids"] = _succeeded_games(engine, run_group)
+                    out["ok"] = ok
+            return ok
     finally:
         engine.dispose()
         if owns_source and hasattr(source, "close"):
@@ -745,6 +805,9 @@ def main(argv: list[str] | None = None) -> int:
             datasets=datasets,
             trigger=args.trigger,
         )
+    except CoordinationError as exc:
+        print(exc.reason, file=sys.stderr)
+        return 1
     except Exception as exc:  # noqa: BLE001 - the CLI exits non-zero on any unexpected failure
         print(redact(str(exc), database_url), file=sys.stderr)
         return 1

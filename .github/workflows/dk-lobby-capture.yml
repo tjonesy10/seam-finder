@@ -3,6 +3,18 @@ name: dk lobby capture
 # Approved schedule text. Capture stays off until a later rollout sets the
 # repository variable DK_LOBBY_CAPTURE_ENABLED to the exact value true.
 # Merging this file does not run a live capture.
+#
+# Manual dispatch authorization checklist (F014 R8). The historical 403 is a
+# non-goal and is not a build blocker:
+# - workflow_dispatch stays the manual entry. This file does not call the
+#   Actions dispatch API and does not poll another run.
+# - The runtime GITHUB_TOKEN stays contents:read. No actions:write is added.
+# - An external fine-grained token or GitHub App needs repository access and
+#   Actions: write. Classic PAT and OAuth repo-scope requirements, and any
+#   repository policy, must be checked separately.
+# - A repository-authorized user or browser is the manual fallback only after
+#   that authorization. Do not collect credentials or widen grants to diagnose
+#   a 403.
 
 on:
   schedule:
@@ -60,17 +72,13 @@ jobs:
           DK_LOBBY_CAPTURE_ENABLED: ${{ vars.DK_LOBBY_CAPTURE_ENABLED }}
         run: python -c "import os, sys; from loader.dk_lobby import capture_schedule_enabled; sys.exit(0 if capture_schedule_enabled(os.environ.get('DK_LOBBY_CAPTURE_ENABLED')) else 1)"
 
-      - name: Migrate
+      - name: Capture
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           READONLY_ROLE: ${{ vars.READONLY_ROLE }}
           SALARY_PRIVATE_MIGRATION: ${{ vars.SALARY_PRIVATE_MIGRATION }}
-        run: python -m loader.migrate
-
-      - name: Capture
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DK_SCHEDULE_AUTHORITY_SHA256: ${{ vars.DK_SCHEDULE_AUTHORITY_SHA256 }}
+          DK_LOBBY_CAPTURE_ENABLED: ${{ vars.DK_LOBBY_CAPTURE_ENABLED }}
           EVENT_NAME: ${{ github.event_name }}
           SEASON: ${{ github.event_name == 'workflow_dispatch' && inputs.season || '' }}
           WEEK: ${{ github.event_name == 'workflow_dispatch' && inputs.week || '' }}
@@ -79,32 +87,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            case "${SEASON}" in
-              ''|*[!0-9]*) echo "invalid_season" >&2; exit 1 ;;
-            esac
-            case "${WEEK}" in
-              ''|*[!0-9]*) echo "invalid_week" >&2; exit 1 ;;
-            esac
-            if [ -n "${DRAFT_GROUP_ID}" ] && [ -n "${SELECTION}" ]; then
-              echo "invalid_selector" >&2
-              exit 1
-            fi
-            if [ -z "${DRAFT_GROUP_ID}" ] && [ "${SELECTION}" != "sunday-afternoon" ]; then
-              echo "invalid_selector" >&2
-              exit 1
-            fi
-            if [ -n "${DRAFT_GROUP_ID}" ]; then
-              case "${DRAFT_GROUP_ID}" in
-                ''|*[!0-9]*) echo "invalid_draft_group" >&2; exit 1 ;;
-              esac
-              python -m loader.dk_lobby \
-                --season "${SEASON}" --week "${WEEK}" \
-                --draft-group-id "${DRAFT_GROUP_ID}" --trigger manual
-            else
-              python -m loader.dk_lobby \
-                --season "${SEASON}" --week "${WEEK}" \
-                --selection sunday-afternoon --trigger manual
-            fi
+            python -m loader.pipeline \
+              --trigger manual \
+              --season "${SEASON}" \
+              --week "${WEEK}" \
+              --draft-group-id "${DRAFT_GROUP_ID}" \
+              --selection "${SELECTION}"
           else
-            python -m loader.dk_lobby --selection sunday-afternoon --trigger schedule
+            python -m loader.pipeline --trigger schedule --selection sunday-afternoon
           fi

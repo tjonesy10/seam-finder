@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -48,8 +49,24 @@ def release_url(dataset: str, season: int | None) -> str:
     return f"{BASE}/{RELEASE[dataset]}/{file_name(dataset, season)}"
 
 
+def _parse_retrieved(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 class DirSource:
-    """Read a mirror laid out like the GitHub release assets."""
+    """Read a mirror laid out like the GitHub release assets.
+
+    ``retrieval.json`` is the original upstream retrieval instant. File mtime
+    is not retrieval evidence and does not renew a receipt.
+    """
 
     def __init__(self, root: Path):
         self.root = Path(root)
@@ -62,6 +79,19 @@ class DirSource:
         if not path.is_file():
             raise SourceFileNotFound(self.url(dataset, season))
         return path.read_bytes()
+
+    def retrieved_at(self, dataset: str, season: int | None = None) -> datetime | None:
+        del season
+        path = self.root / RELEASE[dataset] / "retrieval.json"
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return _parse_retrieved(payload.get("retrieved_at"))
 
     def fetch_version(self, dataset: str) -> str | None:
         path = self.root / RELEASE[dataset] / "timestamp.json"
@@ -84,6 +114,7 @@ class HttpSource:
         )
         self.sleeper = sleeper
         self.retries = retries
+        self._retrieved: dict[tuple[str, int | None], datetime] = {}
 
     def close(self) -> None:
         if self._owns_client:
@@ -93,7 +124,12 @@ class HttpSource:
         return release_url(dataset, season)
 
     def fetch_parquet(self, dataset: str, season: int | None) -> bytes:
-        return self._get(self.url(dataset, season))
+        body = self._get(self.url(dataset, season))
+        self._retrieved[(dataset, season)] = datetime.now(UTC)
+        return body
+
+    def retrieved_at(self, dataset: str, season: int | None = None) -> datetime | None:
+        return self._retrieved.get((dataset, season))
 
     def fetch_version(self, dataset: str) -> str | None:
         url = f"{BASE}/{RELEASE[dataset]}/timestamp.json"
