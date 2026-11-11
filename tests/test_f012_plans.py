@@ -350,6 +350,17 @@ def test_at12_synthetic_plans(client, engine):
                     conn.execute(text(f"DROP INDEX public.{name}"))
 
 
+def _swap_database(url: str, name: str) -> str:
+    head, sep, database = url.rpartition("/")
+    if not sep or not database:
+        raise RuntimeError("DATABASE_URL has no database name")
+    query = ""
+    if "?" in database:
+        _database, query = database.split("?", 1)
+        query = "?" + query
+    return f"{head}/{name}{query}"
+
+
 def test_index_revision_roundtrip_when_present(database_url):
     path = Path("migrations/versions/0010_stats_public_query_indexes.py")
     if not path.exists():
@@ -357,32 +368,61 @@ def test_index_revision_roundtrip_when_present(database_url):
     source = path.read_text()
     assert PPR_ORDER in source
     assert SCOPE_PPR in source
-    url = "postgresql://seam@127.0.0.1:5432/seam_migrate"
-    previous = database_url
-    cfg = Config("alembic.ini")
+
     import os
 
-    os.environ["DATABASE_URL"] = url
+    from sqlalchemy import create_engine
+
+    from loader.url import normalize_database_url
+
+    name = "seam_f012_index_roundtrip"
+    target = _swap_database(database_url, name)
+    previous = os.environ.get("DATABASE_URL")
+    admin = create_engine(normalize_database_url(database_url), isolation_level="AUTOCOMMIT")
+    cfg = Config("alembic.ini")
+
+    def disconnect():
+        with admin.connect() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :name AND pid <> pg_backend_pid()"
+                ),
+                {"name": name},
+            )
+
+    os.environ["DATABASE_URL"] = target
     try:
+        with admin.connect() as conn:
+            disconnect()
+            conn.execute(text(f"DROP DATABASE IF EXISTS {name}"))
+            conn.execute(text(f"CREATE DATABASE {name}"))
         command.upgrade(cfg, "head")
         command.downgrade(cfg, "0009")
-        from sqlalchemy import create_engine
-
-        from loader.url import normalize_database_url
-
-        check = create_engine(normalize_database_url(url))
+        check = create_engine(normalize_database_url(target))
         with check.connect() as conn:
             names = set(_existing(conn))
+            version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
             assert "ix_stats_public_ppr_order" not in names
             assert "ix_stats_public_scope_ppr" not in names
+            assert version == "0009"
         check.dispose()
         command.upgrade(cfg, "head")
-        check = create_engine(normalize_database_url(url))
+        check = create_engine(normalize_database_url(target))
         with check.connect() as conn:
             names = set(_existing(conn))
+            version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
             assert "ix_stats_public_ppr_order" in names
             assert "ix_stats_public_scope_ppr" in names
+            assert version == "0010"
         check.dispose()
         command.downgrade(cfg, "base")
     finally:
-        os.environ["DATABASE_URL"] = previous
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+        disconnect()
+        with admin.connect() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS {name}"))
+        admin.dispose()
