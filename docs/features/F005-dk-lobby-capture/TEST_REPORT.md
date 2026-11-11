@@ -430,3 +430,34 @@ All checks passed!
 $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
 311 passed, 2 skipped, 1 warning in 45.16s
 ```
+
+## 2026-11-11 null Games on getcontests
+
+Run [43072391173](https://github.com/tjonesy10/seam-finder/actions/runs/43072391173) on `c312f83` passed Gate and Migrate. Capture printed only:
+
+```text
+metadata_incomplete
+dk_lobby_salaries season=2026 week=10 status=failed reason=metadata_incomplete rows=0
+```
+
+One public GET of `https://www.draftkings.com/lobby/getcontests?sport=NFL` returned HTTP 200, `application/json`, 5,197,829 bytes. That body is not the stored production artifact. `parse_lobby` raised in `_parse_group` before `_select_sunday`: `Games` was JSON null on all 33 draft groups, including the 5 with contest type 21. `GameSets` had 22 objects and 75 competitions. Every `Description` matched `AWAY @ HOME` with 2–3 letter tokens, and every `StartDate` parsed. Competitions had team names, not abbreviations.
+
+Null `Games` is now treated as omitted. A `GameSetKey` reads that set's `Description` and `StartDate`. A non-list `Games` value still fails with `branch=parse field=Games` and the draft group id. Two Classic groups that still have no games and no game set still fail before a detail fetch (`branch=select field=Games` and both ids). The client allows 4 logical requests, so those groups are not all hydrated. Contest type 21, the Classic rules check, and exact game-set equality are unchanged. Two identical Sunday sets still fail `ambiguous_slate`. A set with one extra kickoff still fails `inexact_game_set`.
+
+After the fix the fetched body parses to 33 groups and 5 Classic groups, sizes 7, 10, 12, 13, and 14, none missing games. Two of those sets, sizes 7 and 10, sit entirely in the Sunday 1:00–4:30 window, so they are not the same set. This run did not compare them to the week-10 schedule. The raw body was not committed. The fixture uses fake ids `91001`–`91004`.
+
+```text
+dk_lobby_salaries season=2026 week=10 status=failed reason=metadata_incomplete rows=0 branch=parse field=Games draft_group_id=91001
+```
+
+Stderr stays `metadata_incomplete`. `load_runs` notes stay `reason=metadata_incomplete;rows=0;snapshots=0`.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+339 passed, 2 skipped, 1 warning in 57.80s
+```
+
+The two skips are the `RUN_NETWORK_TESTS` gates. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client. gitleaks 8.30.1 ran inside the suite.

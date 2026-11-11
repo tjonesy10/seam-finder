@@ -930,7 +930,9 @@ def _parse_competition(item: object, draft_group_id: int) -> GameEvidence:
         raise _incomplete("parse", "Competitions", draft_group_id)
     description = item.get("Description")
     start = item.get("StartDate")
-    matched = _GAME_SET_TEAMS.fullmatch(description.strip()) if isinstance(description, str) else None
+    matched = None
+    if isinstance(description, str):
+        matched = _GAME_SET_TEAMS.fullmatch(description.strip())
     if matched is None:
         raise _incomplete("parse", "Description", draft_group_id)
     if not isinstance(start, str) or not start.strip():
