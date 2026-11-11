@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed (2026-11-10). Pending Cosmo approval via Groko's gate. Does not supersede [ADR 0005](0005-private-salary-capture-and-archives.md) or [ADR 0006](0006-slate-safe-salary-unification.md). No implementation, production load, or forge handoff is authorized by this draft.
+Accepted (effective when PR #30 merges to main). Does not supersede [ADR 0005](0005-private-salary-capture-and-archives.md) or [ADR 0006](0006-slate-safe-salary-unification.md). No implementation, production load, or forge handoff is authorized until that merge. This acceptance does not certify a season.
+
+## Approval
+
+Cosmo (repo owner) approved on 2026-11-10 at 20:32 America/New_York (relayed by Groko), exact words: "I approve R7/R8 and ADR 0009 as written: 30-minute kickoff bound, schedule time canonical, 2% free-agent cap."
 
 ## Context
 
@@ -35,4 +39,4 @@ The only archive kickoff disagreement is +15 minutes on one Wild Card game, whic
 
 ## Consequences
 
-F007 can load the two remaining staged files once this decision is accepted and implemented, with audits and a new `parser_version`. Exact matches and existing blank-placeholder rejection stay as they are. Over-bound clocks, ambiguous matches, and non-pattern unparsed rows still fail the file. Dictionary metadata fields record discrepancies and skips; no schema column is added. F008 consumers should use the canonical schedule `kickoff_at`. This ADR stays Proposed until Cosmo approves it. It does not certify a season, authorize a production load, or hand the work to forge.
+F007 can load the two remaining staged files once this decision is accepted and implemented, with audits and a new `parser_version`. Exact matches and existing blank-placeholder rejection stay as they are. Over-bound clocks, ambiguous matches, and non-pattern unparsed rows still fail the file. Dictionary metadata fields record discrepancies and skips; no schema column is added. F008 consumers should use the canonical schedule `kickoff_at`. Acceptance is effective when PR #30 merges to main. It does not certify a season, authorize a production load, or hand the work to forge.

@@ -1,6 +1,6 @@
 # F007: Re-runnable private pureslurp/DKNFL original salary archive load
 
-Status: **DRAFT amendment** (2026-11-10). The merged R1–R6 contract is unchanged. This draft adds R7–R8 (bounded kickoff tolerance and audited free-agent row skips) and AT13–AT21. The decision is pending Cosmo approval via Groko's gate. Not handed to forge. No production load, migration, or schedule activation.
+Status: **READY for build, pending merge of PR #30** (2026-11-10). The merged R1–R6 contract is unchanged. R7–R8 and AT13–AT21 stay as written. Cosmo (repo owner) approved R7/R8 on 2026-11-10 at 20:32 ET (relayed by Groko), exact words: "I approve R7/R8 and ADR 0009 as written: 30-minute kickoff bound, schedule time canonical, 2% free-agent cap." [ADR 0009](../../adr/0009-dknfl-kickoff-tolerance-and-free-agent-rows.md) is Accepted, effective on merge. NOT handed to forge until Cosmo merges this PR. No production load, migration, or schedule activation.
 
 Related: [constitution](../../CONSTITUTION.md), [architecture](../../architecture.md), [dictionary](../../data-dictionary.md#f005f008-private-salary-contract-approved-not-deployed), [glossary](../../GLOSSARY.md).
 
@@ -107,7 +107,7 @@ F005 approved shared persistence foundation, existing Python/SQLAlchemy Core/psy
 
 ## Open questions
 
-Decision pending Cosmo approval via Groko's gate. No `[NEEDS CLARIFICATION]` markers. If the decision is rejected, keep current exact-kickoff and fail-closed unparsed behavior (WEEK19 and WEEK1 stay rejected). Production migration and deploy remain unapproved. Not handed to forge.
+Cosmo (repo owner) approved R7/R8 on 2026-11-10 at 20:32 ET (relayed by Groko), exact words: "I approve R7/R8 and ADR 0009 as written: 30-minute kickoff bound, schedule time canonical, 2% free-agent cap." No `[NEEDS CLARIFICATION]` markers. Production migration and deploy remain unapproved. NOT handed to forge until Cosmo merges PR #30.
 
 ## Analyze matrix
 
@@ -122,8 +122,8 @@ Decision pending Cosmo approval via Groko's gate. No `[NEEDS CLARIFICATION]` mar
 | R7 | AT6, AT13, AT14, AT15, AT16, AT21 |
 | R8 | AT17, AT18, AT19, AT20, AT21 |
 
-R1–R8 all covered; AT1–AT21 none orphaned. ADR 0005 and ADR 0006 are Accepted. ADR 0009 is Proposed and does not supersede them. The constitution amendment for F005–F008 is operative. This DRAFT does not approve production migration, deploy, schedule activation, or a forge handoff.
+R1–R8 all covered; AT1–AT21 none orphaned. ADR 0005 and ADR 0006 are Accepted. ADR 0009 is Accepted (effective on merge of PR #30) and does not supersede them. The constitution amendment for F005–F008 is operative. This SPEC is ready for build pending that merge. It does not approve production migration, deploy, or schedule activation, and it is NOT handed to forge until Cosmo merges PR #30.
 
 ## ADRs
 
-[0001](../../adr/0001-stack-and-hosting.md), [0002](../../adr/0002-nflverse-load-and-refresh.md), [0003 (source separation)](../../adr/0003-rotoguru-dk-classic-salaries.md), [0004 (Accepted; status only, substance preserved)](../../adr/0004-dk-current-slate-csv.md), [0005 (Accepted)](../../adr/0005-private-salary-capture-and-archives.md), [0006 (Accepted)](../../adr/0006-slate-safe-salary-unification.md), [0009 (Proposed; bounded DKNFL kickoff tolerance and free-agent row skips)](../../adr/0009-dknfl-kickoff-tolerance-and-free-agent-rows.md).
+[0001](../../adr/0001-stack-and-hosting.md), [0002](../../adr/0002-nflverse-load-and-refresh.md), [0003 (source separation)](../../adr/0003-rotoguru-dk-classic-salaries.md), [0004 (Accepted; status only, substance preserved)](../../adr/0004-dk-current-slate-csv.md), [0005 (Accepted)](../../adr/0005-private-salary-capture-and-archives.md), [0006 (Accepted)](../../adr/0006-slate-safe-salary-unification.md), [0009 (Accepted, effective on merge of PR #30; bounded DKNFL kickoff tolerance and free-agent row skips)](../../adr/0009-dknfl-kickoff-tolerance-and-free-agent-rows.md).
