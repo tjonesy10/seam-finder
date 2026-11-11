@@ -200,6 +200,7 @@ class RulesVerdict:
     verified: bool
     reason: str | None
     slots: tuple[str, ...] | None
+    detail: dict | None = None
 
 
 @dataclass
@@ -1162,32 +1163,102 @@ def parse_group_document(body: bytes) -> DraftGroup:
     return _parse_group(payload)
 
 
+def _classic_slot_names() -> tuple[str, ...]:
+    order = ("QB", "RB", "WR", "TE", "FLEX", "DST")
+    names: list[str] = []
+    for name in order:
+        names.extend([name] * CLASSIC_SLOTS[name])
+    return tuple(names)
+
+
+def _money_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _read_cap(payload: dict) -> int | None:
+    cap = payload.get("salaryCap")
+    direct = _money_int(cap)
+    if direct is not None:
+        return direct
+    if isinstance(cap, dict):
+        return _money_int(cap.get("maxValue"))
+    return None
+
+
+def _slot_name(slot: object, *, nested: bool) -> str | None:
+    if not nested:
+        if isinstance(slot, str) and slot.strip():
+            return slot.strip().upper()
+        if isinstance(slot, dict):
+            raw = slot.get("name")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip().upper()
+        return None
+    roster = slot.get("rosterSlot") if isinstance(slot, dict) else None
+    raw = roster.get("name") if isinstance(roster, dict) else None
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().upper()
+    return None
+
+
+def _read_slots(payload: dict) -> tuple[str | None, tuple[str, ...]]:
+    slots = payload.get("rosterSlots")
+    template = payload.get("lineupTemplate")
+    entries: list | None = None
+    nested = False
+    if isinstance(slots, list) and slots:
+        entries = slots
+    elif isinstance(template, list) and template:
+        entries = template
+        nested = True
+    if entries is None:
+        return "rules_no_roster_slots", ()
+    names: list[str] = []
+    for slot in entries:
+        name = _slot_name(slot, nested=nested)
+        if name is None:
+            return "rules_bad_slot_entry", tuple(names)
+        names.append(name)
+    return None, tuple(names)
+
+
+def _rules_detail(names: tuple[str, ...], cap: int | None) -> dict:
+    return {
+        "expected_slots": _classic_slot_names(),
+        "observed_slots": names,
+        "expected_cap": 50000,
+        "cap": cap,
+    }
+
+
+def _rules_fail(reason: str, names: tuple[str, ...], cap: int | None) -> RulesVerdict:
+    return RulesVerdict(False, reason, names or None, _rules_detail(names, cap))
+
+
 def parse_rules(body: bytes) -> RulesVerdict:
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return RulesVerdict(False, "missing_rules", None)
+        return _rules_fail("rules_no_roster_slots", (), None)
     if not isinstance(payload, dict):
-        return RulesVerdict(False, "missing_rules", None)
-    slots = payload.get("rosterSlots")
-    names: list[str] = []
-    if not isinstance(slots, list) or not slots:
-        return RulesVerdict(False, "missing_rules", None)
-    for slot in slots:
-        if isinstance(slot, str) and slot.strip():
-            names.append(slot.strip().upper())
-        elif isinstance(slot, dict) and isinstance(slot.get("name"), str) and slot["name"].strip():
-            names.append(slot["name"].strip().upper())
-        else:
-            return RulesVerdict(False, "missing_rules", None)
+        return _rules_fail("rules_no_roster_slots", (), None)
+    slot_reason, names = _read_slots(payload)
+    cap = _read_cap(payload)
+    if slot_reason is not None:
+        return _rules_fail(slot_reason, names, cap)
     if any(name == "CPT" for name in names):
-        return RulesVerdict(False, "captain_slot", None)
-    cap = payload.get("salaryCap")
-    if isinstance(cap, float) and cap.is_integer():
-        cap = int(cap)
-    if cap != 50000 or Counter(names) != Counter(CLASSIC_SLOTS):
-        return RulesVerdict(False, "missing_rules", None)
-    return RulesVerdict(True, None, tuple(names))
+        return RulesVerdict(False, "captain_slot", names, _rules_detail(names, cap))
+    if Counter(names) != Counter(CLASSIC_SLOTS):
+        return _rules_fail("rules_roster_mismatch", names, cap)
+    if cap != 50000:
+        return _rules_fail("rules_cap_mismatch", names, cap)
+    return RulesVerdict(True, None, names, _rules_detail(names, cap))
 
 
 def _kickoff_from_row(token: str) -> GameEvidence | None:
@@ -1377,6 +1448,10 @@ def _priority(reasons: list[str]) -> str:
         "inexact_game_set",
         "wrong_season_week",
         "missing_rules",
+        "rules_no_roster_slots",
+        "rules_bad_slot_entry",
+        "rules_roster_mismatch",
+        "rules_cap_mismatch",
         "draftables_mismatch",
         "ambiguous_slate",
         "slate_unavailable",
@@ -1546,6 +1621,48 @@ def format_inexact(fields: dict | None) -> str:
     group_id = fields.get("draft_group_id")
     if isinstance(group_id, int) and not isinstance(group_id, bool) and group_id > 0:
         parts.append(f"draft_group_id={group_id}")
+    return " ".join(parts)
+
+
+_SLOT_TOKEN = re.compile(r"^[A-Z][A-Z0-9]{0,7}$")
+_RULE_REASONS = {
+    "rules_no_roster_slots",
+    "rules_bad_slot_entry",
+    "rules_roster_mismatch",
+    "rules_cap_mismatch",
+}
+
+
+def _slot_tokens(value: object) -> str:
+    if not isinstance(value, (list, tuple)):
+        return ""
+    tokens = []
+    for item in value:
+        if isinstance(item, str) and _SLOT_TOKEN.fullmatch(item):
+            tokens.append(item)
+        if len(tokens) == 12:
+            break
+    return ",".join(tokens)
+
+
+def format_rules(fields: dict | None) -> str:
+    """Public suffix. Slot names, counts, and the salary cap only."""
+    if not fields:
+        return ""
+    expected = _slot_tokens(fields.get("expected_slots"))
+    observed = _slot_tokens(fields.get("observed_slots"))
+    parts = [
+        f"expected_slots={expected or 'none'}",
+        f"expected_count={0 if not expected else expected.count(',') + 1}",
+        f"observed_slots={observed or 'none'}",
+        f"observed_count={0 if not observed else observed.count(',') + 1}",
+        "expected_cap=50000",
+    ]
+    cap = fields.get("cap")
+    if isinstance(cap, int) and not isinstance(cap, bool) and 0 <= cap <= 1_000_000:
+        parts.append(f"cap={cap}")
+    else:
+        parts.append("cap=missing")
     return " ".join(parts)
 
 
@@ -1837,7 +1954,7 @@ def _capture_body(state: _State, plan: dict, games: tuple[RegGame, ...]) -> None
             group = _select_explicit(state, plan, games)
         verdict = _verify_rules(state, group)
         if not verdict.verified:
-            raise CaptureFailure(verdict.reason or "missing_rules")
+            raise CaptureFailure(verdict.reason or "missing_rules", guard_fields=verdict.detail)
         fetched = state.client.get_csv(csv_url(group.draft_group_id))
         state.fetched_at = fetched.fetched_at
         ref = _keep(state, fetched.body, ArtifactKind.CSV, fetched.media_type or "text/csv")
@@ -2145,6 +2262,10 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
             "mismatched_metadata",
             "inexact_game_set",
             "missing_rules",
+            "rules_no_roster_slots",
+            "rules_bad_slot_entry",
+            "rules_roster_mismatch",
+            "rules_cap_mismatch",
             "parse_failure",
         }
         else ObservationStatus.FAILED
@@ -2179,6 +2300,8 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
         suffix = format_metadata_detail(exc.guard_fields)
     elif exc.reason == "inexact_game_set":
         suffix = format_inexact(exc.guard_fields)
+    elif exc.reason in _RULE_REASONS:
+        suffix = format_rules(exc.guard_fields)
     else:
         suffix = ""
     return AttemptResult(
