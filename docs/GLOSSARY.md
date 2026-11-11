@@ -59,6 +59,8 @@
 | DFF player ID | Vendor-specific identifier, never presumed DK ID or GSIS ID. | dff_player_id |
 | ppg_proj | DFF projected fantasy points, not actual realized points. | dff_salaries.ppg_proj |
 | DKNFL archive | pureslurp/DKNFL original salary-export files; contains duplicate, holiday, alternate and mislabeled-path exports. | dknfl_salaries |
+| Kickoff tolerance | F007 rule: a unique same-date, same-teams, manifest-agreeing schedule match still loads when `|file kickoff − schedule kickoff| ≤ 30` minutes. Exact matches are unchanged. The snapshot stores the schedule kickoff; the file clock, schedule clock, signed delta, and `game_id` are audited. Over 30 minutes, a date mismatch, or an ambiguous match fails closed. | `kickoff_discrepancies` / F007 R7 |
+| Free-agent row | F007 skip: a data row with `TeamAbbrev` exactly `FA` and `Game Info` exactly `-`. The file may still load. The row stays in the ledger as rejected with reason `free_agent_no_game`, is counted, and is never silently dropped. Any other unparsed Game Info, or a file whose such rows exceed 2% of its data rows, fails closed. | `free_agent_no_game` / `free_agent_row_bound` / F007 R8 |
 | Anchor snapshot | One coherent source snapshot defining a chosen pool's membership/salaries; never supplemented from other pools/snapshots. | anchor_snapshot_id |
 | Alternative | A separately attributed equivalent source candidate, never a missing-player pool filler. | alternative_refs |
 | Legacy unknown slate | F003 weekly evidence lacking verified exact slate fidelity; never a wildcard known-slate match. | legacy_unknown |
