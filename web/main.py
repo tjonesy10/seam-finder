@@ -1,8 +1,18 @@
-"""ASGI app. Entrypoint: web.main:app."""
+"""ASGI app. Entrypoint: web.main:app.
+
+The built React app is the directory ``frontend/dist`` (Vite's ``index.html`` plus
+hashed files under ``assets/``). Those files are served only when the environment
+variable ``SERVE_SPA`` is exactly ``true``. Any other value, including unset, keeps
+the Jinja pages. ``/api`` and ``/api/*`` stay JSON in both modes. Hashed asset
+responses are long-cached. ``index.html`` is ``Cache-Control: no-cache``.
+"""
+
+import os
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import create_engine
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -25,6 +35,11 @@ from web.queries import (
     refresh_payload,
 )
 from web.resources import API_ENDPOINTS, GAMES, LOAD_RUNS, PLAYERS, RESOURCES, STATS, TEAMS
+
+# Documented build output. Rollback is SERVE_SPA set to anything other than "true".
+SPA_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+_ASSET_CACHE = "public, max-age=31536000, immutable"
+_INDEX_CACHE = "no-cache"
 
 
 class Settings(BaseSettings):
@@ -52,6 +67,58 @@ def _json(payload, status_code: int = 200) -> JSONResponse:
 
 def _is_api(path: str) -> bool:
     return path == "/api" or path.startswith("/api/")
+
+
+def serve_spa() -> bool:
+    return os.environ.get("SERVE_SPA") == "true"
+
+
+def _dist_file(url_path: str) -> Path | None:
+    relative = url_path.lstrip("/")
+    if relative == "" or relative.endswith("/"):
+        return None
+    root = SPA_DIST.resolve()
+    candidate = (SPA_DIST / relative).resolve()
+    if candidate != root and root not in candidate.parents:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _asset_response(url_path: str) -> FileResponse | None:
+    candidate = _dist_file(url_path)
+    if candidate is None or candidate == (SPA_DIST / "index.html").resolve():
+        return None
+    cache = _ASSET_CACHE if "assets" in candidate.parts else _INDEX_CACHE
+    return FileResponse(candidate, headers={"Cache-Control": cache})
+
+
+def spa_document(request: Request):
+    """Serve the SPA shell, or the Jinja error page when that shell cannot.
+
+    An unreachable database still returns the existing 503 HTML page. tests/test_api.py
+    asserts that response with the flag on and off, and it does not execute JavaScript.
+    """
+    try:
+        with connection(request.app.state.engine) as conn:
+            ping(conn)
+    except AppError as exc:
+        return render_message(
+            request,
+            exc.message,
+            exc.status_code,
+            {"last_refresh_et": "none", "datasets": []},
+        )
+    index = SPA_DIST / "index.html"
+    if not index.is_file():
+        return render_message(
+            request,
+            "The frontend build is missing.",
+            503,
+            load_footer(request.app.state.engine),
+        )
+    return FileResponse(index, headers={"Cache-Control": _INDEX_CACHE})
 
 
 def create_app(database_url: str | None = None) -> FastAPI:
@@ -102,6 +169,18 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http(request: Request, exc: StarletteHTTPException):
+        if exc.status_code == 404 and not _is_api(request.url.path) and serve_spa():
+            asset = _asset_response(request.url.path)
+            if asset is not None:
+                return asset
+            if request.url.path.lstrip("/").startswith("assets/"):
+                return render_message(
+                    request,
+                    "Not found",
+                    404,
+                    load_footer(request.app.state.engine),
+                )
+            return spa_document(request)
         if exc.status_code == 404:
             error = AppError(404, "not_found", "Not found")
         else:
@@ -113,11 +192,15 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.get("/api")
     def api_root(request: Request):
         reject_unknown(request.query_params, set())
+        with connection(request.app.state.engine) as conn:
+            footer_data = footer(conn)
         return _json(
             {
                 "name": "Seam Finder",
                 "attribution": attribution(),
                 "endpoints": list(API_ENDPOINTS),
+                "last_refresh_et": footer_data["last_refresh_et"],
+                "datasets": footer_data["datasets"],
             }
         )
 
@@ -180,6 +263,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/")
     def home(request: Request):
+        if serve_spa():
+            return spa_document(request)
         reject_unknown(request.query_params, set())
         with connection(request.app.state.engine) as conn:
             footer_data = footer(conn)
@@ -200,6 +285,8 @@ def _page_route(resource):
 
 
 def _page_for(request: Request, resource):
+    if serve_spa():
+        return spa_document(request)
     try:
         params = parse_resource(request.query_params, resource)
     except AppError as exc:
