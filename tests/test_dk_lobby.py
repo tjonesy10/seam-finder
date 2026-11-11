@@ -22,6 +22,7 @@ from loader.dk_lobby import (
     next_wednesday_10_et,
     parse_csv_bytes,
     parse_draftables,
+    parse_lobby,
     reconcile_draftables,
     reconcile_open_attempts,
 )
@@ -31,11 +32,13 @@ from loader.grants import apply_readonly_grant
 from loader.salary_private import (
     CUMULATIVE_LIMIT,
     DATABASE_LIMIT,
+    DISCOVERY_OBJECT_LIMIT,
     INVOCATION_LIMIT,
     OBJECT_LIMIT,
     budget_block,
     cumulative_would_exceed,
     database_would_exceed,
+    decode_stored_body,
     read_storage_sizes,
 )
 
@@ -498,6 +501,34 @@ def _json_response(payload, status=200):
     return status, {"content-type": "application/json"}, body
 
 
+def _sized_lobby(group: dict, size: int) -> bytes:
+    """Synthetic getcontests JSON of exactly ``size`` bytes. Not a recorded payload."""
+    groups = json.dumps([group], separators=(",", ":")).encode()
+    prefix = b'{"Contests":"CONTEST-PADDING-BLOCK'
+    suffix = b'","DraftGroups":' + groups + b"}"
+    pad = size - len(prefix) - len(suffix)
+    assert pad > 0
+    return prefix + (b"s" * pad) + suffix
+
+
+class StreamTransport(httpx.BaseTransport):
+    """Stream the body so Content-Encoding is decoded by the client."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.calls = []
+
+    def handle_request(self, request):
+        self.calls.append(request)
+        status, headers, body = self.handler(request)
+        return httpx.Response(
+            status,
+            headers=headers,
+            stream=httpx.ByteStream(body),
+            request=request,
+        )
+
+
 def _csv_response(body, status=200):
     return status, {"content-type": "text/csv"}, body
 
@@ -715,7 +746,7 @@ def test_at3_wrong_week_and_holiday_do_not_substitute(engine):
 
 def test_at4_schedule_text_and_disabled_gate():
     text_value = WORKFLOW.read_text()
-    assert "cron: '0 10 * * 3'" in text_value
+    assert "cron: '7 10 * * 3'" in text_value
     assert "timezone: 'America/New_York'" in text_value
     assert "vars.DK_LOBBY_CAPTURE_ENABLED == 'true'" in text_value
     assert "capture_schedule_enabled" in text_value
@@ -742,6 +773,24 @@ def test_at4_schedule_text_and_disabled_gate():
     script = text_value.split("run: |\n", 1)[1]
     checked = subprocess.run(["bash", "-n"], input=script, text=True, check=False)
     assert checked.returncode == 0
+
+
+def test_nov11_wednesday_slot_stays_on_the_timezone_cron():
+    """2026-11-11 10:07 America/New_York is 15:07 UTC. Minute 7, same timezone.
+
+    GitHub honours ``timezone`` on ``on.schedule``. The cron stays one Wednesday
+    expression at 10:07 America/New_York so it is off the top of the hour.
+    """
+    text_value = WORKFLOW.read_text()
+    assert text_value.count("cron:") == 1
+    assert "cron: '7 10 * * 3'" in text_value
+    assert "cron: '0 10 * * 3'" not in text_value
+    assert "timezone: 'America/New_York'" in text_value
+    assert "0 14 * * 3" not in text_value
+    assert "0 15 * * 3" not in text_value
+    slot = datetime(2026, 11, 11, 10, 7, tzinfo=ET)
+    assert slot.weekday() == 2
+    assert slot.astimezone(UTC) == datetime(2026, 11, 11, 15, 7, tzinfo=UTC)
 
 
 def test_at5_off_season_stale_and_absent_group(engine):
@@ -1125,14 +1174,253 @@ def test_at11_grants_hide_private_and_f004(engine, monkeypatch):
             conn.execute(text(f"DROP ROLE IF EXISTS {web}"))
 
 
+def test_oversized_discovery_document_fails_closed(engine, capsys):
+    """A DraftGroups lobby under the cap parses. The same group past 5 MiB does not.
+
+    Run 43049995926 printed storage_guard_object and rows=0. The public log does
+    not include the URL or the body. This fixture is synthetic.
+    """
+    group = _group(90001, _sunday_games())
+    small = json.dumps(
+        {"Contests": "synthetic", "DraftGroups": [group]},
+        separators=(",", ":"),
+    ).encode()
+    assert len(small) < OBJECT_LIMIT
+    assert parse_lobby(small)[0].draft_group_id == 90001
+    huge = _sized_lobby(group, DISCOVERY_OBJECT_LIMIT + 1)
+    assert len(huge) == DISCOVERY_OBJECT_LIMIT + 1
+    assert b'"DraftGroupId":90001' in huge
+
+    _seed(engine)
+
+    def oversized(request):
+        assert request.url.path == "/lobby/getcontests"
+        assert request.url.query == b"sport=NFL"
+        return (
+            200,
+            {
+                "content-type": "application/json",
+                "content-length": str(len(huge)),
+                "set-cookie": "session=synthetic-secret",
+            },
+            huge,
+        )
+
+    transport = StreamTransport(oversized)
+    assert _run(engine, transport, clock=MutableClock(NOW)) == 1
+    assert len(transport.calls) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "storage_guard_object"
+    status_line = (
+        "dk_lobby_salaries season=2026 week=10 status=failed "
+        "reason=storage_guard_object rows=0 "
+        f"path=/lobby/getcontests bytes_read={DISCOVERY_OBJECT_LIMIT + 1} "
+        f"cap={DISCOVERY_OBJECT_LIMIT} content_length={len(huge)}"
+    )
+    assert captured.out.strip() == status_line
+    assert "reason=storage_guard_object" in status_line
+    leaked = captured.out + captured.err
+    assert "sport=NFL" not in leaked
+    assert "synthetic-secret" not in leaked
+    assert "set-cookie" not in leaked
+    assert "DraftGroupId" not in leaked
+    assert "CONTEST-PADDING-BLOCK" not in leaked
+    assert "?" not in captured.out
+    obs = _rows(
+        engine,
+        """
+        SELECT reason_code, snapshot_id, metadata
+        FROM salary_private.salary_observations
+        """,
+    )[0]
+    assert obs["reason_code"] == "storage_guard_object"
+    assert obs["snapshot_id"] is None
+    assert obs["metadata"]["truncated"] is True
+    assert obs["metadata"]["retained_artifact"] is False
+    assert obs["metadata"]["prefix_bytes"] == DISCOVERY_OBJECT_LIMIT
+    assert obs["metadata"]["bytes_read"] == DISCOVERY_OBJECT_LIMIT + 1
+    assert obs["metadata"]["requests"] == [
+        {"host": "www.draftkings.com", "path": "/lobby/getcontests", "status": 200}
+    ]
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 0
+    assert (
+        _scalar(
+            engine,
+            "SELECT count(*) FROM salary_private.salary_artifacts WHERE source = 'dk_lobby'",
+        )
+        == 0
+    )
+
+    assert _run(engine, ScriptTransport(_happy_handler(_box())), clock=MutableClock(NOW)) == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 4
+
+
+def _lobby_then(lobby: bytes):
+    happy = _happy_handler(_box())
+
+    def handler(request):
+        if request.url.path.endswith("/getcontests"):
+            return 200, {"content-type": "application/json"}, lobby
+        return happy(request)
+
+    return handler
+
+
+def test_at17_six_mib_discovery_is_stored_and_round_trips(engine, capsys):
+    body = _sized_lobby(_group(90001, _sunday_games()), 6_291_456)
+    _seed(engine)
+    assert _run(engine, ScriptTransport(_lobby_then(body)), clock=MutableClock(NOW)) == 0
+    captured = capsys.readouterr()
+    assert "discovery_body_bytes=6291456" in captured.out
+    assert "CONTEST-PADDING-BLOCK" not in captured.out + captured.err
+    row = _rows(
+        engine,
+        """
+        SELECT artifact_kind, encoding, body, decoded_bytes, byte_count, sha256,
+               decoded_sha256, compressed_bytes
+        FROM salary_private.salary_artifacts
+        WHERE artifact_kind = 'lobby_discovery_json'
+        """,
+    )[0]
+    assert row["encoding"] == "gzip"
+    assert int(row["decoded_bytes"]) == 6_291_456
+    assert int(row["byte_count"]) == 6_291_456
+    assert row["sha256"] == row["decoded_sha256"]
+    assert int(row["compressed_bytes"]) < 6_291_456
+    assert decode_stored_body(bytes(row["body"]), row["encoding"]) == body
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 4
+    meta = _rows(
+        engine,
+        """
+        SELECT metadata FROM salary_private.salary_observations
+        WHERE status = 'succeeded'
+        ORDER BY loaded_at DESC
+        """,
+    )[0]
+    assert meta["metadata"]["discovery_body_bytes"] == 6_291_456
+
+
+def test_at20_exact_five_mib_discovery_is_stored(engine):
+    body = _sized_lobby(_group(90001, _sunday_games()), OBJECT_LIMIT)
+    _seed(engine)
+    assert _run(engine, ScriptTransport(_lobby_then(body)), clock=MutableClock(NOW)) == 0
+    row = _rows(
+        engine,
+        """
+        SELECT encoding, body, decoded_bytes
+        FROM salary_private.salary_artifacts
+        WHERE artifact_kind = 'lobby_discovery_json'
+        """,
+    )[0]
+    assert int(row["decoded_bytes"]) == OBJECT_LIMIT
+    assert decode_stored_body(bytes(row["body"]), row["encoding"]) == body
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 1
+
+
+def test_at19_other_urls_fail_just_over_five_mib(engine):
+    huge = b"x" * (OBJECT_LIMIT + 1)
+    _seed(engine)
+    bare = {"DraftGroupId": 90001, "ContestTypeId": 21, "GameTypeId": 7}
+
+    def groups(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": [bare]})
+        if request.url.path.startswith("/draftgroups/"):
+            return 200, {"content-type": "application/json"}, huge
+        raise AssertionError(request.url.path)
+
+    def rules(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": [_group(90001, _sunday_games())]})
+        if "/rules" in request.url.path:
+            return 200, {"content-type": "application/json"}, huge
+        raise AssertionError(request.url.path)
+
+    def csvs(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": [_group(90001, _sunday_games())]})
+        if "/rules" in request.url.path:
+            return _json_response({"salaryCap": 50000, "rosterSlots": list(CLASSIC_SLOTS)})
+        if request.url.path.endswith("/getavailableplayerscsv"):
+            return 200, {"content-type": "text/csv"}, huge
+        raise AssertionError(request.url.path)
+
+    for index, (handler, path_part) in enumerate(
+        (
+            (groups, "/draftgroups/v1/90001"),
+            (rules, "/rules"),
+            (csvs, "/getavailableplayerscsv"),
+        )
+    ):
+        assert _run(
+            engine,
+            ScriptTransport(handler),
+            clock=MutableClock(NOW + timedelta(seconds=index)),
+        ) == 1
+        obs = _rows(
+            engine,
+            """
+            SELECT reason_code, snapshot_id, metadata
+            FROM salary_private.salary_observations
+            ORDER BY loaded_at DESC
+            """,
+        )[0]
+        assert obs["reason_code"] == "storage_guard_object"
+        assert obs["snapshot_id"] is None
+        assert obs["metadata"]["truncated"] is True
+        assert obs["metadata"]["retained_artifact"] is False
+        assert obs["metadata"]["cap"] == OBJECT_LIMIT
+        assert obs["metadata"]["bytes_read"] == OBJECT_LIMIT + 1
+        assert path_part in obs["metadata"]["path"]
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.dk_lobby_salaries") == 0
+
+
+def test_gzip_wire_past_discovery_cap_stops_at_limit_plus_one(engine, capsys):
+    import gzip
+
+    raw = b"a" * (DISCOVERY_OBJECT_LIMIT + 50)
+    wire = gzip.compress(raw, mtime=0)
+    assert len(wire) < OBJECT_LIMIT
+
+    def handler(_request):
+        return (
+            200,
+            {"content-type": "application/json", "content-encoding": "gzip"},
+            wire,
+        )
+
+    _seed(engine)
+    assert _run(engine, StreamTransport(handler), clock=MutableClock(NOW)) == 1
+    captured = capsys.readouterr()
+    assert "storage_guard_object" in captured.err
+    assert f"bytes_read={DISCOVERY_OBJECT_LIMIT + 1}" in captured.out
+    assert f"cap={DISCOVERY_OBJECT_LIMIT}" in captured.out
+    assert "a" * 32 not in captured.out + captured.err
+    assert (
+        _scalar(
+            engine,
+            """
+            SELECT count(*) FROM salary_private.salary_artifacts
+            WHERE artifact_kind = 'lobby_discovery_json'
+            """,
+        )
+        == 0
+    )
+
+
 def test_at12_storage_guards_and_concurrent_lock(engine):
     _seed(engine)
     assert _run(engine, ScriptTransport(_happy_handler(_box()))) == 0
     before = _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots")
     huge = b"x" * (OBJECT_LIMIT + 1)
 
-    def oversized(_request):
-        return 200, {"content-type": "text/csv"}, huge
+    def oversized(request):
+        if request.url.path.endswith("/getcontests"):
+            return _json_response({"DraftGroups": [_group(90001, _sunday_games())]})
+        if "/rules" in request.url.path:
+            return 200, {"content-type": "application/json"}, huge
+        return _happy_handler(_box())(request)
 
     assert _run(engine, ScriptTransport(oversized)) == 1
     obs = _rows(
