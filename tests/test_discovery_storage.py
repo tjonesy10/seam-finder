@@ -16,11 +16,13 @@ from loader.salary_private import (
     DATABASE_LIMIT,
     DISCOVERY_OBJECT_LIMIT,
     OBJECT_LIMIT,
+    ArtifactKind,
     decode_stored_body,
     encode_discovery,
     encoded_growth_block,
     sha256_bytes,
     storage_warning_percent,
+    store_artifact,
     store_discovery_artifact,
 )
 
@@ -230,6 +232,7 @@ def test_gzip_and_identity_round_trip(engine):
             {"id": ref.artifact_id},
         ).one()
     assert count == 1
+    assert bytes(row.body) == stored
     assert decode_stored_body(bytes(row.body), row.encoding) == repetitive
 
 
@@ -288,7 +291,305 @@ def test_downgrade_refuses_gzip_and_deletes_nothing(engine):
                 )
             ).scalar()
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            body_check = conn.execute(
+                text(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conname = 'ck_salary_artifacts_body'"
+                )
+            ).scalar()
+            kind_check = conn.execute(
+                text(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conname = 'ck_salary_artifacts_kind'"
+                )
+            ).scalar()
         assert columns is None
         assert version == "0008"
+        assert "5242880" in body_check
+        assert "33554432" not in body_check
+        assert "lobby_discovery_json" not in kind_check
     finally:
         command.upgrade(cfg, "head")
+
+
+def test_at31_kind_and_oversize_refuse_without_deleting(engine):
+    cfg = Config("alembic.ini")
+    kind_body = b"kind-only"
+    kind_sha = sha256_bytes(kind_body)
+    over_body = b"z"
+    over_sha = sha256_bytes(b"decoded-over-five-mib")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind,
+                    stored_at, loaded_at, encoding, decoded_sha256, decoded_bytes,
+                    compressed_sha256, compressed_bytes
+                ) VALUES (
+                    'control', :sha, :body, :count, 'application/json', 'lobby_discovery_json',
+                    now(), now(), 'identity', :sha, :count, :sha, :count
+                )
+                """
+            ),
+            {"sha": kind_sha, "body": kind_body, "count": len(kind_body)},
+        )
+    with pytest.raises(Exception, match="downgrade refused"):
+        command.downgrade(cfg, "0008")
+    with engine.connect() as conn:
+        still = conn.execute(
+            text("SELECT count(*) FROM salary_private.salary_artifacts WHERE sha256 = :sha"),
+            {"sha": kind_sha},
+        ).scalar()
+        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert still == 1
+    assert version == "0009"
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM salary_private.salary_artifacts WHERE sha256 = :sha"),
+            {"sha": kind_sha},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind,
+                    stored_at, loaded_at, encoding, decoded_sha256, decoded_bytes,
+                    compressed_sha256, compressed_bytes
+                ) VALUES (
+                    'control', :sha, :body, 5242881, 'application/json', 'lobby_discovery_json',
+                    now(), now(), 'gzip', :sha, 5242881, :compressed, 1
+                )
+                """
+            ),
+            {"sha": over_sha, "body": over_body, "compressed": sha256_bytes(over_body)},
+        )
+    with pytest.raises(Exception, match="downgrade refused"):
+        command.downgrade(cfg, "0008")
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT encoding, decoded_bytes, octet_length(body) AS stored_len
+                FROM salary_private.salary_artifacts WHERE sha256 = :sha
+                """
+            ),
+            {"sha": over_sha},
+        ).one()
+        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert row.encoding == "gzip"
+    assert int(row.decoded_bytes) == 5242881
+    assert int(row.stored_len) == 1
+    assert version == "0009"
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM salary_private.salary_artifacts WHERE sha256 = :sha"),
+            {"sha": over_sha},
+        )
+
+
+def test_at22_and_at25_identity_and_gzip_lengths(engine):
+    with engine.connect() as conn:
+        identity = store_discovery_artifact(
+            conn,
+            decoded=b"Q",
+            media_type="application/json",
+            stored_at=datetime.now(UTC),
+            invocation_bytes=1,
+        )
+        gzipped = store_discovery_artifact(
+            conn,
+            decoded=b"a" * 4000,
+            media_type="application/json",
+            stored_at=datetime.now(UTC),
+            invocation_bytes=4000,
+        )
+        rows = conn.execute(
+            text(
+                """
+                SELECT artifact_id, encoding, body, sha256, byte_count, decoded_sha256,
+                       decoded_bytes, compressed_sha256, compressed_bytes,
+                       octet_length(body) AS stored_len
+                FROM salary_private.salary_artifacts
+                WHERE artifact_id IN (:identity, :gzipped)
+                """
+            ),
+            {"identity": identity.artifact_id, "gzipped": gzipped.artifact_id},
+        ).all()
+    by_id = {row.artifact_id: row for row in rows}
+    plain = by_id[identity.artifact_id]
+    packed = by_id[gzipped.artifact_id]
+    assert plain.encoding == "identity"
+    assert bytes(plain.body) == b"Q"
+    assert int(plain.compressed_bytes) == int(plain.decoded_bytes) == int(plain.stored_len)
+    assert packed.encoding == "gzip"
+    assert int(packed.compressed_bytes) == int(packed.stored_len)
+    assert int(packed.compressed_bytes) < int(packed.decoded_bytes)
+    for row in (plain, packed):
+        assert row.decoded_sha256 and row.compressed_sha256
+        assert row.sha256 == row.decoded_sha256
+        assert int(row.byte_count) == int(row.decoded_bytes)
+
+
+def test_at24_storage_limits_fail_closed_without_a_snapshot(engine):
+    with engine.connect() as conn:
+        before = conn.execute(text("SELECT count(*) FROM salary_private.salary_snapshots")).scalar()
+    with engine.connect() as conn:
+        kept = store_discovery_artifact(
+            conn,
+            decoded=b"a" * DISCOVERY_OBJECT_LIMIT,
+            media_type="application/json",
+            stored_at=datetime.now(UTC),
+            invocation_bytes=DISCOVERY_OBJECT_LIMIT,
+        )
+        assert kept.byte_count == DISCOVERY_OBJECT_LIMIT
+        with pytest.raises(Exception, match="storage_guard_object"):
+            store_discovery_artifact(
+                conn,
+                decoded=b"b" * (DISCOVERY_OBJECT_LIMIT + 1),
+                media_type="application/json",
+                stored_at=datetime.now(UTC),
+                invocation_bytes=DISCOVERY_OBJECT_LIMIT + 1,
+            )
+        csv_body = b"c" * OBJECT_LIMIT
+        stored_csv = store_artifact(
+            conn,
+            body=csv_body,
+            kind=ArtifactKind.CSV,
+            media_type="text/csv",
+            stored_at=datetime.now(UTC),
+            invocation_bytes=len(csv_body),
+        )
+        assert stored_csv.byte_count == OBJECT_LIMIT
+        with pytest.raises(Exception, match="storage_guard_object"):
+            store_artifact(
+                conn,
+                body=b"d" * (OBJECT_LIMIT + 1),
+                kind=ArtifactKind.CSV,
+                media_type="text/csv",
+                stored_at=datetime.now(UTC),
+                invocation_bytes=OBJECT_LIMIT + 1,
+            )
+        after = conn.execute(text("SELECT count(*) FROM salary_private.salary_snapshots")).scalar()
+    assert after == before
+
+
+def test_at27_upgrade_backfills_legacy_rows_without_rewriting_bodies(engine):
+    cfg = Config("alembic.ini")
+    plain = b"pre-encoding-row"
+    companion = b"html-gz-companion-bytes"
+    plain_sha = sha256_bytes(plain)
+    companion_sha = sha256_bytes(companion)
+    try:
+        command.downgrade(cfg, "0008")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO salary_private.salary_artifacts (
+                        source, sha256, body, byte_count, media_type, artifact_kind,
+                        stored_at, loaded_at
+                    ) VALUES
+                        ('dk_lobby', :plain_sha, :plain, :plain_len, 'application/json', 'lobby_json', now(), now()),
+                        ('dknfl', :companion_sha, :companion, :companion_len, 'application/gzip', 'html_gzip', now(), now())
+                    """
+                ),
+                {
+                    "plain_sha": plain_sha,
+                    "plain": plain,
+                    "plain_len": len(plain),
+                    "companion_sha": companion_sha,
+                    "companion": companion,
+                    "companion_len": len(companion),
+                },
+            )
+        command.upgrade(cfg, "head")
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT sha256, body, encoding, decoded_sha256, decoded_bytes,
+                           compressed_sha256, compressed_bytes, media_type
+                    FROM salary_private.salary_artifacts
+                    WHERE sha256 IN (:plain_sha, :companion_sha)
+                    """
+                ),
+                {"plain_sha": plain_sha, "companion_sha": companion_sha},
+            ).all()
+        by_sha = {row.sha256: row for row in rows}
+        for digest, payload in ((plain_sha, plain), (companion_sha, companion)):
+            row = by_sha[digest]
+            assert bytes(row.body) == payload
+            assert row.encoding == "identity"
+            assert row.decoded_sha256 == digest
+            assert int(row.decoded_bytes) == len(payload)
+            assert row.compressed_sha256 == digest
+            assert int(row.compressed_bytes) == len(payload)
+        assert by_sha[companion_sha].media_type == "application/gzip"
+    finally:
+        command.upgrade(cfg, "head")
+
+
+def test_at30_identity_trigger_and_explicit_writer(engine):
+    payload = b"trigger-row"
+    digest = sha256_bytes(payload)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind,
+                    stored_at, loaded_at, encoding, decoded_sha256, decoded_bytes
+                ) VALUES (
+                    'control', :sha, :body, :count, 'text/plain', 'manifest',
+                    now(), now(), NULL, :sha, :count
+                )
+                """
+            ),
+            {"sha": digest, "body": payload, "count": len(payload)},
+        )
+        triggered = conn.execute(
+            text(
+                """
+                SELECT encoding, decoded_sha256, decoded_bytes, compressed_sha256, compressed_bytes
+                FROM salary_private.salary_artifacts WHERE sha256 = :sha
+                """
+            ),
+            {"sha": digest},
+        ).one()
+    assert triggered.encoding == "identity"
+    assert triggered.compressed_sha256 == triggered.decoded_sha256 == digest
+    assert int(triggered.compressed_bytes) == int(triggered.decoded_bytes) == len(payload)
+    explicit_body = b"explicit-gzip-ish"
+    explicit_sha = sha256_bytes(explicit_body)
+    compressed_sha = sha256_bytes(b"x")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind,
+                    stored_at, loaded_at, encoding, decoded_sha256, decoded_bytes,
+                    compressed_sha256, compressed_bytes
+                ) VALUES (
+                    'control', :sha, :body, 2, 'application/json', 'lobby_discovery_json',
+                    now(), now(), 'gzip', :sha, 2, :compressed_sha, 1
+                )
+                """
+            ),
+            {"sha": explicit_sha, "body": b"x", "compressed_sha": compressed_sha},
+        )
+        explicit = conn.execute(
+            text(
+                """
+                SELECT encoding, body, decoded_bytes, compressed_bytes, compressed_sha256
+                FROM salary_private.salary_artifacts WHERE sha256 = :sha
+                """
+            ),
+            {"sha": explicit_sha},
+        ).one()
+    assert explicit.encoding == "gzip"
+    assert bytes(explicit.body) == b"x"
+    assert int(explicit.decoded_bytes) == 2
+    assert int(explicit.compressed_bytes) == 1
+    assert explicit.compressed_sha256 == compressed_sha
