@@ -9,6 +9,7 @@ import {
   type LegacyColumnDef,
 } from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import styles from "./DataTable.module.css";
 
 export type RowToggle = { locked?: boolean; excluded?: boolean };
 
@@ -91,8 +92,8 @@ export function DataTable<T extends RowData>({
     virtualRows.length > 0 ? virtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0;
 
   return (
-    <div className="table-scroll" ref={scrollRef}>
-      <table>
+    <div className={styles.scroll} ref={scrollRef} tabIndex={0} role="region" aria-label="Table rows">
+      <table className={styles.table}>
         <thead>
           {table.getHeaderGroups().map((group) => (
             <tr key={group.id}>

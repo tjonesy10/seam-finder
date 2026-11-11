@@ -1,0 +1,46 @@
+.scroll {
+  height: 32rem;
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  padding: var(--space-1);
+}
+
+.table {
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--color-divider);
+  padding: 0 var(--space-3);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table th {
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.table tbody tr {
+  height: 36px;
+  transition: background-color var(--motion);
+}
+
+.table tbody tr:hover,
+.table tbody tr:focus-within {
+  background: var(--color-raised);
+}
+
+.table a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--color-text);
+}

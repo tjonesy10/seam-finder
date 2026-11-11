@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { ATTRIBUTION_LINKS, ATTRIBUTION_TEXT } from "./attribution";
@@ -136,7 +136,7 @@ describe("shell attribution", () => {
     });
     renderAt("/");
     await screen.findByText("teams: 2026-11-05 12:00:00 ET");
-    fireEvent.click(screen.getByRole("link", { name: "Teams" }));
+    fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: "Teams" }));
     expect(await screen.findByRole("heading", { name: "Teams" })).toBeTruthy();
     expect(await screen.findByText("rows 0-0 of 0")).toBeTruthy();
   });
@@ -159,5 +159,51 @@ describe("shell attribution", () => {
     expect(document.querySelector("table")).not.toBeNull();
     expect(document.body.textContent).toContain("rows 1-1 of 1");
     expectAttribution();
+  });
+
+  it("shows a skeleton while the list is loading and an empty state after zero rows", async () => {
+    vi.stubGlobal("fetch", () => new Promise(() => undefined));
+    renderAt("/teams");
+    expect(await screen.findByText("Loading data")).toBeTruthy();
+    expect(document.querySelectorAll("table[aria-hidden='true'] tr")).toHaveLength(8);
+    expect(document.body.textContent).not.toContain("rows 0-0 of 0");
+  });
+
+  it("distinguishes no results from a page past the end", async () => {
+    installFetch((url) => {
+      if (url.includes("/api/teams")) {
+        const offset = new URL(url, "http://local").searchParams.get("offset");
+        if (offset === "50") {
+          return json({ data: [], page: { limit: 50, offset: 50, total: 1 } });
+        }
+        return json({ data: [], page: { limit: 50, offset: 0, total: 0 } });
+      }
+      return json(META);
+    });
+    renderAt("/teams");
+    expect(await screen.findByText(/No results for these filters/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Clear filters" })).toBeTruthy();
+    expect(document.body.textContent).toContain("rows 0-0 of 0");
+    cleanup();
+    renderAt("/teams?offset=50");
+    expect(await screen.findByText("No rows on this page.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "First page" })).toBeTruthy();
+  });
+
+  it("shows a retry alert for a list failure without a traceback", async () => {
+    let calls = 0;
+    installFetch((url) => {
+      if (url.includes("/api/teams")) {
+        calls += 1;
+        return json({ error: { code: "service_unavailable", message: "The database is unavailable." } }, 503);
+      }
+      return json(META);
+    });
+    renderAt("/teams");
+    expect((await screen.findByRole("alert")).textContent).toContain("The database is unavailable.");
+    expect(document.body.textContent).not.toContain("Traceback");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("alert");
+    expect(calls).toBeGreaterThan(1);
   });
 });
