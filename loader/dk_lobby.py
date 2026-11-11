@@ -93,6 +93,10 @@ _GAME_INFO = re.compile(
     re.IGNORECASE,
 )
 _GAME_SET_TEAMS = re.compile(r"^([A-Z]{2,3}) @ ([A-Z]{2,3})$")
+# nflverse club codes. DK still writes the older Rams, Washington, and Jacksonville spellings.
+_CLUB = {"LAR": "LA", "WSH": "WAS", "JAC": "JAX"}
+_SUNDAY_WINDOW = "sunday-13:00-16:30-et"
+_GAME_KEY = re.compile(r"^[A-Z]{2,3}@[A-Z]{2,3}@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z$")
 _REASON = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -1342,10 +1346,19 @@ def assess_rows(parsed: ParsedCsv) -> tuple[list[dict], list[str]]:
     return assessed, file_reasons
 
 
+def _club(code: str) -> str:
+    token = code.strip().upper()
+    return _CLUB.get(token, token)
+
+
+def _club_key(game) -> tuple[str, str, datetime]:
+    return (_club(game.away), _club(game.home), game.kickoff_at)
+
+
 def _game_tuple(game: GameEvidence | None):
     if game is None:
         return None
-    return (game.away, game.home, game.kickoff_at)
+    return _club_key(game)
 
 
 def _priority(reasons: list[str]) -> str:
@@ -1461,7 +1474,7 @@ def week_of(games: tuple[RegGame, ...], sunday: date) -> tuple[int, int] | None:
 
 
 def _keys(games) -> set[tuple[str, str, datetime]]:
-    return {(game.away, game.home, game.kickoff_at) for game in games}
+    return {_club_key(game) for game in games}
 
 
 def _match_groups(groups: tuple[DraftGroup, ...], expected: set[tuple]) -> tuple[str, DraftGroup | None]:
@@ -1478,6 +1491,68 @@ def _match_groups(groups: tuple[DraftGroup, ...], expected: set[tuple]) -> tuple
     if any(_keys(group.games or ()) & expected for group in classic):
         return "inexact_game_set", None
     return "slate_unavailable", None
+
+
+def _public_game_key(item: object) -> str | None:
+    if not isinstance(item, tuple) or len(item) != 3:
+        return None
+    away, home, kickoff = item
+    if not isinstance(away, str) or not isinstance(home, str) or not isinstance(kickoff, datetime):
+        return None
+    token = f"{_club(away)}@{_club(home)}@{kickoff.astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}"
+    if _GAME_KEY.fullmatch(token) is None:
+        return None
+    return token
+
+
+def _inexact_fields(groups, expected: set[tuple]) -> dict:
+    """Closest overlapping Classic group. Keys are already club-canonical."""
+    closest = None
+    for group in groups:
+        if group.contest_type_id != 21 or not group.games:
+            continue
+        keys = _keys(group.games)
+        overlap = keys & expected
+        if not overlap:
+            continue
+        missing = tuple(sorted(expected - keys, key=lambda item: (item[2], item[0], item[1])))
+        extra = tuple(sorted(keys - expected, key=lambda item: (item[2], item[0], item[1])))
+        rank = (len(overlap), -(len(missing) + len(extra)), -group.draft_group_id)
+        if closest is None or rank > closest[0]:
+            closest = (rank, group.draft_group_id, missing, extra)
+    fields: dict = {"window": _SUNDAY_WINDOW, "missing": (), "extra": ()}
+    if closest is not None:
+        fields["draft_group_id"] = closest[1]
+        fields["missing"] = closest[2]
+        fields["extra"] = closest[3]
+    return fields
+
+
+def format_inexact(fields: dict | None) -> str:
+    """Public suffix. Game keys and the Sunday window only."""
+    if not fields:
+        return ""
+    parts = [f"window={_SUNDAY_WINDOW}"]
+    for label in ("missing", "extra"):
+        safe = []
+        for item in fields.get(label) or ():
+            token = _public_game_key(item)
+            if token:
+                safe.append(token)
+        shown = safe[:16]
+        parts.append(f"{label}={'none' if not shown else ','.join(shown)}")
+        if len(safe) > len(shown):
+            parts.append(f"{label}_count={len(safe)}")
+    group_id = fields.get("draft_group_id")
+    if isinstance(group_id, int) and not isinstance(group_id, bool) and group_id > 0:
+        parts.append(f"draft_group_id={group_id}")
+    return " ".join(parts)
+
+
+def _slate_failure(reason: str, groups, expected: set[tuple]) -> CaptureFailure:
+    if reason != "inexact_game_set":
+        return CaptureFailure(reason)
+    return CaptureFailure(reason, guard_fields=_inexact_fields(groups, expected))
 
 
 def _release(conn) -> None:
@@ -1804,14 +1879,15 @@ def _select_sunday(state: _State, expected: tuple[RegGame, ...]) -> DraftGroup:
         )
     if len(incomplete) == 1:
         groups = [_hydrate(state, group) if group.games is None else group for group in groups]
-    reason, chosen = _match_groups(tuple(groups), _keys(expected))
+    expected_keys = _keys(expected)
+    reason, chosen = _match_groups(tuple(groups), expected_keys)
     if chosen is None:
-        raise CaptureFailure(reason)
+        raise _slate_failure(reason, tuple(groups), expected_keys)
     if chosen.game_type_id is None:
         chosen = _hydrate(state, chosen)
-        reason, again = _match_groups((chosen,), _keys(expected))
+        reason, again = _match_groups((chosen,), expected_keys)
         if again is None:
-            raise CaptureFailure(reason)
+            raise _slate_failure(reason, (chosen,), expected_keys)
         chosen = again
     if chosen.game_type_id is None:
         raise _incomplete("select", "GameTypeId", chosen.draft_group_id)
@@ -2101,6 +2177,8 @@ def _finish_failure(state: _State, exc: CaptureFailure) -> AttemptResult:
         suffix = format_guard(exc.guard_fields)
     elif exc.reason == "metadata_incomplete":
         suffix = format_metadata_detail(exc.guard_fields)
+    elif exc.reason == "inexact_game_set":
+        suffix = format_inexact(exc.guard_fields)
     else:
         suffix = ""
     return AttemptResult(
