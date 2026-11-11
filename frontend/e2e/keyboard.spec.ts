@@ -77,6 +77,7 @@ test("narrow and zoomed layouts keep overflow inside the table", async ({ page }
   await page.setViewportSize({ width: 320, height: 700 });
   await page.goto("/stats?season=2024&week=10&team=CIN");
   await expect(page.getByRole("heading", { name: "Player week stats" })).toBeVisible();
+  await expect(page.locator("[aria-label='Table rows']")).toBeVisible();
   const overflow = await page.evaluate(() => {
     const root = document.documentElement;
     const region = document.querySelector("[aria-label='Table rows']");
