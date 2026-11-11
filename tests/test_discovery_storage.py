@@ -346,7 +346,7 @@ def test_at31_kind_and_oversize_refuse_without_deleting(engine):
         ).scalar()
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
     assert still == 1
-    assert version == "0009"
+    assert version == ScriptDirectory.from_config(cfg).get_current_head()
     with engine.begin() as conn:
         conn.execute(
             text("DELETE FROM salary_private.salary_artifacts WHERE sha256 = :sha"),
@@ -383,7 +383,7 @@ def test_at31_kind_and_oversize_refuse_without_deleting(engine):
     assert row.encoding == "gzip"
     assert int(row.decoded_bytes) == 5242881
     assert int(row.stored_len) == 1
-    assert version == "0009"
+    assert version == ScriptDirectory.from_config(cfg).get_current_head()
     with engine.begin() as conn:
         conn.execute(
             text("DELETE FROM salary_private.salary_artifacts WHERE sha256 = :sha"),

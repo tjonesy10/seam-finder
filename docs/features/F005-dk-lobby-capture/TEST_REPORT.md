@@ -318,7 +318,7 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 1 passed in 0.76s
 
 $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
-328 passed, 3 skipped, 1 warning in 57.44s
+329 passed, 2 skipped, 1 warning in 59.28s
 ```
 
 ### Mutator (advisory)
