@@ -84,3 +84,19 @@
 | Data-table contract | Shared table component API: column defs, stable row id, controlled sort and filter, optional row-toggle hook, and virtualization. | `DataTable` |
 | SERVE_SPA | Cutover switch. The SPA is served only when the value is exactly `true`. Any other value keeps Jinja. | `SERVE_SPA` |
 | static attribution fallback | The nflverse attribution text and links compiled into the frontend bundle and rendered in the footer even when `GET /api` has not succeeded. Covers loading, errors, a first visit during an outage, and the 404 shell. A missing refresh still renders `Last refresh: none`. | bundle constant checked against `web/attribution.py` `ATTRIBUTION_TEXT` and `ATTRIBUTION_LINKS` |
+
+## F010–F011 visual and table terms (planned)
+
+| Term | Definition | Code / data name |
+|---|---|---|
+| Design token | Named reusable visual value shared by components. | CSS custom properties, e.g. `--color-surface` |
+| CSS Module | Component-local CSS class names compiled by Vite. | `*.module.css` |
+| App shell | Shared navigation, main landmark and persistent attribution footer. | `frontend/src/shell.tsx` |
+| Visual baseline | Reviewed synthetic screenshot used for deterministic pixel comparison. | `frontend/e2e/visual.spec.ts-snapshots/` |
+| Density | Comfortable or compact fixed table body-row spacing. | `ui_density` |
+| Color scale | Page-relative points-cell intensity, always accompanied by numeric text. | `fantasy_points`, `fantasy_points_ppr` display |
+| Dataset filter | Existing server query constraint applied before pagination. | resource filters in `web/params.py` |
+| Page refinement | Local filter/search/multi-sort over the one loaded API page, not the whole dataset. | `ui_filters`, `ui_search`, `ui_sort` |
+| Logical visible rows | Filtered/sorted current-page rows, including rows outside the virtual viewport. | TanStack row model / CSV export |
+| Sticky column | First visible column retained at inline start while the table scrolls. | shared `DataTable` |
+| Formula-injection guard | Apostrophe prefix preventing dangerous spreadsheet cell starts before CSV quoting. | F011 CSV serializer contract |
