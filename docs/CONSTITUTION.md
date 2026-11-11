@@ -1,10 +1,10 @@
 # Seam Finder constitution
 
-Status: Accepted (2026-11-05); amended 2026-11-06 (RotoGuru / F003; current-slate DK export / F004; private salary capture, archives, and unification / F005–F008, owner-merged in PR #17). The non-negotiables every SPEC and ADR is checked against. Changed only through a PR the owner approves.
+Status: Accepted (2026-11-05); amended 2026-11-06 (RotoGuru / F003; current-slate DK export / F004; private salary capture, archives, and unification / F005–F008, owner-merged in PR #17); amended 2026-11-10 (React frontend / F009). Cosmo approved the 2026-11-10 amendment at 2026-11-10 20:03 America/New_York. The approved text is recorded in [CONSTITUTION-AMENDMENT.md](features/F009-react-frontend/CONSTITUTION-AMENDMENT.md) and references [ADR 0008](adr/0008-react-frontend-hosting.md). This 2026-11-10 amendment takes effect when the F009 follow-up PR merges to main. The non-negotiables every SPEC and ADR is checked against. Changed only through a PR the owner approves.
 
 ## Stack
-- Python 3.12, FastAPI with Jinja2 pages, SQLAlchemy Core, Alembic, Postgres. Decided in [ADR 0001](adr/0001-stack-and-hosting.md).
-- No ORM layer, pandas, JS framework, or bundler without a new ADR.
+- Python 3.12, FastAPI serving JSON under `/api/*` and the built React, TypeScript, and Vite static app, SQLAlchemy Core, Alembic, Postgres. The frontend uses TanStack Table, TanStack Virtual, and TanStack Query. It uses TanStack Router for page routes and URL-persisted filter, sort, and paging state. It does not use TanStack Start or SSR. Decided in [ADR 0001](adr/0001-stack-and-hosting.md), with the frontend and asset-hosting decision in [ADR 0008](adr/0008-react-frontend-hosting.md). Approved text: [CONSTITUTION-AMENDMENT.md](features/F009-react-frontend/CONSTITUTION-AMENDMENT.md).
+- No ORM layer or pandas without a new ADR. The React, TypeScript, and Vite frontend and the TanStack libraries in [ADR 0008](adr/0008-react-frontend-hosting.md) are the allowed JS framework and bundler. No other JS framework, SSR framework, or bundler without a new ADR.
 
 ## Cost and accounts
 - Free tiers only (Neon Free, Render Free, GitHub Actions on a public repo). Any paid plan, card on file, or new account needs the owner's approval first.
@@ -28,7 +28,7 @@ Status: Accepted (2026-11-05); amended 2026-11-06 (RotoGuru / F003; current-slat
 ## Testing bar
 - Every acceptance test in a SPEC has an automated test or a recorded hand check in TEST_REPORT.md.
 - Tests run against a real Postgres, not mocks of it.
-- CI (ruff, pytest, gitleaks) is green before a PR merges.
+- CI (ruff, pytest, gitleaks, and the F009 frontend typecheck, lint, unit, build, and Playwright checks) is green before a PR merges. The new frontend checks do not replace ruff, pytest, or gitleaks.
 
 ## Process
 - `main` changes only by PR; the owner merges.

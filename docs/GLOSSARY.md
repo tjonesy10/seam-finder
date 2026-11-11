@@ -81,3 +81,4 @@
 | TanStack Router | Client router for the six Phase 1 pages and for URL-persisted filter, sort, and paging state. Not TanStack Start, and not SSR. | `@tanstack/react-router` |
 | Data-table contract | Shared table component API: column defs, stable row id, controlled sort and filter, optional row-toggle hook, and virtualization. | `DataTable` |
 | SERVE_SPA | Cutover switch. The SPA is served only when the value is exactly `true`. Any other value keeps Jinja. | `SERVE_SPA` |
+| static attribution fallback | The nflverse attribution text and links compiled into the frontend bundle and rendered in the footer even when `GET /api` has not succeeded. Covers loading, errors, a first visit during an outage, and the 404 shell. A missing refresh still renders `Last refresh: none`. | bundle constant checked against `web/attribution.py` `ATTRIBUTION_TEXT` and `ATTRIBUTION_LINKS` |
