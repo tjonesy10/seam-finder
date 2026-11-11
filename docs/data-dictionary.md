@@ -450,7 +450,13 @@ Scope of the 33,554,432 decoded-byte cap is `https://www.draftkings.com/lobby/ge
 | `compressed_sha256` | lowercase SHA-256 of `body`. |
 | `compressed_bytes` | `octet_length(body)`. Equals `decoded_bytes` for `identity`. Less than `decoded_bytes` for `gzip`. |
 
-Legacy rows are backfilled as `identity` from the existing `sha256` and `byte_count`. Bodies are not rewritten. `.html.gz` companions stay `identity` with media type `application/gzip`. Dedup remains `(source, sha256)` on the decoded hash. Cumulative `salary_private` guard is 536,870,912 bytes of `pg_total_relation_size` across the schema's tables, indexes, and TOAST. Database write guard is 805,306,368 bytes. Per invocation stays 64 MiB decoded. Warnings at 70% and 85%. A crossed guard blocks the new write and deletes nothing. The revision is approved for production and is not in this docs change. Its id must not collide with `0009`.
+Legacy rows are backfilled as `identity` from the existing `sha256` and `byte_count`. Bodies are not rewritten. `.html.gz` companions stay `identity` with media type `application/gzip`. Dedup remains `(source, sha256)` on the decoded hash. Cumulative `salary_private` guard is 536,870,912 bytes of `pg_total_relation_size` across the schema's tables, indexes, and TOAST. Database write guard is 805,306,368 bytes. Per invocation stays 64 MiB decoded. Warnings at 70% and 85%. A crossed guard blocks the new write and deletes nothing.
+
+The revision is `0009_discovery_gzip_at_rest`, which revises `0008`. Forge built it in [PR #41](https://github.com/tjonesy10/seam-finder/pull/41) at `ee688b77`. The Neon-branch rehearsal is that PR's [TEST_REPORT](https://github.com/tjonesy10/seam-finder/blob/ee688b77/docs/features/F005-dk-lobby-capture/TEST_REPORT.md). This docs change does not contain the file. Production application is approved.
+
+`ck_salary_artifacts_encoding` requires `encoding IN ('identity', 'gzip')`. `ck_salary_artifacts_body` requires `byte_count = decoded_bytes`, `sha256 = decoded_sha256`, `compressed_bytes = octet_length(body)`, and both SHA-256 values as 64-character lowercase hex. `identity` also requires `compressed_sha256 = decoded_sha256`. `gzip` requires `compressed_bytes < decoded_bytes`. `decoded_bytes` is at most 33,554,432 for `lobby_discovery_json` and 5,242,880 otherwise. `ck_salary_artifacts_kind` includes `lobby_discovery_json`.
+
+`BEFORE INSERT` trigger `salary_artifacts_identity_encoding` fills `identity` when `encoding` is null. That is a compatibility shim for an old writer. New writers set every field explicitly. Downgrade refuses if any `gzip` row, any `lobby_discovery_json` row, or any decoded body over 5,242,880 bytes exists. It deletes nothing. Otherwise it restores the `0004` and `0005` checks. No grant changes.
 
 ## F012 public-query supporting indexes (planned, not installed)
 

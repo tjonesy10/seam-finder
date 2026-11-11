@@ -19,7 +19,7 @@ Reviewed for this proposal:
 - `loader/dk_lobby.py` reads the discovery URL with `_read_capped`, which stops at 5 MiB. `_accepted` then raises `storage_guard_object` when the read is truncated. The same 5 MiB read is used for `draftgroups/v1`, the rules URL, and the salary CSV. Discovery and `draftgroups/v1` are both stored today as `artifact_kind=lobby_json`.
 - `salary_private.salary_artifacts.body` is `bytea NOT NULL`. Check `ck_salary_artifacts_body` (migration `0004`) requires `octet_length(body) <= 5242880` for every artifact. Check `ck_salary_artifacts_kind` (migration `0005`) has no discovery-only kind. Unique `(source, sha256)` dedups stored bytes. There is no encoding column.
 - Production workflows on `main` run `python -m loader.migrate`. A revision merged to `main` is applied on the next production migrate.
-- Alembic revisions on this branch's base are `0001` through `0008`. There is no `0009` in the tree.
+- Alembic head on this docs branch's base is `0008`. Forge's revision is `0009_discovery_gzip_at_rest`, which revises `0008`, in [PR #41](https://github.com/tjonesy10/seam-finder/pull/41) at `ee688b77`. This docs change does not add that file.
 
 No week-10 snapshot exists. No getcontests body has been measured. This proposal does not invent one.
 
@@ -114,14 +114,25 @@ The owner chose to raise the discovery cap, keep every accepted byte, and stay o
 
 ## Consequences
 
-F005 R10–R14 and AT17–AT29 are the behavioral contract once this ADR is accepted. Forge writes the revision in its own change. This docs change does not add that file.
+F005 R10–R14 and AT17–AT31 are the behavioral contract once this ADR is accepted. The revision itself is forge's file in PR #41, not in this docs change.
 
-**Migration.** One Alembic revision on `salary_private.salary_artifacts`. It adds `encoding`, `decoded_sha256`, `decoded_bytes`, `compressed_sha256`, and `compressed_bytes`. It adds `lobby_discovery_json` to `ck_salary_artifacts_kind` and rewrites `ck_salary_artifacts_body` as in the limits section. It backfills legacy rows as `identity` from `sha256` and `byte_count` and does not rewrite bodies. It includes a downgrade, changes no `seamfinder_web` grants, and deletes nothing. Forge supplies the revision id. That id must not collide with `0009`.
-
-Production application is approved, as recorded in Status. The next production `python -m loader.migrate` after that revision is merged will apply it. Merging this docs change does not apply it, because the revision is not in this change.
+Production application is approved, as recorded in Status. The next production `python -m loader.migrate` after `0009_discovery_gzip_at_rest` is merged will apply it. Merging this docs change does not apply it.
 
 ADR 0005's no-deletion rule remains. Schedule proof, F004, the public site, and the Wednesday cadence are unchanged. The free-tier constitution rule remains: Launch is not chosen.
 
 ## Migration
 
-See Consequences. The revision is forge's. Production application is approved. This docs change does not add the file and does not run the migrate.
+Revision `0009_discovery_gzip_at_rest` revises `0008`. Forge built it in [PR #41](https://github.com/tjonesy10/seam-finder/pull/41) at `ee688b77`. The Neon-branch rehearsal is in that PR's [TEST_REPORT](https://github.com/tjonesy10/seam-finder/blob/ee688b77/docs/features/F005-dk-lobby-capture/TEST_REPORT.md). This docs change does not copy that report and does not add the revision file.
+
+On `salary_private.salary_artifacts` the upgrade:
+
+- Adds five `NOT NULL` columns: `encoding`, `decoded_sha256`, `decoded_bytes`, `compressed_sha256`, and `compressed_bytes`. Legacy rows are backfilled as `identity` from the existing `sha256` and `byte_count`. No body is rewritten.
+- Adds `ck_salary_artifacts_encoding`: `encoding IN ('identity', 'gzip')`.
+- Replaces `ck_salary_artifacts_body`. It requires `byte_count = decoded_bytes`, `sha256 = decoded_sha256`, `compressed_bytes = octet_length(body)`, and both SHA-256 values as 64-character lowercase hex. `identity` requires `compressed_bytes = decoded_bytes` and `compressed_sha256 = decoded_sha256`. `gzip` requires `compressed_bytes < decoded_bytes`. `decoded_bytes` is capped at 33,554,432 for `lobby_discovery_json` and at 5,242,880 for every other kind.
+- Adds `lobby_discovery_json` to `ck_salary_artifacts_kind`.
+- Adds a `BEFORE INSERT` trigger, `salary_artifacts_identity_encoding`, that fills `identity` when `encoding` is null so old writers keep working. That trigger is a compatibility shim. New writers set every field explicitly.
+- Changes no grants.
+
+The downgrade refuses when any `gzip` row, any `lobby_discovery_json` row, or any decoded body over 5,242,880 bytes exists. It deletes nothing. Otherwise it restores the `0004` and `0005` checks exactly.
+
+Production application is approved, as recorded in Status. This docs change does not run the migrate.
