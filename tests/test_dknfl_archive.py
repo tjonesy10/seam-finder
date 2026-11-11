@@ -866,3 +866,76 @@ def test_every_roster_token_must_fit_position(database_url, engine, tmp_path):
         ) == 2
     assert _scalar(engine, "SELECT count(*) FROM salary_private.dknfl_salaries") == prior
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == prior_snaps
+
+
+def _lar_rows():
+    return [
+        _dk(
+            **{
+                "ID": "3001",
+                "Name": "Rams Sample",
+                "Game Info": _info("LAR", "KC", "09/08/2024", "01:00PM"),
+                "TeamAbbrev": "LAR",
+            }
+        ),
+        _dk(
+            **{
+                "ID": "3002",
+                "Name": "Alex Sample",
+                "Position": "RB",
+                "Roster Position": "RB/FLEX",
+                "Game Info": _info("DAL", "PHI", "09/08/2024", "04:25PM"),
+                "TeamAbbrev": "PHI",
+                "Salary": "6100",
+            }
+        ),
+    ]
+
+
+def test_lar_token_matches_the_la_game(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2024_01_LA_KC", 2024, 1, "LA", "KC", date(2024, 9, 8), "13:00")
+        _game(conn, "2024_01_DAL_PHI", 2024, 1, "DAL", "PHI", date(2024, 9, 8), "16:25")
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/lar.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": _lar_rows()}],
+    )
+    assert _load(database_url, root, manifest) == 0
+    games = _rows(engine, "SELECT games FROM salary_private.salary_snapshots")[0]["games"]
+    assert {"LA", "KC"} in [{item["away"], item["home"]} for item in games]
+    assert all("LAR" not in {item["away"], item["home"]} for item in games)
+    ledger = _rows(
+        engine,
+        "SELECT raw_fields FROM salary_private.salary_source_rows ORDER BY row_number",
+    )[0]["raw_fields"]
+    stored = {key: value for key, value in ledger}
+    assert stored["TeamAbbrev"] == "LAR"
+    assert stored["Game Info"].startswith("LAR@KC")
+    meta = _rows(engine, "SELECT metadata FROM salary_private.salary_snapshots")[0]["metadata"]
+    assert meta["team_aliases"] == {"LAR": "LA"}
+    assert _rows(
+        engine,
+        "SELECT team_raw FROM salary_private.dknfl_salaries WHERE dk_id = '3001'",
+    )[0]["team_raw"] == "LA"
+
+
+def test_unknown_team_token_fails_closed(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _pair(conn, 2022, 1, date(2022, 9, 11))
+    rows = _two_players()
+    rows[0]["Game Info"] = _info("ZZZ", "KC")
+    rows[0]["TeamAbbrev"] = "ZZZ"
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/unknown.csv", "season": 2022, "week": 1, "rows": rows}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        """
+        SELECT reason_code, snapshot_id FROM salary_private.salary_observations
+        WHERE original_path = 'raw/unknown.csv'
+        """,
+    )[0]
+    assert observed["reason_code"] == "game_evidence_missing"
+    assert observed["snapshot_id"] is None

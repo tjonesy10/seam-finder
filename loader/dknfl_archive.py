@@ -124,6 +124,9 @@ REASON_PRIORITY = (
 _GAME = re.compile(
     r"^([A-Z]{2,3})@([A-Z]{2,3}) (\d{2}/\d{2}/\d{4}) (\d{1,2}:\d{2}[AP]M) ET$"
 )
+# DraftKings still writes LAR. The games table stores those Rams games as LA.
+# Other archive tokens already match the table, including WAS, JAX, LV, and LAC.
+TEAM_ALIASES = {"LAR": "LA"}
 _COMMIT = re.compile(r"githubusercontent.com/pureslurp/DKNFL/([0-9a-f]{7,40})/(.+)$")
 _HEX = re.compile(r"^[0-9a-fA-F]{64}$")
 _INT = re.compile(r"-?\d+")
@@ -365,13 +368,33 @@ def _lookup(raw_fields, name: str) -> str:
     return ""
 
 
+def _canonical_team(token: str) -> str:
+    return TEAM_ALIASES.get(token, token)
+
+
 def _kickoff(game_info: str):
     match = _GAME.match(game_info.strip())
     if match is None:
         return None
     away, home, day, clock = match.groups()
     parsed = datetime.strptime(f"{day} {clock}", "%m/%d/%Y %I:%M%p").replace(tzinfo=ET)
-    return away, home, parsed
+    return _canonical_team(away), _canonical_team(home), parsed
+
+
+def _aliases_applied(parsed: list[ParsedRow]) -> dict[str, str]:
+    used: dict[str, str] = {}
+    for row in parsed:
+        original = _blank(_lookup(row.raw_fields, "TeamAbbrev"))
+        if original and _canonical_team(original) != original:
+            used[original] = _canonical_team(original)
+        match = _GAME.match((row.game_info or "").strip())
+        if match is None:
+            continue
+        for token in (match.group(1), match.group(2)):
+            mapped = _canonical_team(token)
+            if mapped != token:
+                used[token] = mapped
+    return used
 
 
 _ELIGIBLE = {
@@ -408,7 +431,8 @@ def classify(records, headers: list[str]) -> tuple[list[ParsedRow], set[str]]:
         row.name = _blank(_lookup(raw_fields, "Name"))
         row.dk_id = _blank(_lookup(raw_fields, "ID"))
         row.roster = _blank(_lookup(raw_fields, "Roster Position"))
-        row.team = _blank(_lookup(raw_fields, "TeamAbbrev"))
+        raw_team = _blank(_lookup(raw_fields, "TeamAbbrev"))
+        row.team = None if raw_team is None else _canonical_team(raw_team)
         row.game_info = _lookup(raw_fields, "Game Info").strip()
         row.salary = parse_number(_lookup(raw_fields, "Salary"), 2, 10)
         if has_avg:
@@ -983,6 +1007,9 @@ def _process_file(conn, entry: ManifestEntry, root: Path, *, trigger, run_group,
                         "rejected_count": outcome.rows_rejected,
                         "identity": identity,
                     }
+                    aliases = _aliases_applied(parsed)
+                    if aliases:
+                        snapshot_meta["team_aliases"] = aliases
                     with _tx(conn):
                         existing = conn.execute(
                             text(
