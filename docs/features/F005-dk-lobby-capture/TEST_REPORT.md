@@ -249,3 +249,21 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 ```
 
 The two skips are `RUN_NETWORK_TESTS` in `tests/test_load.py` and `tests/test_dk_classic.py`. They were not run. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client.
+
+## 2026-11-11 option (a) store: BLOCKED
+
+Blueprint's option (a) numbers, relayed for this branch: `DISCOVERY_OBJECT_LIMIT` = 33,554,432 decoded bytes on `GET www.draftkings.com/lobby/getcontests?sport=NFL` only; full body stored; over that, stop at limit+1 decoded bytes and fail `storage_guard_object` with zero rows. Other fetches stay at 5,242,880. A discovery slice of 67,108,864 bytes sits inside the existing 134,217,728 cumulative budget. Both of those budget numbers are **PENDING** a final blueprint/Cosmo contract. The 64 MiB invocation guard and the 512 MiB database guard stay as they are. No eviction, no tombstone, no deletion. Compression at rest is not built. This PR does not delete stored artifacts.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Eviction, tombstones, deletion added by this PR | PASS (absent) | Diff has no artifact `DELETE` and no tombstone writer. Pre-existing test cleanup and the `0005` downgrade are not this change. |
+| 32 MiB decoded discovery body stored in full | BLOCKED | `migrations/versions/0004_salary_private.py` check `ck_salary_artifacts_body` requires `octet_length(body) <= 5242880`. A 33,554,432-byte insert cannot commit. Widening that check is a migration. This PR adds none. |
+| Discovery slice of 67,108,864 | BLOCKED | `artifact_kind = lobby_json` is also the `draftgroups/v1` body (`loader/dk_lobby.py` `_select_sunday`, `_select_explicit`, `_hydrate`). The artifacts table has no endpoint column. A discovery-only exception in `ck_salary_artifacts_body` needs a new kind or column. Observation JSON can name an artifact id, but a body over 5,242,880 bytes never inserts, so the slice has no legal row to sum. |
+| Compressed wire body, decoded size over or under 32 MiB | BLOCKED | The decoded cap is not applied. httpx already decompresses `Content-Encoding` before the 5 MiB read stop. A test of a 32 MiB decoded body cannot store it. |
+| Single discovery storage-write seam, compression later | UNKNOWN | Not added. The seam would still call `store_artifact`, and that insert fails the check above. Compression is not built. |
+| Logging and `7 10 * * 3` with `timezone: America/New_York` | PASS | Already on this branch. See the prep section above. |
+| AT ids for option (a) | UNKNOWN | Pending blueprint's ADR 0012 rewrite. Open PR #42 (`f233428`) is the projection proposal: `DISCOVERY_READ_LIMIT` 33,554,432, stored artifact is `DraftGroups` only, failures `discovery_read_limit` / `discovery_projection_invalid`, ATs AT17–AT23. Those ids are not this contract. |
+| 128 MiB cumulative and 64 MiB invocation behavior | PASS (unchanged) | `CUMULATIVE_LIMIT` and `INVOCATION_LIMIT` in `loader/salary_private.py` were not edited. Existing ceiling tests still fail closed. No new slice constant was introduced. |
+| First successful live capture body size | UNKNOWN | Record the first real capture's decoded discovery body size in this file once a capture succeeds. |
+
+`DISCOVERY_OBJECT_LIMIT` was not added. Applying a 32 MiB read and then inserting the body would turn today's `storage_guard_object` into a check-constraint error. The code stays on the 5 MiB object cap until the check can accept a discovery body.
