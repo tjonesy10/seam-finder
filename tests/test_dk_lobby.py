@@ -704,7 +704,7 @@ def test_at3_fail_closed_reasons(engine):
         "ambiguous_slate": {"groups": [sunday, twin]},
         "slate_unavailable": {"groups": [saturday]},
         "inexact_game_set": {"groups": [inexact]},
-        "missing_rules": {"groups": [sunday], "slots": ["FLEX"]},
+        "rules_roster_mismatch": {"groups": [sunday], "slots": ["FLEX"]},
         "captain_slot": {"groups": [sunday], "csv": _csv(
             [
                 row.replace(",QB,", ",CPT,") if row.startswith("QB,") else row
@@ -3697,6 +3697,93 @@ def test_game_set_with_an_extra_kickoff_stays_inexact(engine):
         engine, "SELECT reason_code FROM salary_private.salary_observations"
     )[0]["reason_code"] == "inexact_game_set"
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def _live_rules_document(cap=50000, names=None):
+    """DK rules shape: lineupTemplate rosterSlot names and salaryCap.maxValue. No salaries."""
+    slots = names or ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"]
+    return json.dumps(
+        {
+            "salaryCap": {"isEnabled": True, "maxValue": cap, "minValue": 0},
+            "lineupTemplate": [{"rosterSlot": {"name": name}, "order": index} for index, name in enumerate(slots, start=1)],
+        }
+    ).encode()
+
+
+def test_parse_rules_accepts_lineup_template_and_cap_object():
+    from loader.dk_lobby import parse_rules
+
+    verdict = parse_rules(_live_rules_document())
+    assert verdict.verified is True
+    assert verdict.reason is None
+    assert sorted(verdict.slots) == sorted(["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"])
+    flat = parse_rules(_rules())
+    assert flat.verified is True
+
+
+def test_parse_rules_reasons_stay_specific():
+    from loader.dk_lobby import parse_rules
+
+    classic = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"]
+    cases = {
+        b"{}": "rules_no_roster_slots",
+        b"[]": "rules_no_roster_slots",
+        b"not-json": "rules_no_roster_slots",
+        json.dumps({"rosterSlots": [1], "salaryCap": 50000}).encode(): "rules_bad_slot_entry",
+        json.dumps(
+            {"lineupTemplate": [{"rosterSlot": {}}], "salaryCap": {"maxValue": 50000}}
+        ).encode(): "rules_bad_slot_entry",
+        json.dumps({"rosterSlots": ["FLEX"], "salaryCap": 50000}).encode(): "rules_roster_mismatch",
+        _live_rules_document(names=["QB"]): "rules_roster_mismatch",
+        json.dumps({"rosterSlots": classic, "salaryCap": 40000}).encode(): "rules_cap_mismatch",
+        _live_rules_document(cap=0): "rules_cap_mismatch",
+        json.dumps({"rosterSlots": ["CPT", "FLEX"], "salaryCap": 50000}).encode(): "captain_slot",
+    }
+    for body, reason in cases.items():
+        verdict = parse_rules(body)
+        assert verdict.reason == reason
+        assert verdict.verified is False
+    flex = parse_rules(json.dumps({"rosterSlots": ["FLEX"], "salaryCap": 50000}).encode())
+    assert flex.slots == ("FLEX",)
+
+
+def test_rules_failure_log_names_slots_and_cap(engine, capsys):
+    _seed(engine)
+
+    def handler(request):
+        if "/rules" in request.url.path:
+            return _json_response(json.loads(_live_rules_document(cap=40000)))
+        return _happy_handler(_box())(request)
+
+    transport = ScriptTransport(handler)
+    assert _run(engine, transport) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "rules_cap_mismatch"
+    assert "expected_slots=QB,RB,RB,WR,WR,WR,TE,FLEX,DST" in captured.out
+    assert "expected_count=9" in captured.out
+    assert "observed_slots=QB,RB,RB,WR,WR,WR,TE,FLEX,DST" in captured.out
+    assert "observed_count=9" in captured.out
+    assert "expected_cap=50000" in captured.out
+    assert "cap=40000" in captured.out
+    assert "minValue" not in captured.out + captured.err
+    assert not any(call.url.path.endswith("/getavailableplayerscsv") for call in transport.calls)
+    notes = _rows(
+        engine,
+        "SELECT notes FROM load_runs WHERE dataset = 'dk_lobby_salaries'",
+    )[0]["notes"]
+    assert notes == "reason=rules_cap_mismatch;rows=0;snapshots=0"
+
+
+def test_capture_accepts_live_rules_shape(engine):
+    _seed(engine)
+
+    def handler(request):
+        if "/rules" in request.url.path:
+            return _json_response(json.loads(_live_rules_document()))
+        return _happy_handler(_box())(request)
+
+    assert _run(engine, ScriptTransport(handler)) == 0
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 1
 
 
 def test_rams_la_and_lar_are_one_sunday_game():

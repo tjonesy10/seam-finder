@@ -497,3 +497,37 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 ```
 
 The two skips are the `RUN_NETWORK_TESTS` gates. They do not call DraftKings.
+
+## 2026-11-11 rules document shape
+
+Run [43083114908](https://github.com/tjonesy10/seam-finder/actions/runs/43083114908) on `346e0cd` passed the slate match and the nflverse refresh, then printed only `missing_rules` and `rows=0`. No salary CSV was fetched.
+
+The Sunday Classic group is game type 1. The code's rules URL is `https://api.draftkings.com/lineups/v1/gametypes/1/rules`. That GET returned HTTP 200 and 5,813 bytes of JSON. `parse_rules` returned `missing_rules` because it reads `rosterSlots` and an integer `salaryCap`. The document has neither.
+
+| Field | Live shape |
+|---|---|
+| Slot list | `lineupTemplate`, 9 objects. Each `rosterSlot.name` is `QB`, `RB`, `RB`, `WR`, `WR`, `WR`, `TE`, `FLEX`, `DST`. |
+| Salary cap | `salaryCap` object: `maxValue` 50000, `minValue` 0, `isEnabled` boolean. |
+
+`parse_rules` now reads `lineupTemplate[].rosterSlot.name` when `rosterSlots` is absent, and `salaryCap.maxValue` when `salaryCap` is an object. The Classic check is unchanged: those nine names and cap 50000. A string `rosterSlots` list and an integer cap still verify. `CPT` stays `captain_slot`.
+
+`missing_rules` is no longer returned. The specific reasons are `rules_no_roster_slots`, `rules_bad_slot_entry`, `rules_roster_mismatch`, and `rules_cap_mismatch`. The status line lists expected and observed slot names, both counts, `expected_cap=50000`, and `cap`. Stderr stays the reason code. The FLEX-only fixture in `test_at3_fail_closed_reasons` now records `rules_roster_mismatch`.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Live rules shape | PASS | `test_parse_rules_accepts_lineup_template_and_cap_object` and `parse_rules` on the fetched body: verified, 9 slots, cap 50000. |
+| Capture with that shape | PASS | `test_capture_accepts_live_rules_shape`. One snapshot. |
+| Each new reason | PASS | `test_parse_rules_reasons_stay_specific`. Empty object, a non-list body, a numeric slot, a template slot with no name, a FLEX-only list, one QB, cap 40000, and `maxValue` 0. `CPT` stays `captain_slot`. |
+| Cap log | PASS | `test_rules_failure_log_names_slots_and_cap`. `cap=40000`, expected and observed slots, no CSV request. |
+| Stored production rules artifact | UNKNOWN | The public GET is not the body saved on run 43083114908. |
+| Mutator `--changed` | ADVISORY | Exit 3. The command ran the new `parse_rules` tests. 579 sites in `loader/dk_lobby.py`: killed 148, survived 371, uncovered 60, score 28.5%. `parse_rules` killed 5, survived 1, score 83.3%. `_read_slots` 50%. `_slot_name` and `_money_int` 100% of executed sites. The file score is low because `--changed` mutates the whole module and this command does not run the rest of the suite. |
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+365 passed, 2 skipped, 1 warning in 65.18s
+```
+
+The two skips are the `RUN_NETWORK_TESTS` gates. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client.
