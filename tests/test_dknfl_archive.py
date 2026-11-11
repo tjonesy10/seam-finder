@@ -939,3 +939,349 @@ def test_unknown_team_token_fails_closed(database_url, engine, tmp_path):
     )[0]
     assert observed["reason_code"] == "game_evidence_missing"
     assert observed["snapshot_id"] is None
+
+
+def _copies(count, day="09/08/2024"):
+    rows = []
+    for index in range(count):
+        if index % 2 == 0:
+            rows.append(
+                _dk(
+                    **{
+                        "ID": str(4000 + index),
+                        "Name": f"Player {index}",
+                        "Game Info": _info("BUF", "KC", day, "01:00PM"),
+                        "TeamAbbrev": "KC",
+                    }
+                )
+            )
+        else:
+            rows.append(
+                _dk(
+                    **{
+                        "ID": str(4000 + index),
+                        "Name": f"Player {index}",
+                        "Position": "RB",
+                        "Roster Position": "RB/FLEX",
+                        "Game Info": _info("DAL", "PHI", day, "04:25PM"),
+                        "TeamAbbrev": "PHI",
+                        "Salary": "6100",
+                    }
+                )
+            )
+    return rows
+
+
+def _fa_row(identifier="9001", name="Free Agent", salary="5000"):
+    return _dk(
+        **{
+            "ID": identifier,
+            "Name": name,
+            "Position": "WR",
+            "Roster Position": "WR/FLEX",
+            "TeamAbbrev": "FA",
+            "Game Info": "-",
+            "Salary": salary,
+        }
+    )
+
+
+def test_at13_exact_kickoff_records_no_discrepancy(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2024_01_BUF_KC", 2024, 1, "BUF", "KC", date(2024, 9, 8), "13:00")
+        _game(conn, "2024_01_DAL_PHI", 2024, 1, "DAL", "PHI", date(2024, 9, 8), "16:25")
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/exact.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": _copies(2)}],
+    )
+    assert _load(database_url, root, manifest) == 0
+    meta = _rows(engine, "SELECT metadata, games FROM salary_private.salary_snapshots")[0]
+    assert not meta["metadata"].get("kickoff_discrepancies")
+    clocks = {item["kickoff_at"] for item in meta["games"]}
+    assert "2024-09-08T17:00:00+00:00" in clocks
+    assert "2024-09-08T20:25:00+00:00" in clocks
+
+
+def test_at14_fifteen_minute_gap_uses_schedule_kickoff(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2024_01_BUF_KC", 2024, 1, "BUF", "KC", date(2024, 9, 8), "13:00")
+        _game(conn, "2024_01_DAL_PHI", 2024, 1, "DAL", "PHI", date(2024, 9, 8), "16:25")
+    rows = _copies(2)
+    rows[0]["Game Info"] = _info("BUF", "KC", "09/08/2024", "01:15PM")
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/plus15.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": rows}],
+    )
+    assert _load(database_url, root, manifest) == 0
+    snap = _rows(engine, "SELECT metadata, games FROM salary_private.salary_snapshots")[0]
+    matched = next(item for item in snap["games"] if item["game_id"] == "2024_01_BUF_KC")
+    assert matched["kickoff_at"] == "2024-09-08T17:00:00+00:00"
+    discrepancy = snap["metadata"]["kickoff_discrepancies"]
+    assert discrepancy == [
+        {
+            "away": "BUF",
+            "home": "KC",
+            "game_id": "2024_01_BUF_KC",
+            "file_kickoff_at": "2024-09-08T17:15:00+00:00",
+            "schedule_kickoff_at": "2024-09-08T17:00:00+00:00",
+            "delta_minutes": 15,
+        }
+    ]
+    observed = _rows(
+        engine,
+        "SELECT metadata FROM salary_private.salary_observations WHERE original_path = 'raw/plus15.csv'",
+    )[0]
+    assert observed["metadata"]["kickoff_discrepancies"] == discrepancy
+    ledger = _rows(engine, "SELECT raw_fields FROM salary_private.salary_source_rows ORDER BY row_number")[0]
+    assert dict(ledger["raw_fields"])["Game Info"] == "BUF@KC 09/08/2024 01:15PM ET"
+
+
+def test_kickoff_gap_of_thirty_minutes_loads(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2024_01_BUF_KC", 2024, 1, "BUF", "KC", date(2024, 9, 8), "13:00")
+        _game(conn, "2024_01_DAL_PHI", 2024, 1, "DAL", "PHI", date(2024, 9, 8), "16:25")
+    rows = _copies(2)
+    rows[0]["Game Info"] = _info("BUF", "KC", "09/08/2024", "01:30PM")
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/plus30.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": rows}],
+    )
+    assert _load(database_url, root, manifest) == 0
+    meta = _rows(engine, "SELECT metadata FROM salary_private.salary_snapshots")[0]["metadata"]
+    assert meta["kickoff_discrepancies"][0]["delta_minutes"] == 30
+
+
+def test_at15_thirty_one_minute_gap_fails_closed(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2024_01_BUF_KC", 2024, 1, "BUF", "KC", date(2024, 9, 8), "13:00")
+        _game(conn, "2024_01_DAL_PHI", 2024, 1, "DAL", "PHI", date(2024, 9, 8), "16:25")
+    rows = _copies(2)
+    rows[0]["Game Info"] = _info("BUF", "KC", "09/08/2024", "01:31PM")
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/plus31.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": rows}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        "SELECT reason_code, snapshot_id, artifact_id FROM salary_private.salary_observations WHERE original_path = 'raw/plus31.csv'",
+    )[0]
+    assert observed["reason_code"] == "game_evidence_missing"
+    assert observed["snapshot_id"] is None
+    assert _scalar(
+        engine,
+        "SELECT count(*) FROM salary_private.salary_source_rows WHERE artifact_id = :artifact",
+        artifact=observed["artifact_id"],
+    ) == 2
+
+
+def test_at16_two_schedule_rows_on_the_same_date_stay_ambiguous(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2024_01_BUF_KC_A", 2024, 1, "BUF", "KC", date(2024, 9, 8), "13:00")
+        _game(conn, "2024_01_BUF_KC_B", 2024, 1, "BUF", "KC", date(2024, 9, 8), "16:25")
+        _game(conn, "2024_01_DAL_PHI", 2024, 1, "DAL", "PHI", date(2024, 9, 8), "16:25")
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/two.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": _copies(2)}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        "SELECT reason_code, snapshot_id FROM salary_private.salary_observations WHERE original_path = 'raw/two.csv'",
+    )[0]
+    assert observed["reason_code"] == "game_evidence_ambiguous"
+    assert observed["snapshot_id"] is None
+
+
+def test_different_new_york_date_fails_closed(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2024_01_BUF_KC", 2024, 1, "BUF", "KC", date(2024, 9, 8), "13:00")
+        _game(conn, "2024_01_DAL_PHI", 2024, 1, "DAL", "PHI", date(2024, 9, 8), "16:25")
+    rows = _copies(2, day="09/09/2024")
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/nextday.csv", "season": 2024, "week": 1, "date": "09/09/2024", "rows": rows}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        "SELECT reason_code, snapshot_id FROM salary_private.salary_observations WHERE original_path = 'raw/nextday.csv'",
+    )[0]
+    assert observed["reason_code"] == "game_evidence_missing"
+    assert observed["snapshot_id"] is None
+
+
+def test_at17_one_free_agent_row_is_skipped(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _pair(conn, 2024, 1, date(2024, 9, 8))
+    rows = _copies(98) + [_fa_row()]
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/fa.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": rows}],
+    )
+    body = (root / "raw/fa.csv").read_bytes()
+    assert _load(database_url, root, manifest) == 0
+    artifact = _rows(
+        engine,
+        "SELECT sha256, body FROM salary_private.salary_artifacts WHERE source = 'dknfl' AND artifact_kind = 'csv'",
+    )[0]
+    assert bytes(artifact["body"]) == body
+    assert artifact["sha256"] == hashlib.sha256(body).hexdigest()
+    ledger = _rows(
+        engine,
+        "SELECT row_number, parse_status, reason_codes FROM salary_private.salary_source_rows ORDER BY row_number",
+    )
+    assert ledger[-1]["reason_codes"] == ["free_agent_no_game"]
+    assert ledger[-1]["parse_status"] == "rejected"
+    valid = _rows(engine, "SELECT dk_id FROM salary_private.dknfl_salaries WHERE row_status = 'valid'")
+    assert "9001" not in {row["dk_id"] for row in valid}
+    meta = _rows(engine, "SELECT metadata FROM salary_private.salary_snapshots")[0]["metadata"]
+    assert meta["free_agent_row_count"] == 1
+    assert meta["free_agent_rows"] == [
+        {
+            "original_path": "raw/fa.csv",
+            "row_number": 99,
+            "dk_id": "9001",
+            "name": "Free Agent",
+            "salary": "5000",
+            "reason": "free_agent_no_game",
+        }
+    ]
+    observed = _rows(
+        engine,
+        "SELECT metadata FROM salary_private.salary_observations WHERE original_path = 'raw/fa.csv'",
+    )[0]
+    assert observed["metadata"]["free_agent_rows"] == meta["free_agent_rows"]
+    notes = _scalar(engine, "SELECT notes FROM load_runs WHERE dataset = 'dknfl_salaries'")
+    assert "free_agent_rows=1" in notes
+
+
+def test_at18_fa_with_other_game_info_fails(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _pair(conn, 2024, 1, date(2024, 9, 8))
+    row = _fa_row()
+    row["Game Info"] = "not-a-game"
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/fa-other.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": _copies(2) + [row]}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        "SELECT reason_code, snapshot_id FROM salary_private.salary_observations WHERE original_path = 'raw/fa-other.csv'",
+    )[0]
+    assert observed["reason_code"] == "game_info_unparsed"
+    assert observed["snapshot_id"] is None
+
+
+def test_at19_dash_on_a_non_fa_team_fails(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _pair(conn, 2024, 1, date(2024, 9, 8))
+    row = _fa_row()
+    row["TeamAbbrev"] = "KC"
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/dash.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": _copies(2) + [row]}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        "SELECT reason_code, snapshot_id FROM salary_private.salary_observations WHERE original_path = 'raw/dash.csv'",
+    )[0]
+    assert observed["reason_code"] == "game_info_unparsed"
+    assert observed["snapshot_id"] is None
+
+
+def test_free_agent_rows_at_exactly_two_percent_load(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _pair(conn, 2024, 1, date(2024, 9, 8))
+    rows = _copies(49) + [_fa_row()]
+    assert len(rows) == 50
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/two-percent.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": rows}],
+    )
+    assert _load(database_url, root, manifest) == 0
+    assert _rows(engine, "SELECT metadata FROM salary_private.salary_snapshots")[0]["metadata"]["free_agent_row_count"] == 1
+
+
+def test_at20_free_agent_rows_over_two_percent_fail_closed(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _pair(conn, 2024, 1, date(2024, 9, 8))
+    rows = _copies(48) + [_fa_row()]
+    assert len(rows) == 49
+    root, manifest = _archive(
+        tmp_path,
+        [{"path": "raw/over.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": rows}],
+    )
+    assert _load(database_url, root, manifest) == 1
+    observed = _rows(
+        engine,
+        "SELECT reason_code, snapshot_id, artifact_id FROM salary_private.salary_observations WHERE original_path = 'raw/over.csv'",
+    )[0]
+    assert observed["reason_code"] == "free_agent_row_bound"
+    assert observed["snapshot_id"] is None
+    reasons = _rows(
+        engine,
+        """
+        SELECT reason_codes FROM salary_private.salary_source_rows
+        WHERE artifact_id = :artifact AND reason_codes @> '["free_agent_no_game"]'::jsonb
+        """,
+        artifact=observed["artifact_id"],
+    )
+    assert len(reasons) == 1
+
+
+def test_at21_week19_tolerance_and_week1_free_agent(database_url, engine, tmp_path):
+    with engine.begin() as conn:
+        _game(conn, "2023_19_GB_DAL", 2023, 19, "GB", "DAL", date(2024, 1, 14), "16:30", "POST")
+        _game(conn, "2023_19_PIT_BUF", 2023, 19, "PIT", "BUF", date(2024, 1, 15), "16:30", "POST")
+        _game(conn, "2023_19_LA_DET", 2023, 19, "LA", "DET", date(2024, 1, 14), "20:00", "POST")
+        _pair(conn, 2024, 1, date(2024, 9, 8))
+    week19 = [
+        _dk(**{"ID": "1901", "Name": "Green Sample", "Game Info": _info("GB", "DAL", "01/14/2024", "04:30PM"), "TeamAbbrev": "DAL"}),
+        _dk(**{"ID": "1902", "Name": "Pit Sample", "Position": "RB", "Roster Position": "RB/FLEX", "Game Info": _info("PIT", "BUF", "01/15/2024", "04:30PM"), "TeamAbbrev": "BUF", "Salary": "6100"}),
+        _dk(**{"ID": "1903", "Name": "Rams Sample", "Position": "WR", "Roster Position": "WR/FLEX", "Game Info": _info("LAR", "DET", "01/14/2024", "08:15PM"), "TeamAbbrev": "LAR", "Salary": "5400"}),
+    ]
+    week1 = _copies(98) + [_fa_row(identifier="7101", name="Daewood Davis", salary="3000")]
+    root, manifest = _archive(
+        tmp_path,
+        [
+            {"path": "2023/WEEK19/DKSalaries-Week19.csv", "season": 2023, "week": 19, "date": "01/14/2024", "rows": week19},
+            {"path": "2024/WEEK1/DKSalaries-Week1.csv", "season": 2024, "week": 1, "date": "09/08/2024", "rows": week1},
+        ],
+    )
+    assert _load(database_url, root, manifest) == 0
+    wild = _rows(
+        engine,
+        """
+        SELECT season_type, games, metadata FROM salary_private.salary_snapshots
+        WHERE source_snapshot_key = '2023/WEEK19/DKSalaries-Week19.csv'
+        """,
+    )[0]
+    assert wild["season_type"] == "POST"
+    det = next(item for item in wild["games"] if item["game_id"] == "2023_19_LA_DET")
+    assert det["away"] == "LA" and det["kickoff_at"] == "2024-01-15T01:00:00+00:00"
+    assert wild["metadata"]["kickoff_discrepancies"] == [
+        {
+            "away": "LA",
+            "home": "DET",
+            "game_id": "2023_19_LA_DET",
+            "file_kickoff_at": "2024-01-15T01:15:00+00:00",
+            "schedule_kickoff_at": "2024-01-15T01:00:00+00:00",
+            "delta_minutes": 15,
+        }
+    ]
+    week = _rows(
+        engine,
+        """
+        SELECT metadata FROM salary_private.salary_snapshots
+        WHERE source_snapshot_key = '2024/WEEK1/DKSalaries-Week1.csv'
+        """,
+    )[0]
+    assert week["metadata"]["free_agent_row_count"] == 1
+    assert week["metadata"]["free_agent_rows"][0]["dk_id"] == "7101"
+    assert _scalar(
+        engine,
+        "SELECT count(*) FROM salary_private.salary_observations WHERE reason_code = 'game_info_unparsed'",
+    ) == 0

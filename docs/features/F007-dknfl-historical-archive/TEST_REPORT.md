@@ -164,3 +164,43 @@ Remaining failures:
 This is not a certified season. Mutator is not installed: UNKNOWN.
 
 `ruff check loader web tests migrations` passed. `DATABASE_URL=postgresql:///seam_alias pytest -q` with local trust authentication, then restored to peer: `266 passed, 2 skipped`. `alembic heads` is `0008`.
+
+## R7 and R8
+
+Parser version is `f007.2`. A unique same-date schedule game whose kickoff is within 30 minutes loads. The snapshot `kickoff_at` is the schedule instant, and a nonzero gap is stored as `kickoff_discrepancies`. An `FA` row with `Game Info` exactly `-` is a ledger reject `free_agent_no_game` and is counted. More than 2% of the file's data rows fails `free_agent_row_bound`. A 31-minute gap, a second same-date candidate, a different New York date, a non-`FA` dash, an `FA` row that is not `-`, and `ZZZ` still fail closed.
+
+Before this change, `test_at14_fifteen_minute_gap_uses_schedule_kickoff` and `test_kickoff_gap_of_thirty_minutes_loads` exited 1 with `game_evidence_missing`. `test_at17_one_free_agent_row_is_skipped` and `test_free_agent_rows_at_exactly_two_percent_load` exited 1 with `game_info_unparsed`. `test_at20_free_agent_rows_over_two_percent_fail_closed` reported `game_info_unparsed` instead of `free_agent_row_bound`. `test_at21_week19_tolerance_and_week1_free_agent` failed both files. Those tests are green after the change.
+
+| AT | Result | Evidence |
+|---|---|---|
+| AT1 | PASS | `test_at1_only_dknfl_rows_and_contracts` in this suite |
+| AT2 | PASS | `test_at2_exact_bytes_and_duplicate_paths_share_bytes_only` |
+| AT3 | PASS | `test_at3_blank_placeholders_stay_rejected` |
+| AT4 | PASS | `test_at4_corrected_weeks_keep_original_paths` |
+| AT5 | PASS | `test_at5_two_game_and_post_keep_unknown_rules` |
+| AT6 | PASS | `test_at6_showdown_header_and_game_failures_keep_prior` |
+| AT7 | PASS | `test_at7_duplicate_ids_remain_non_ready` |
+| AT8 | PASS | `test_at8_rerun_reuses_and_correction_appends` |
+| AT9 | PASS | `test_at9_neighbors_and_reconcile` |
+| AT10 | PASS | `test_at10_boundaries_and_budget` |
+| AT11 | PASS | `test_at11_grants_leave_other_sources` |
+| AT12 | PASS | `test_at12_attribution_and_scanner` |
+| AT13 | PASS | `test_at13_exact_kickoff_records_no_discrepancy`. Exact clocks, no discrepancy list. |
+| AT14 | PASS | `test_at14_fifteen_minute_gap_uses_schedule_kickoff`. Canonical kickoff is the schedule instant. Delta is +15. Ledger Game Info keeps 01:15PM. |
+| AT15 | PASS | `test_at15_thirty_one_minute_gap_fails_closed`. `game_evidence_missing`, no snapshot, ledger remains. `test_kickoff_gap_of_thirty_minutes_loads` accepts exactly 30 minutes. |
+| AT16 | PASS | `test_at16_two_schedule_rows_on_the_same_date_stay_ambiguous`. `game_evidence_ambiguous`. `test_different_new_york_date_fails_closed` is `game_evidence_missing`. |
+| AT17 | PASS | `test_at17_one_free_agent_row_is_skipped`. Ledger reason `free_agent_no_game`, absent from valid salary rows, metadata lists path, row, id, name, and salary. Source bytes unchanged. Notes include `free_agent_rows=1`. |
+| AT18 | PASS | `test_at18_fa_with_other_game_info_fails`. `game_info_unparsed`. |
+| AT19 | PASS | `test_at19_dash_on_a_non_fa_team_fails`. `game_info_unparsed`. |
+| AT20 | PASS | `test_at20_free_agent_rows_over_two_percent_fail_closed`. 1 of 49 fails `free_agent_row_bound` and the ledger keeps the reason. `test_free_agent_rows_at_exactly_two_percent_load` is 1 of 50 and succeeds. |
+| AT21 | PASS | `test_at21_week19_tolerance_and_week1_free_agent`. WEEK19 is POST with a +15 minute audit for `2023_19_LA_DET`. WEEK1 has one free-agent skip and no `game_info_unparsed`. |
+
+Isolated `seam_dknfl_r7`, flag-on through `0008`, local nflverse teams and 2021–2026 games, then the 62 public `DKSalaries*.csv` files (not committed):
+
+```
+selected=62 succeeded=62 failed=0 reused=0 not_selected=0 rows_read=27788 rows_valid=27772 rows_rejected=16 free_agent_rows=1
+```
+
+No remaining file failure. Logged gap: `2023/WEEK19/DKSalaries-Week19.csv`, `LA@DET`, `game_id` `2023_19_LA_DET`, file `2024-01-15T01:15:00+00:00`, schedule `2024-01-15T01:00:00+00:00`, `delta_minutes` 15. Logged skip: `2024/WEEK1/DKSalaries-Week1.csv` row 385, DK id `35214397`, name Daewood Davis, salary `3000`, reason `free_agent_no_game`.
+
+`ruff check loader web tests migrations` passed. `DATABASE_URL=postgresql:///seam_alias pytest -q` with trust authentication: `278 passed, 2 skipped`. `alembic heads` is `0008`. Mutator is not installed: UNKNOWN. This is not a certified season.
