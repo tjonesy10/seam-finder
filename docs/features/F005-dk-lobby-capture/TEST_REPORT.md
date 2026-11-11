@@ -250,20 +250,88 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 
 The two skips are `RUN_NETWORK_TESTS` in `tests/test_load.py` and `tests/test_dk_classic.py`. They were not run. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client.
 
-## 2026-11-11 option (a) store: BLOCKED
+## 2026-11-11 ADR 0012 discovery cap and gzip at rest
 
-Blueprint's option (a) numbers, relayed for this branch: `DISCOVERY_OBJECT_LIMIT` = 33,554,432 decoded bytes on `GET www.draftkings.com/lobby/getcontests?sport=NFL` only; full body stored; over that, stop at limit+1 decoded bytes and fail `storage_guard_object` with zero rows. Other fetches stay at 5,242,880. A discovery slice of 67,108,864 bytes sits inside the existing 134,217,728 cumulative budget. Both of those budget numbers are **PENDING** a final blueprint/Cosmo contract. The 64 MiB invocation guard and the 512 MiB database guard stay as they are. No eviction, no tombstone, no deletion. Compression at rest is not built. This PR does not delete stored artifacts.
+PR #42 head `7a409f82e1df875f1d8c14521ee88434e283a635` defines R10 and AT17–AT20. The verified constraint on main, created in `migrations/versions/0004_salary_private.py` lines 59-62 on `salary_private.salary_artifacts`, is:
 
-| Check | Result | Evidence |
+```text
+CONSTRAINT ck_salary_artifacts_body CHECK (
+  byte_count = octet_length(body) AND byte_count >= 0 AND octet_length(body) <= 5242880
+)
+```
+
+`lobby_json` is also the draft-group body, so that check could not single out discovery rows. Revision `0009` (down_revision `0008`) adds kind `lobby_discovery_json` and gzip-at-rest columns. PR #38 also uses revision id `0009` and will renumber; this file is the one that revises `0008`. There is no discovery slice and no PENDING constant. Nothing in the migration deletes a row.
+
+| AT | Result | Evidence |
 |---|---|---|
-| Eviction, tombstones, deletion added by this PR | PASS (absent) | Diff has no artifact `DELETE` and no tombstone writer. Pre-existing test cleanup and the `0005` downgrade are not this change. |
-| 32 MiB decoded discovery body stored in full | BLOCKED | `migrations/versions/0004_salary_private.py` check `ck_salary_artifacts_body` requires `octet_length(body) <= 5242880`. A 33,554,432-byte insert cannot commit. Widening that check is a migration. This PR adds none. |
-| Discovery slice of 67,108,864 | BLOCKED | `artifact_kind = lobby_json` is also the `draftgroups/v1` body (`loader/dk_lobby.py` `_select_sunday`, `_select_explicit`, `_hydrate`). The artifacts table has no endpoint column. A discovery-only exception in `ck_salary_artifacts_body` needs a new kind or column. Observation JSON can name an artifact id, but a body over 5,242,880 bytes never inserts, so the slice has no legal row to sum. |
-| Compressed wire body, decoded size over or under 32 MiB | BLOCKED | The decoded cap is not applied. httpx already decompresses `Content-Encoding` before the 5 MiB read stop. A test of a 32 MiB decoded body cannot store it. |
-| Single discovery storage-write seam, compression later | UNKNOWN | Not added. The seam would still call `store_artifact`, and that insert fails the check above. Compression is not built. |
-| Logging and `7 10 * * 3` with `timezone: America/New_York` | PASS | Already on this branch. See the prep section above. |
-| AT ids for option (a) | UNKNOWN | Pending blueprint's ADR 0012 rewrite. Open PR #42 (`f233428`) is the projection proposal: `DISCOVERY_READ_LIMIT` 33,554,432, stored artifact is `DraftGroups` only, failures `discovery_read_limit` / `discovery_projection_invalid`, ATs AT17–AT23. Those ids are not this contract. |
-| 128 MiB cumulative and 64 MiB invocation behavior | PASS (unchanged) | `CUMULATIVE_LIMIT` and `INVOCATION_LIMIT` in `loader/salary_private.py` were not edited. Existing ceiling tests still fail closed. No new slice constant was introduced. |
-| First successful live capture body size | UNKNOWN | Record the first real capture's decoded discovery body size in this file once a capture succeeds. |
+| AT17 | PASS | `test_at17_six_mib_discovery_is_stored_and_round_trips`. A synthetic 6,291,456-byte getcontests body is stored as `lobby_discovery_json` with `encoding=gzip`, `decoded_bytes=6291456`, and `decode_stored_body` returns the same bytes. A snapshot and 4 salary rows are published. The public log has `discovery_body_bytes=6291456` and does not contain `CONTEST-PADDING-BLOCK`. |
+| AT18 | PASS | `test_oversized_discovery_document_fails_closed` and `test_gzip_wire_past_discovery_cap_stops_at_limit_plus_one`. A decoded body of 33,554,433 bytes, including one whose gzip wire is under 5 MiB, stops at 33,554,433 decoded bytes, fails `storage_guard_object`, stores no discovery artifact, and writes zero salary rows. |
+| AT19 | PASS | `test_at19_other_urls_fail_just_over_five_mib`. `draftgroups/v1`, rules, and the salary CSV each fail `storage_guard_object` at 5,242,881 decoded bytes with `cap=5242880` and `bytes_read=5242881`. |
+| AT20 | PASS | `test_at20_exact_five_mib_discovery_is_stored`. A discovery body of exactly 5,242,880 decoded bytes is stored and round-trips to those bytes. Gzip at rest means the `bytea` is the gzip member when that member is smaller; the decoded bytes equal the response. |
+| Guards | PASS | Invocation stays 67,108,864 decoded bytes. Private `pg_total_relation_size` guard is 536,870,912. Database guard is 805,306,368. Preflight adds the encoded length. `assert_actual_ceiling` remeasures and is the hard stop. `storage_warning_percent` returns 70 or 85 and is silent at or over the limit. No deletion. |
+| Legacy rows | PASS | `test_legacy_insert_stays_identity_and_body_is_not_rewritten`. An `html_gzip` insert that omits the new columns is filled as identity. The stored body bytes are unchanged. |
+| Downgrade | PASS | `test_downgrade_refuses_gzip_and_deletes_nothing`. A gzip row makes downgrade raise `downgrade refused` and leaves the row and revision `0009`. After that fixture row is removed by the test, downgrade to `0008` drops the columns. |
+| First live capture body size | UNKNOWN | Record the first real capture's decoded discovery body size in this file once a capture succeeds. |
+| Neon branch rehearsal | UNKNOWN | Pending. Forge will run it. This test report did not touch a Neon branch or production. |
 
-`DISCOVERY_OBJECT_LIMIT` was not added. Applying a 32 MiB read and then inserting the body would turn today's `storage_guard_object` into a check-constraint error. The code stays on the 5 MiB object cap until the check can accept a discovery body.
+### Production migration
+
+Merging this revision makes a private-schema migrate run `alembic upgrade head`, which applies `0009` on production. That needs Cosmo's explicit approval. No grants change.
+
+Upgrade, after the nullable add and the identity backfill (`encoding='identity'`, hashes and lengths copied from `sha256` and `byte_count`, body not rewritten):
+
+```sql
+ALTER TABLE salary_private.salary_artifacts
+    ALTER COLUMN encoding SET NOT NULL,
+    ALTER COLUMN decoded_sha256 SET NOT NULL,
+    ALTER COLUMN decoded_bytes SET NOT NULL,
+    ALTER COLUMN compressed_sha256 SET NOT NULL,
+    ALTER COLUMN compressed_bytes SET NOT NULL;
+
+ALTER TABLE salary_private.salary_artifacts
+    ADD CONSTRAINT ck_salary_artifacts_encoding
+    CHECK (encoding IN ('identity', 'gzip'));
+
+ALTER TABLE salary_private.salary_artifacts DROP CONSTRAINT ck_salary_artifacts_body;
+ALTER TABLE salary_private.salary_artifacts
+    ADD CONSTRAINT ck_salary_artifacts_body CHECK (
+        byte_count = decoded_bytes
+        AND sha256 = decoded_sha256
+        AND compressed_bytes = octet_length(body)
+        AND decoded_bytes >= 0
+        AND compressed_bytes >= 0
+        AND decoded_sha256 ~ '^[0-9a-f]{64}$'
+        AND compressed_sha256 ~ '^[0-9a-f]{64}$'
+        AND (
+            (encoding = 'identity' AND compressed_bytes = decoded_bytes
+                AND compressed_sha256 = decoded_sha256)
+            OR (encoding = 'gzip' AND compressed_bytes < decoded_bytes)
+        )
+        AND (
+            (artifact_kind = 'lobby_discovery_json' AND decoded_bytes <= 33554432)
+            OR (artifact_kind <> 'lobby_discovery_json' AND decoded_bytes <= 5242880)
+        )
+    );
+
+ALTER TABLE salary_private.salary_artifacts DROP CONSTRAINT ck_salary_artifacts_kind;
+ALTER TABLE salary_private.salary_artifacts
+    ADD CONSTRAINT ck_salary_artifacts_kind CHECK (
+        artifact_kind IN (
+            'csv', 'lobby_json', 'rules_json', 'html_gzip', 'manifest', 'mapping',
+            'adapter_row_image', 'rejected_body', 'schedule_raw', 'schedule_reference',
+            'lobby_discovery_json'
+        )
+    );
+```
+
+Downgrade raises, and deletes nothing, when any row has `encoding = 'gzip'`, `artifact_kind = 'lobby_discovery_json'`, or `decoded_bytes > 5242880`. Otherwise it drops the trigger, the filler function, the new check, the five columns, and restores the 0004 body check and the 0005 kind list.
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+304 passed, 2 skipped, 1 warning in 43.90s
+```
+
+The two skips are still the `RUN_NETWORK_TESTS` gates. They do not call DraftKings.

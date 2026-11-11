@@ -4,8 +4,11 @@ Artifacts, attempts, snapshots, and the row ledger live here. Later archive
 loaders can call this module. This file does not import lobby HTTP or F004.
 """
 
+import gzip
 import hashlib
+import io
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -16,9 +19,10 @@ from sqlalchemy.exc import IntegrityError
 
 CAPTURE_LOCK = 582005
 OBJECT_LIMIT = 5 * 1024 * 1024
+DISCOVERY_OBJECT_LIMIT = 32 * 1024 * 1024
 INVOCATION_LIMIT = 64 * 1024 * 1024
-CUMULATIVE_LIMIT = 128 * 1024 * 1024
-DATABASE_LIMIT = 512 * 1024 * 1024
+CUMULATIVE_LIMIT = 536_870_912
+DATABASE_LIMIT = 805_306_368
 PARSER_VERSION = "f005.1"
 DATASET = "dk_lobby_salaries"
 PUBLIC_SOURCE_URL = "dk_lobby_salaries"
@@ -36,6 +40,7 @@ class Source(StrEnum):
 class ArtifactKind(StrEnum):
     CSV = "csv"
     LOBBY_JSON = "lobby_json"
+    LOBBY_DISCOVERY_JSON = "lobby_discovery_json"
     RULES_JSON = "rules_json"
     HTML_GZIP = "html_gzip"
     MANIFEST = "manifest"
@@ -207,7 +212,45 @@ def actual_ceiling_block(conn) -> GuardBlock | None:
     return None
 
 
+def storage_warning_percent(used: int, limit: int) -> int | None:
+    """70 or 85 when usage is at that share of a guard and still under it."""
+    if limit <= 0 or used >= limit:
+        return None
+    ratio = used / limit
+    if ratio >= 0.85:
+        return 85
+    if ratio >= 0.70:
+        return 70
+    return None
+
+
+def warn_storage(conn) -> None:
+    """Log guard pressure. Counts only: no payloads, paths, or row bodies."""
+    sizes = read_storage_sizes(conn)
+    for name, used, limit in (
+        ("cumulative", sizes.private_bytes, CUMULATIVE_LIMIT),
+        ("database", sizes.database_bytes, DATABASE_LIMIT),
+    ):
+        percent = storage_warning_percent(used, limit)
+        if percent is None:
+            continue
+        print(
+            f"storage_guard_warning guard={name} percent={percent} bytes={used} limit={limit}",
+            file=sys.stderr,
+        )
+
+
+def encoded_growth_block(conn, encoded_bytes: int) -> GuardBlock | None:
+    """Preflight. The estimate is the encoded length. The post-write measure decides."""
+    if cumulative_would_exceed(conn, encoded_bytes):
+        return GuardBlock.CUMULATIVE
+    if database_would_exceed(conn, encoded_bytes):
+        return GuardBlock.DATABASE
+    return None
+
+
 def assert_actual_ceiling(conn) -> None:
+    warn_storage(conn)
     block = actual_ceiling_block(conn)
     if block is not None:
         raise PrivateWriteError(block.value)
@@ -325,6 +368,79 @@ def insert_running_observation(
         )
 
 
+def gzip_level9(decoded: bytes) -> bytes:
+    """gzip -9 with a fixed mtime so the same decoded bytes encode the same way."""
+    buffer = io.BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb", compresslevel=9, mtime=0) as handle:
+        handle.write(decoded)
+    return buffer.getvalue()
+
+
+def gunzip_limited(payload: bytes, limit: int) -> bytes:
+    """Decompress and stop if the decoded output would pass ``limit``."""
+    out = bytearray()
+    with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            if len(out) + len(chunk) > limit:
+                raise PrivateWriteError(GuardBlock.OBJECT.value)
+            out.extend(chunk)
+    return bytes(out)
+
+
+def decode_stored_body(body: bytes, encoding: str) -> bytes:
+    """Transparent reader. Identity returns the stored bytes. gzip is decompressed."""
+    raw = bytes(body)
+    if encoding == "identity":
+        return raw
+    if encoding == "gzip":
+        return gunzip_limited(raw, DISCOVERY_OBJECT_LIMIT)
+    raise PrivateWriteError("artifact_readback")
+
+
+def encode_discovery(decoded: bytes) -> tuple[str, bytes, str, int, str, int]:
+    """Encode one discovery body. Identity when gzip is not smaller.
+
+    Returns encoding, stored bytes, decoded sha256, decoded length,
+    compressed sha256, and compressed length. Verifies both sides.
+    """
+    if len(decoded) > DISCOVERY_OBJECT_LIMIT:
+        raise PrivateWriteError(GuardBlock.OBJECT.value)
+    decoded_sha = sha256_bytes(decoded)
+    decoded_len = len(decoded)
+    gzipped = gzip_level9(decoded)
+    if len(gzipped) < decoded_len:
+        stored = gzipped
+        encoding = "gzip"
+    else:
+        stored = decoded
+        encoding = "identity"
+    compressed_sha = sha256_bytes(stored)
+    compressed_len = len(stored)
+    if compressed_len != len(stored) or sha256_bytes(stored) != compressed_sha:
+        raise PrivateWriteError("artifact_readback")
+    if encoding == "gzip":
+        plain = gunzip_limited(stored, DISCOVERY_OBJECT_LIMIT)
+    else:
+        plain = stored
+    if plain != decoded or sha256_bytes(plain) != decoded_sha or len(plain) != decoded_len:
+        raise PrivateWriteError("artifact_readback")
+    return encoding, stored, decoded_sha, decoded_len, compressed_sha, compressed_len
+
+
+def _identity_fields(body: bytes) -> dict:
+    digest = sha256_bytes(body)
+    return {
+        "encoding": "identity",
+        "decoded_sha256": digest,
+        "decoded_bytes": len(body),
+        "compressed_sha256": digest,
+        "compressed_bytes": len(body),
+    }
+
+
 def store_artifact(
     conn,
     *,
@@ -334,12 +450,16 @@ def store_artifact(
     stored_at: datetime,
     invocation_bytes: int,
 ) -> ArtifactRef:
+    """Identity storage for every artifact that is not a getcontests discovery body."""
+    if kind == ArtifactKind.LOBBY_DISCOVERY_JSON:
+        raise PrivateWriteError("artifact_readback")
     digest = sha256_bytes(body)
+    fields = _identity_fields(body)
     with conn.begin():
         existing = conn.execute(
             text(
                 """
-                SELECT artifact_id, sha256, body, byte_count
+                SELECT artifact_id, sha256, body, byte_count, encoding
                 FROM salary_private.salary_artifacts
                 WHERE source = :source AND sha256 = :sha256
                 """
@@ -351,21 +471,28 @@ def store_artifact(
         if invocation_bytes > INVOCATION_LIMIT:
             raise PrivateWriteError(GuardBlock.INVOCATION.value)
         if existing is not None:
-            if bytes(existing.body) != body:
+            plain = decode_stored_body(bytes(existing.body), existing.encoding)
+            if plain != body:
                 raise PrivateWriteError("artifact_conflict")
             assert_actual_ceiling(conn)
             return ArtifactRef(int(existing.artifact_id), digest, int(existing.byte_count), True)
+        growth = encoded_growth_block(conn, len(body))
+        if growth is not None:
+            raise PrivateWriteError(growth.value)
         row = conn.execute(
             text(
                 """
                 INSERT INTO salary_private.salary_artifacts (
                     source, sha256, body, byte_count, media_type, artifact_kind,
-                    stored_at, loaded_at
+                    stored_at, loaded_at, encoding, decoded_sha256, decoded_bytes,
+                    compressed_sha256, compressed_bytes
                 ) VALUES (
                     :source, :sha256, :body, :byte_count, :media_type, :kind,
-                    :stored_at, :loaded_at
+                    :stored_at, :loaded_at, :encoding, :decoded_sha256, :decoded_bytes,
+                    :compressed_sha256, :compressed_bytes
                 )
-                RETURNING artifact_id, body, sha256, byte_count
+                RETURNING artifact_id, body, sha256, byte_count, encoding,
+                          decoded_sha256, decoded_bytes, compressed_sha256, compressed_bytes
                 """
             ),
             {
@@ -377,12 +504,113 @@ def store_artifact(
                 "kind": kind.value,
                 "stored_at": stored_at,
                 "loaded_at": stored_at,
+                **fields,
             },
         ).one()
-        if bytes(row.body) != body or row.sha256 != digest or int(row.byte_count) != len(body):
+        if not _identity_readback(row, body, digest):
             raise PrivateWriteError("artifact_readback")
         assert_actual_ceiling(conn)
     return ArtifactRef(int(row.artifact_id), digest, len(body), False)
+
+
+def _identity_readback(row, body: bytes, digest: str) -> bool:
+    return (
+        bytes(row.body) == body
+        and row.sha256 == digest
+        and int(row.byte_count) == len(body)
+        and row.encoding == "identity"
+        and row.decoded_sha256 == digest
+        and int(row.decoded_bytes) == len(body)
+        and row.compressed_sha256 == digest
+        and int(row.compressed_bytes) == len(body)
+    )
+
+
+def store_discovery_artifact(
+    conn,
+    *,
+    decoded: bytes,
+    media_type: str,
+    stored_at: datetime,
+    invocation_bytes: int,
+) -> ArtifactRef:
+    """The only writer for getcontests bodies. Dedup key is source + decoded sha256."""
+    if len(decoded) > DISCOVERY_OBJECT_LIMIT:
+        raise PrivateWriteError(GuardBlock.OBJECT.value)
+    if invocation_bytes > INVOCATION_LIMIT:
+        raise PrivateWriteError(GuardBlock.INVOCATION.value)
+    encoding, stored, decoded_sha, decoded_len, compressed_sha, compressed_len = encode_discovery(
+        decoded
+    )
+    with conn.begin():
+        existing = conn.execute(
+            text(
+                """
+                SELECT artifact_id, sha256, body, byte_count, encoding, decoded_sha256, decoded_bytes
+                FROM salary_private.salary_artifacts
+                WHERE source = :source AND decoded_sha256 = :sha256
+                """
+            ),
+            {"source": Source.DK_LOBBY.value, "sha256": decoded_sha},
+        ).one_or_none()
+        if existing is not None:
+            plain = decode_stored_body(bytes(existing.body), existing.encoding)
+            if plain != decoded or existing.decoded_sha256 != decoded_sha:
+                raise PrivateWriteError("artifact_conflict")
+            assert_actual_ceiling(conn)
+            return ArtifactRef(int(existing.artifact_id), decoded_sha, int(existing.decoded_bytes), True)
+        growth = encoded_growth_block(conn, compressed_len)
+        if growth is not None:
+            raise PrivateWriteError(growth.value)
+        row = conn.execute(
+            text(
+                """
+                INSERT INTO salary_private.salary_artifacts (
+                    source, sha256, body, byte_count, media_type, artifact_kind,
+                    stored_at, loaded_at, encoding, decoded_sha256, decoded_bytes,
+                    compressed_sha256, compressed_bytes
+                ) VALUES (
+                    :source, :sha256, :body, :byte_count, :media_type, :kind,
+                    :stored_at, :loaded_at, :encoding, :decoded_sha256, :decoded_bytes,
+                    :compressed_sha256, :compressed_bytes
+                )
+                RETURNING artifact_id, body, sha256, byte_count, encoding,
+                          decoded_sha256, decoded_bytes, compressed_sha256, compressed_bytes
+                """
+            ),
+            {
+                "source": Source.DK_LOBBY.value,
+                "sha256": decoded_sha,
+                "body": stored,
+                "byte_count": decoded_len,
+                "media_type": media_type,
+                "kind": ArtifactKind.LOBBY_DISCOVERY_JSON.value,
+                "stored_at": stored_at,
+                "loaded_at": stored_at,
+                "encoding": encoding,
+                "decoded_sha256": decoded_sha,
+                "decoded_bytes": decoded_len,
+                "compressed_sha256": compressed_sha,
+                "compressed_bytes": compressed_len,
+            },
+        ).one()
+        plain = decode_stored_body(bytes(row.body), row.encoding)
+        same = (
+            bytes(row.body) == stored
+            and row.sha256 == decoded_sha
+            and int(row.byte_count) == decoded_len
+            and row.encoding == encoding
+            and row.decoded_sha256 == decoded_sha
+            and int(row.decoded_bytes) == decoded_len
+            and row.compressed_sha256 == compressed_sha
+            and int(row.compressed_bytes) == compressed_len
+            and plain == decoded
+            and sha256_bytes(plain) == decoded_sha
+        )
+        if not same:
+            raise PrivateWriteError("artifact_readback")
+        assert_actual_ceiling(conn)
+    return ArtifactRef(int(row.artifact_id), decoded_sha, decoded_len, False)
 
 
 def _pairs(value) -> tuple[tuple[str, str], ...]:

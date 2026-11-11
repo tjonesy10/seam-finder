@@ -30,6 +30,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from loader.salary_private import (
+    DISCOVERY_OBJECT_LIMIT,
     OBJECT_LIMIT,
     PARSER_VERSION,
     ArtifactKind,
@@ -53,6 +54,7 @@ from loader.salary_private import (
     reconcile,
     sha256_bytes,
     store_artifact,
+    store_discovery_artifact,
     store_ledger,
     unlock_capture,
 )
@@ -559,8 +561,9 @@ class BoundedClient:
         if status in {301, 302, 303, 307, 308}:
             location = response.headers.get("location") or ""
             target = urljoin(str(response.request.url), location)
+            limit = _object_limit(str(response.request.url))
             body, truncated, _bytes_read = _read_capped(
-                response, deadline=deadline, clock=self.clock
+                response, deadline=deadline, clock=self.clock, limit=limit
             )
             if redirected or self._over_budget():
                 reason = "http_budget_exhausted" if self._over_budget() else "http_redirect_rejected"
@@ -570,8 +573,9 @@ class BoundedClient:
                 raise CaptureFailure(reason, body=None if truncated else body, truncated=truncated)
             response.close()
             return self._accepted(self._send(target, accept), accept, redirected=True)
+        limit = _object_limit(str(response.request.url))
         body, truncated, bytes_read = _read_capped(
-            response, deadline=deadline, clock=self.clock
+            response, deadline=deadline, clock=self.clock, limit=limit
         )
         if self._over_budget():
             raise CaptureFailure("http_budget_exhausted")
@@ -584,10 +588,10 @@ class BoundedClient:
         if truncated:
             raise CaptureFailure(
                 "storage_guard_object",
-                body=body[:OBJECT_LIMIT],
+                body=body,
                 truncated=True,
                 retry_after=retry_after,
-                guard_fields=_guard_fields(response, bytes_read),
+                guard_fields=_guard_fields(response, bytes_read, limit),
             )
         if status in {401, 403}:
             raise CaptureFailure("http_denied", body=body, private=f"http_status={status}")
@@ -692,15 +696,27 @@ def _next_bounded(chunks, response: httpx.Response, timeout_s: float):
         timer.cancel()
 
 
-def _read_capped(
-    response: httpx.Response, *, deadline: float, clock: Clock
-) -> tuple[bytes, bool, int]:
-    """Stop at 5 MiB. Each chunk read waits at most the seconds left in the 180s budget.
+def _object_limit(url: str) -> int:
+    """Decoded-byte cap. Discovery is 32 MiB. Every other allowlisted URL is 5 MiB."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (
+        host == "www.draftkings.com"
+        and parsed.path == "/lobby/getcontests"
+        and parse_qs(parsed.query) == {"sport": ["NFL"]}
+    ):
+        return DISCOVERY_OBJECT_LIMIT
+    return OBJECT_LIMIT
 
-    The third value is the decoded bytes pulled when reading stopped. A truncated
-    read can be one chunk past the cap; that count is not the unread remainder.
+
+def _read_capped(
+    response: httpx.Response, *, deadline: float, clock: Clock, limit: int = OBJECT_LIMIT
+) -> tuple[bytes, bool, int]:
+    """Stop at ``limit`` decoded bytes. The third value is how many of those were pulled.
+
+    A chunk larger than the remaining room is copied only through limit+1. No
+    further chunk is read. ``iter_bytes`` is already decompressed.
     """
-    limit = OBJECT_LIMIT
     buf = bytearray()
     chunks = None
     while True:
@@ -723,7 +739,11 @@ def _read_capped(
             raise CaptureFailure("http_budget_exhausted") from None
         if not chunk:
             continue
-        buf.extend(chunk)
+        room = limit + 1 - len(buf)
+        if len(chunk) > room:
+            buf.extend(chunk[:room])
+        else:
+            buf.extend(chunk)
         if len(buf) > limit:
             return bytes(buf[:limit]), True, len(buf)
     return bytes(buf), False, len(buf)
@@ -758,11 +778,11 @@ def _decoded_length(response: httpx.Response) -> int | None:
     return None
 
 
-def _guard_fields(response: httpx.Response, bytes_read: int) -> dict:
+def _guard_fields(response: httpx.Response, bytes_read: int, cap: int) -> dict:
     fields: dict = {
         "path": _endpoint_path(response),
         "bytes_read": bytes_read,
-        "cap": OBJECT_LIMIT,
+        "cap": cap,
     }
     content_length = _content_length(response)
     if content_length is not None:
@@ -1508,6 +1528,8 @@ class _State:
     rows_skipped: int = 0
     snapshot_id: UUID | None = None
     headers: tuple[str, ...] = ()
+    discovery_body_bytes: int | None = None
+    guard_meta: dict | None = None
 
     def __post_init__(self):
         self.artifacts = []
@@ -1606,7 +1628,7 @@ def _capture_body(state: _State, plan: dict, games: tuple[RegGame, ...]) -> None
 def _select_sunday(state: _State, expected: tuple[RegGame, ...]) -> DraftGroup:
     fetched = state.client.get_json(LOBBY_URL)
     state.fetched_at = fetched.fetched_at
-    _keep(state, fetched.body, ArtifactKind.LOBBY_JSON, fetched.media_type or "application/json")
+    store_discovery_body(state, fetched.body, fetched.media_type or "application/json")
     groups = list(parse_lobby(fetched.body))
     incomplete = [group for group in groups if group.contest_type_id == 21 and group.games is None]
     if incomplete and len(incomplete) > 1:
@@ -1676,6 +1698,21 @@ def _verify_rules(state: _State, group: DraftGroup) -> RulesVerdict:
     state.game_type_id = group.game_type_id
     state.rules = verdict
     return verdict
+
+
+def store_discovery_body(state: _State, body: bytes, media_type: str):
+    """Only getcontests writes go through here. The kind is lobby_discovery_json."""
+    state.discovery_body_bytes = len(body)
+    state.invocation_bytes += len(body)
+    ref = store_discovery_artifact(
+        state.conn,
+        decoded=body,
+        media_type=media_type,
+        stored_at=state.clock.wall(),
+        invocation_bytes=state.invocation_bytes,
+    )
+    state.artifacts.append(ref.artifact_id)
+    return ref
 
 
 def _keep(state: _State, body: bytes, kind: ArtifactKind, media_type: str):
@@ -1829,8 +1866,11 @@ def _finish_success(state: _State) -> AttemptResult:
         publish=True,
     )
     _audit(state, "succeeded", "captured", state.rows_upserted, 1)
+    guard = ""
+    if state.discovery_body_bytes is not None:
+        guard = f"discovery_body_bytes={state.discovery_body_bytes}"
     return AttemptResult(
-        True, True, "captured", "succeeded", state.season, state.week, state.rows_read
+        True, True, "captured", "succeeded", state.season, state.week, state.rows_read, guard
     )
 
 
@@ -1940,6 +1980,10 @@ def _write_terminal(
     )
     if getattr(state, "truncated_meta", None):
         metadata.update(state.truncated_meta)
+    if state.discovery_body_bytes is not None:
+        metadata["discovery_body_bytes"] = state.discovery_body_bytes
+    if state.guard_meta:
+        metadata.update(state.guard_meta)
     if getattr(state, "schedule_meta", None):
         metadata.update(state.schedule_meta)
     try:
@@ -2048,7 +2092,7 @@ def _report(result: AttemptResult) -> None:
         return
     season = "-" if result.season is None else str(result.season)
     week = "-" if result.week is None else str(result.week)
-    suffix = f" {result.guard}" if reason == "storage_guard_object" and result.guard else ""
+    suffix = f" {result.guard}" if result.guard else ""
     print(
         f"dk_lobby_salaries season={season} week={week} "
         f"status={result.status} reason={reason} rows={result.rows}{suffix}",
