@@ -1,0 +1,66 @@
+# ADR 0012: Bounded DK discovery projection
+
+## Status
+
+Proposed (2026-11-11), pending Cosmo's approval. This is a docs proposal. It does not approve a build, a migration, a capture, schedule activation, or a production change.
+
+On acceptance, this ADR supersedes [ADR 0005](0005-private-salary-capture-and-archives.md) **only** for the oversize-body rule as applied to the allowlisted discovery URL `https://www.draftkings.com/lobby/getcontests?sport=NFL`. Everything else in ADR 0005 stands, including the 5 MiB full-retention rule for every other fetch. ADR 0005 is not edited. Until this ADR is accepted, ADR 0005's oversize rule remains the accepted rule for the discovery URL as well.
+
+## Context
+
+F005 capture run [43049995926](https://github.com/tjonesy10/seam-finder/actions/runs/43049995926) failed closed. The public log was `storage_guard_object` and `dk_lobby_salaries season=2026 week=10 status=failed reason=storage_guard_object rows=0`, then exit 1. Open PR #41, test-report section "2026-11-11 week-10 capture", records the triage: the reason is the 5 MiB per-object cap, the public log names no URL and no byte length, and the private observation was not read. The live body is unknown. The leading explanation is an allowlisted response, most likely the discovery GET, whose decoded body passed the cap before `parse_lobby`.
+
+The current contract and code, read for this proposal:
+
+- ADR 0005 stores an allowlisted body that fits in 5 MiB, and for a larger body stops at limit+1, keeps a truncated-prefix diagnostic, stores no full artifact, and publishes no snapshot. The reason code is `storage_guard_object`.
+- `loader/salary_private.py` sets `OBJECT_LIMIT` to 5 × 1024 × 1024 (5,242,880), `INVOCATION_LIMIT` to 64 MiB, `CUMULATIVE_LIMIT` to 128 MiB, and `DATABASE_LIMIT` to 512 MiB. `GuardBlock.OBJECT` is `storage_guard_object`. `store_artifact` rejects a body longer than `OBJECT_LIMIT`.
+- `loader/dk_lobby.py` discovery URL is `https://www.draftkings.com/lobby/getcontests?sport=NFL`. `_read_capped` stops at 5 MiB and returns that prefix with truncated set. `_accepted` checks challenge first, then raises `storage_guard_object` when the read is truncated. `parse_lobby` decodes one JSON object and reads only `DraftGroups`.
+- Salaries are parsed from the allowlisted CSV (`getavailableplayerscsv`). Discovery supplies draft-group ids and game evidence for selection. Group metadata and rules, when needed, come from `draftgroups/v1` and the rules URL.
+- `salary_private.salary_artifacts` has no metadata column. Its columns are `artifact_id`, `source`, `sha256`, `body`, `byte_count`, `media_type`, `artifact_kind`, `stored_at`, and `loaded_at`. Check `ck_salary_artifacts_body` requires `octet_length(body) <= 5242880`. Check `ck_salary_artifacts_kind`, last widened in migration `0005`, allows `csv`, `lobby_json`, `rules_json`, `html_gzip`, `manifest`, `mapping`, `adapter_row_image`, `rejected_body`, `schedule_raw`, and `schedule_reference`. It has no projection kind. `lobby_json` is the kind used today for a full discovery body and for a full `draftgroups/v1` body.
+- `salary_observations.metadata` and `salary_snapshots.metadata` are `jsonb NOT NULL`. Schedule-proof metadata already stores a top-level `projection_sha256` on the observation. That key is the nflverse schedule projection hash from [ADR 0007](0007-authoritative-schedule-completeness.md). Snapshot `metadata.raw_retained` is the salary-artifact retention flag.
+- `canonical_sha256` serializes with `sort_keys` and separators `(',', ':')`. Its `json.dumps` call leaves `ensure_ascii` at the library default, true. The projection below sets `ensure_ascii` false on purpose.
+
+No week-10 snapshot exists. This proposal does not invent one.
+
+## Decision
+
+Apply the following rules only to the allowlisted discovery URL `https://www.draftkings.com/lobby/getcontests?sport=NFL`, including its one same-allowlist redirect if the client already accepts that redirect. The `draftgroups/v1` document, the lineups rules document, and the `getavailableplayerscsv` salary CSV keep ADR 0005 unchanged: 5 MiB, full retention of an under-limit body, and an oversize body fails closed with `storage_guard_object`.
+
+`DISCOVERY_READ_LIMIT` is 32 MiB, 33,554,432 decoded bytes. Stop reading at limit+1. Bytes actually read, including that extra byte when the read stops for the limit, count toward the existing 64 MiB per-invocation raw-bytes guard.
+
+1. **Decoded body of 5,242,880 bytes or fewer.** Today's behavior, unchanged. Store the full response as the discovery artifact (`artifact_kind=lobby_json`). Do not write discovery-projection metadata. The public log line stays the existing reason, row count, and snapshot count, with no `projected=true` flag.
+2. **Decoded body greater than 5,242,880 bytes and at most 33,554,432 bytes.** Hold the decoded body in memory only and never persist it. Compute the sha256 and byte length of that full decoded body. Parse it as JSON. It must be an object with a `DraftGroups` array. Any other shape, including non-JSON bytes, a JSON value that is not an object, a missing `DraftGroups` key, or a `DraftGroups` value that is not an array, fails closed with `discovery_projection_invalid`. Store no projection artifact and no full body in that case.
+3. **Projection artifact.** When the shape check passes, the stored artifact is only the `DraftGroups` value, serialized as canonical JSON: UTF-8, object keys sorted, separators `(',', ':')`, `ensure_ascii` false. Array order is the order in the decoded body. The projection's own length must be at most 5,242,880 bytes. A longer projection fails closed with `storage_guard_object` and is not stored. The full discovery body is not stored on that failure either.
+4. **Metadata, on the existing observation JSON.** Write `salary_observations.metadata.discovery_projection` as an object with exactly these fields: `projection` = `DraftGroups`, `full_body_retained` = false, `full_body_sha256`, `full_body_bytes`, `projection_sha256`, `projection_bytes`. Hashes are lowercase 64-character SHA-256 hex of the bytes they name. `projection_sha256` and `projection_bytes` match the artifact `sha256` and `byte_count`. Nesting is required. A top-level `projection_sha256` is already the schedule-proof hash on this same JSON object, and a flat discovery hash would overwrite it. Do not change snapshot `raw_retained`; that flag remains the salary CSV retention flag.
+5. **Snapshot label.** When a salary snapshot is published from this path, copy `projection`, `full_body_retained`, `projection_sha256`, and `projection_bytes` onto `salary_snapshots.metadata.discovery_projection`. Leave `full_body_sha256` and `full_body_bytes` on the observation, because they belong to the attempt. None of these fields enter the snapshot identity hash (`metadata_sha256`). Identical salary bytes and slate identity still reuse a snapshot. Each attempt still inserts its own observation.
+6. **Parse equality.** Downstream selection runs on the projection. Parsing the stored projection bytes with the same per-group rules `parse_lobby` uses on `DraftGroups` yields the same draft-group result as `parse_lobby` of the full decoded body. The stored bytes are the array itself. `parse_lobby` today requires an object, so the array is not fed back through `parse_lobby` and then described as the full response. A `DraftGroups` array that passes the shape check and then fails the existing group or slate rules uses the existing reason codes. The under-limit projection artifact is saved before that validation, as ADR 0005 already saves an under-limit artifact before parse validation. `discovery_projection_invalid` is only the structural failure in rule 2.
+7. **Discarded keys.** `Contests` and every other key are discarded. They are never stored, never logged, and never copied into an error string. The public log may add only the reason code, byte counts, and a `projected=true` flag. No raw bodies, and no hashes, on the public log. On the projection success path the existing public note gains `;projected=true;full_body_bytes=<n>;projection_bytes=<m>`. Failure notes may add `full_body_bytes` or `read_bytes` when those counts are known. A body of 5,242,880 bytes or fewer does not gain the flag.
+8. **Over the read limit.** A discovery read that reaches byte 33,554,433 fails closed with `discovery_read_limit`. Keep ADR 0005's truncated-prefix diagnostic: `truncated=true`, `prefix_sha256` and `prefix_bytes` of the first 33,554,432 bytes, `retained_artifact=false`. The prefix is hashed in memory and is not inserted into `salary_artifacts`. No salary snapshot and no salary rows. The attempt observation still exists when the database is reachable.
+9. **Unchanged guards and HTTP policy.** 5 MiB per stored object, 128 MiB cumulative private artifacts, and the 512 MiB database write guard still apply to bytes that are stored. The unstored discovery body counts toward the 64 MiB invocation raw-bytes guard and does not also count as a stored artifact against the 128 MiB cumulative budget. Retries, stop-on-challenge, denial and rate-limit handling, and the allowlist are unchanged. Challenge, denial, unexpected media, and non-success responses are classified before any projection and keep their current reason codes. A challenge is not parsed as `DraftGroups` and its full body is not persisted.
+
+`salary_artifacts` cannot record `full_body_retained` or the full-body hash: it has no metadata column. Those fields live in the observation JSON named above. The stored row uses `artifact_kind=lobby_discovery_projection`, `media_type=application/json`, `source=dk_lobby`, and the projection bytes. That kind is not in `ck_salary_artifacts_kind`. **A migration is required** to widen that check, on the same pattern as migration `0005_schedule_proof_kinds`. No new column is required. The existing 5,242,880 body check already rejects a projection that is too large. Production application of the migration needs Cosmo's separate approval. Accepting this ADR does not give that approval, and this docs change does not add a migration file.
+
+## Reasoning
+
+Salaries come from the CSV. Discovery only supplies draft-group ids and the game list selection already reads from `DraftGroups`. Keeping the CSV, rules, and `draftgroups/v1` documents on full 5 MiB retention leaves the salary-capture guarantee as ADR 0005 wrote it. The stored discovery object stays inside the 5 MiB cap, so the 128 MiB cumulative budget is spent on selector input rather than on the rest of the lobby document. The 32 MiB read limit bounds memory and time. Hashing the full decoded body, and setting `full_body_retained=false`, preserves an identity for the unseen body without claiming the projection is that body.
+
+Run 43049995926 stays failed closed. Nothing in this ADR replays it or writes a week-10 snapshot.
+
+## Rejected alternatives and why
+
+- **(a) Raise the per-object cap for discovery.** A several-MiB discovery document would be stored every capture week. Most of those bytes are unused contest data. A few weeks of that would burn the 128 MiB cumulative private-artifact budget, and the wider cap would apply to a stored object rather than to a read that is then reduced. The 5 MiB object cap stays.
+- **(c) A narrower DK endpoint.** No narrower endpoint is verified. One cannot be validated before the Sunday 15 November 2026 1:00 PM America/New_York lock. A later verified endpoint can be proposed in its own ADR.
+- **Keep failing closed on the discovery URL.** That is today's accepted rule, and it leaves no week-10 snapshot. It does not meet the capture the lobby read was for. This proposal is how a later capture can proceed without storing the unused document.
+- **Unbounded streaming.** A stream with no read ceiling has no memory or time bound. `DISCOVERY_READ_LIMIT` is that bound. Crossing it fails closed.
+
+## Consequences
+
+F005 SPEC R10 and AT17–AT23 are the behavioral contract, effective for implementation once Cosmo approves this ADR. Forge starts after that approval, in a separate code change, and includes those acceptance tests. This proposal does not hand the work to forge by itself.
+
+The new artifact kind needs the check-constraint migration described above. Forge writes that revision in the build change. Production migration remains separately unapproved, including any workflow that applies Alembic on its own. CI against a local test database is not production approval.
+
+Schedule proof, F004, grants, the public site, and the Wednesday cadence are unchanged. ADR 0006 still treats a usable F005 snapshot as salary evidence and does not gain a license to read discarded `Contests` bytes. ADR 0007's `projection_sha256` stays the schedule-proof field because the discovery hash is nested under `discovery_projection`.
+
+The constitution already limits raw provenance with the free-tier guards, and ADR 0005 already refuses to store an over-5 MiB object as a full artifact. The projection is the exact `DraftGroups` value selection parses, stored inside that same object cap, with `full_body_retained=false`. Salary CSV bytes remain exact full artifacts. No constitution text changes.
+
+No public raw body is added. A stored projection must not be labeled `lobby_json` or otherwise presented as the full discovery response.

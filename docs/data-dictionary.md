@@ -254,6 +254,7 @@ Governed by [ADR 0005](adr/0005-private-salary-capture-and-archives.md) and [ADR
 - F005 owns the shared artifact/observation/snapshot/source-row foundation and lobby table; F006/F007 add one source table each; F008 adds interpretations, selection batches/rows, and the view. Sequential Alembic revisions are assigned by the engineer at build time, not presumed in this docs PR.
 - Private schema owned by loader; revoke USAGE and relation/sequence grants from PUBLIC and the web `READONLY_ROLE`, including default privileges for the actual loader owner. Replace `loader/grants.py` blanket public grants/default grants with a public allowlist (`teams`, `players`, `games`, `player_week_stats`, `load_runs`, `dk_classic_salaries`). Explicitly revoke web/PUBLIC SELECT on `public.dk_classic_slate`; no SELECT-all-public refresh may regrant it. Existing nflverse/RotoGuru reads must still work. A configured, separately approved optimizer read role receives only schema USAGE and SELECT on `dk_salary_unified`, no writes or public-web membership.
 - 5 MiB/object, 64 MiB/invocation raw bytes, 128 MiB cumulative private artifact bytes, 512 MiB database-size safety guards; also respect the lower verified current free allowance. `pg_total_relation_size` includes indexes/TOAST and `pg_database_size` checks overall use. Serial ingestion lock makes guard checks race-safe. These budgets are proposed limits, not Neon pricing facts. Exceeding any guard fails before publishing; no automatic eviction. Prefix-only diagnostics for oversized HTTP bodies are marked truncated and never count as a retained artifact/successful snapshot.
+- **Amendment (2026-11-11, ADR 0012 Proposed):** the getcontests discovery URL may be read to 33,554,432 decoded bytes. A body in the band above 5 MiB and at most that read limit is not stored; its `DraftGroups` projection is the stored object and still has to fit the 5 MiB object cap. Bytes read count toward the 64 MiB invocation guard. See [F005 discovery projection](#f005-discovery-projection-adr-0012-proposed).
 
 ### salary_artifacts — exact private bytes
 
@@ -268,6 +269,8 @@ Governed by [ADR 0005](adr/0005-private-salary-capture-and-archives.md) and [ADR
 | stored_at | timestamptz NOT NULL; storage time, not publisher time |
 
 Hash/length verified in application and tested by readback. A DFF CSV is explicitly an HTML-row extraction, not original DK CSV. Gzip evidence is retained as received gzip bytes (no re-compression); its hash refers to those bytes. No unrelated research HTML, login, or account/contest-entry payload is ingested. `adapter_row_image` is an exact serialized local row image, **not** original downloaded CSV bytes.
+
+**Amendment (2026-11-11, ADR 0012 Proposed):** `salary_artifacts` has no metadata column. A discovery projection is stored as `artifact_kind=lobby_discovery_projection` with `media_type=application/json`. The kind is not in `ck_salary_artifacts_kind` (migration `0005` list: `csv`, `lobby_json`, `rules_json`, `html_gzip`, `manifest`, `mapping`, `adapter_row_image`, `rejected_body`, `schedule_raw`, `schedule_reference`). **A migration is required** to widen that check. No new column. `ck_salary_artifacts_body` already caps stored bytes at 5,242,880 and stays. Production migration needs Cosmo's separate approval. The artifact `sha256` and `byte_count` are the projection, never the unstored discovery body. Do not use `lobby_json` for that projection.
 
 ### salary_observations — every capture/load attempt
 
@@ -292,6 +295,8 @@ Indexes `(source, observed_at DESC)`, `(snapshot_id, observed_at DESC)`, `(load_
 
 F005 capture attempts always write `started_at`. A terminal in-process attempt also writes `finished_at` and `duration_ms` from a monotonic timer (`time.monotonic` or equivalent), including success, fetch failure, validation failure, off-season skip, and repeated identical content. `snapshot_id` links the attempt to its snapshot when one is published or reused; that snapshot's source rows are the linked rows. Attempts with no snapshot keep `snapshot_id` null and still store timing when the database is available. Public `load_runs.started_at`/`finished_at` may hold compatible wall times and must not be subtracted to produce elapsed time. Public notes, errors, and logs contain reason codes and counts only. A crash before the terminal timing write leaves `finished_at` and `duration_ms` null. Recovery must not invent them or mark the attempt completed. If no row was committed, do not claim one exists. The columns live on the shared observation table. F005 capture is the required producer of monotonic `duration_ms` (F005 R9). Other features must not compute a duration by subtracting timestamps if they write the column; leaving `duration_ms` null is acceptable for non-capture archive observations. Recovery never fabricates a missing duration.
 
+**Amendment (2026-11-11, ADR 0012 Proposed):** on the discovery projection path only, the public note may also include `projected=true` and byte counts (`full_body_bytes`, `projection_bytes`, or `read_bytes`). It still has no raw body and no hash. The private fields live under `metadata.discovery_projection`, documented below. They are not new columns. `reason_code` gains `discovery_read_limit` and `discovery_projection_invalid`. `storage_guard_object` is unchanged.
+
 ### salary_snapshots — immutable parsed unit, not a season/week pool
 
 | Field | Type / rule |
@@ -312,6 +317,8 @@ F005 capture attempts always write `started_at`. A terminal in-process attempt a
 UNIQUE `(source, source_snapshot_key, artifact_id, parser_version, metadata_sha256)`. Metadata hash includes identity-relevant group, corrected season/type/week, game/kickoff/rules evidence and manifest facts, but excludes ingestion/retrieval timestamps so identical content and identity replays reuse parsed rows. Two source paths sharing bytes still have separate snapshot identities and observations. Index `(source, season, season_type, week)`, `(draft_group_id)`, `(game_set_sha256, rules_sha256)`.
 
 No slate verification is implied merely by this table existing. A changed kickoff or rules set produces a new metadata hash/revision. Source rows remain under their original snapshot even if later interpretations correct labels.
+
+**Amendment (2026-11-11, ADR 0012 Proposed):** a snapshot published from a discovery projection copies `projection`, `full_body_retained`, `projection_sha256`, and `projection_bytes` into `metadata.discovery_projection`. `full_body_sha256` and `full_body_bytes` stay on the observation. None of these fields enter `metadata_sha256`. `raw_retained` stays the salary CSV flag.
 
 ### salary_source_rows — lossless row ledger
 
@@ -427,6 +434,35 @@ Active-season timing uses the full certified inventory's conservative earliest/l
 Add to private `salary_observations.metadata` (no new public columns): `{schedule_authority_root_sha256, schedule_inventory_sha256s, schedule_raw_artifact_ids, schedule_receipt_sha256s, schedule_coverage_sha256, schedule_verification_version, schedule_verification_result, schedule_subreason, expected_reg_count, observed_reg_count, projection_sha256}`. Detailed ID differences remain private and bounded. Successful/reused salary snapshots retain identity-relevant selected schedule/slate evidence in immutable metadata; per-attempt proof refs live on observations so a fresh unchanged-price attempt does not falsely reuse old verification timestamps. Do not include retrieval/load times in salary-content dedupe identity. Revised game/rule/timing evidence that changes slate identity still changes metadata revision as before.
 
 `schedule_verification_result` is verified_active / verified_gap / rejected. Public load_runs stores only `schedule_evidence_missing` or the existing safe terminal reason and counts. A rejected proof fails before DK calls with no usable salary snapshot, preserving previous good salary data and R9 monotonic timing. Verified active-but-empty target set is slate_unavailable; verified finite gap is off_season. No automatic authority amendment, PG repair, proof synthesis from a failed salary ledger, public dump or expanded external crawl is permitted.
+
+## F005 discovery projection (ADR 0012 Proposed)
+
+Proposed [ADR 0012](adr/0012-bounded-dk-discovery-projection.md) and [F005 R10](features/F005-dk-lobby-capture/SPEC.md). Pending Cosmo's approval. No new column. The fields below use existing `jsonb` metadata. Production migration of the new artifact kind needs Cosmo's separate approval.
+
+Scope is the discovery URL `https://www.draftkings.com/lobby/getcontests?sport=NFL` only. `draftgroups/v1`, the rules document, and the salary CSV keep the 5 MiB full-retention rule and fail an oversize body with `storage_guard_object`.
+
+| Reason code | When |
+|---|---|
+| `discovery_read_limit` | Discovery read reaches byte 33,554,433. Stop there. No stored body, no salary snapshot, public rows 0. Observation metadata keeps `truncated=true`, `prefix_sha256`, `prefix_bytes=33554432`, `retained_artifact=false`. |
+| `discovery_projection_invalid` | Discovery HTTP success in the band (decoded length greater than 5,242,880 and at most 33,554,432) is not a JSON object with a `DraftGroups` array. No body and no projection artifact are stored. |
+| `storage_guard_object` | Unchanged code. Also used when the canonical `DraftGroups` projection itself exceeds 5,242,880 bytes, and when a `draftgroups/v1`, rules, or CSV body exceeds 5,242,880 bytes. |
+
+`salary_observations.metadata.discovery_projection` (projection success, and the hash fields on `discovery_projection_invalid` when the full body was in hand):
+
+| Field | Rule |
+|---|---|
+| `projection` | string `DraftGroups` |
+| `full_body_retained` | false |
+| `full_body_sha256` | lowercase SHA-256 hex of the full decoded discovery body |
+| `full_body_bytes` | integer length of that body |
+| `projection_sha256` | lowercase SHA-256 hex of the stored canonical projection |
+| `projection_bytes` | integer length of that projection; equals `salary_artifacts.byte_count` |
+
+The object is nested because this same `metadata` value already has a top-level `projection_sha256` for the ADR 0007 schedule projection. A flat discovery hash would overwrite that schedule field. `Contests` and every other discovery key are absent from metadata, artifacts, `error_private`, and logs.
+
+Canonical projection bytes are UTF-8 JSON of the `DraftGroups` array only: sorted object keys, separators `(',', ':')`, `ensure_ascii` false. The artifact row is `source=dk_lobby`, `artifact_kind=lobby_discovery_projection`, `media_type=application/json`. A decoded discovery body of 5,242,880 bytes or fewer is still stored whole as `lobby_json` and does not get this object.
+
+Bytes read count toward the 64 MiB invocation raw-bytes guard. The unstored discovery body does not also increment the 128 MiB cumulative artifact budget. The stored projection does, and it remains subject to the 5 MiB object cap and the 512 MiB database write guard.
 
 
 ## F012 public-query supporting indexes (planned, not installed)
