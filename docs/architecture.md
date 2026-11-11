@@ -46,7 +46,7 @@ Load order inside one run: teams, players, games, player_week_stats (foreign key
 ## Cross-cutting rules
 
 - The web app never writes. Its DB role has `SELECT` only.
-- Every page shows the attribution footer and the last successful refresh time (from `load_runs`). After F009 cutover the SPA reads those values from `GET /api`.
+- Every page shows the attribution footer and the last successful refresh time (from `load_runs`). After F009 cutover the SPA footer attribution is the static attribution fallback in the bundle, checked against `web/attribution.py`. The SPA reads `last_refresh_et` and `datasets` from `GET /api`, and shows `Last refresh: none` when those fields are missing or the request fails.
 - Team logos and player headshots are not stored or shown (trademark and image rights are not covered by the nflverse license).
 
 ## Future extension points (parts 2-5)

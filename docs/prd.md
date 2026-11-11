@@ -87,7 +87,7 @@ Cosmo approved independent season-schedule verification on 2026-11-06 19:14 EST.
 
 ## F009 React frontend (DRAFT)
 
-Drafted 2026-11-10. This extends Part 1's public browse goal (US4) without changing the public table or API commitments, except for additive footer fields on `GET /api` that the home page already shows in HTML.
+Drafted 2026-11-10. Rev 2: the SPA footer attribution is a static bundle constant checked against `web/attribution.py`, including during an API or database outage. This extends Part 1's public browse goal (US4) without changing the public table or API commitments, except for additive `last_refresh_et` and `datasets` on `GET /api`. A missing refresh renders `Last refresh: none`.
 
 - As a viewer, I want the current home and table pages in a React app, so that lookups and shareable filter URLs keep working.
 - As Cosmo, I want the live Jinja site unchanged until I enable cutover, so that a docs or code merge cannot surprise visitors.

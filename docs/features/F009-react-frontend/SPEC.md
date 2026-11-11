@@ -1,6 +1,6 @@
 # F009: React TypeScript frontend
 
-Status: **DRAFT** (2026-11-10). Written against main `36636c2af8326a11ab3a4cbe4498df487fad78bd`. This package is docs only. It is not handed to forge. Groko gates the docs PR. Cosmo's go-ahead is pending. No implementation, production deploy, or live-site cutover is authorized by this draft.
+Status: **DRAFT** rev 2 (2026-11-10). Written against main `36636c2af8326a11ab3a4cbe4498df487fad78bd`. This package is docs only. It is not handed to forge. Groko gates the docs PR. Cosmo's go-ahead is pending. No implementation, production deploy, or live-site cutover is authorized by this draft.
 
 Related: [constitution](../../CONSTITUTION.md), [pending constitution amendment](CONSTITUTION-AMENDMENT.md), [architecture](../../architecture.md), [glossary](../../GLOSSARY.md), [F001 SPEC](../F001-data-prototype/SPEC.md), [ADR 0001](../../adr/0001-stack-and-hosting.md), [ADR 0008](../../adr/0008-react-frontend-hosting.md).
 
@@ -11,13 +11,13 @@ The public site is server-rendered Jinja2 HTML from the same FastAPI process tha
 ## Requirements
 
 - **R1** Replace the Jinja pages with a Phase 1 React app that preserves today's routes, tables, filters, sort, paging, URL state, headings, labels, and pager copy. Do not add an optimizer UI, detail pages, or new public datasets.
-- **R2** Show the exact current nflverse attribution text, its two links, and the "Last refresh" line on every page, including error views.
+- **R2** Show the exact current nflverse attribution text and its two links on every page from a static constant in the frontend bundle, and show the "Last refresh" line. The constant is generated from or checked against `ATTRIBUTION_TEXT` and `ATTRIBUTION_LINKS` in `web/attribution.py`. The footer renders that static attribution fallback before and regardless of any API response: a first visit during a database or API outage, the loading state, every error and message view, and the 404/SPA-fallback view. `GET /api` supplies only the DB-dependent fields the page reads (`last_refresh_et`, `datasets`). When those fields are unavailable or the request fails, the footer shows `Last refresh: none` and the page shows the parity error message. The attribution stays.
 - **R3** Build the app as React, TypeScript, and Vite. Use TanStack Table and TanStack Virtual for every table, TanStack Query for fetching and caching, and TanStack Router for page routes and URL-persisted filter, sort, and paging state. Do not use TanStack Start or SSR.
 - **R4** Put every table on one reusable data-table contract that can take a 500-plus row in-memory pool with sort, filter, virtualization, and a row-toggle hook point. Do not build lock or exclude controls in Phase 1.
 - **R5** Serve the built static files from the existing FastAPI app on the existing Render free web service, per [ADR 0008](../../adr/0008-react-frontend-hosting.md). Keep JSON routes under `/api` and `/api/*` ahead of the SPA fallback. Leave `GET /api/health` behavior unchanged.
 - **R6** Keep the live Jinja site as the default until Cosmo enables cutover. Provide a documented build artifact, a default-off switch, and a rollback path that restores Jinja or a prior Render deploy. Enabling the switch with a missing build must not break `/api/health`.
 - **R7** The frontend must never read `salary_private` or any private salary data. Leave `seamfinder_web` grants unchanged. Add no endpoint that exposes private schema or F004 raw salaries. Prove the public API surface and the built bundle stay clear of that data.
-- **R8** Keep the existing list and get-by-key JSON contracts. Add only the additive `GET /api` fields needed for the home page and footer, which have no complete JSON source today.
+- **R8** Keep the existing list and get-by-key JSON contracts, including `GET /api` and `GET /api/health`. Add only the additive `GET /api` fields `last_refresh_et` and `datasets`. The page reads those two fields from `GET /api`. It does not read footer attribution from the API.
 - **R9** Cover the app with Vitest and Testing Library unit tests, Playwright end-to-end tests against the built app plus FastAPI and real Postgres, and pytest API contract tests. Extend CI with a pinned Node 26 toolchain, `npm ci`, typecheck, lint, unit tests, build, and end-to-end tests, without dropping ruff, pytest, or gitleaks. Commit the npm lockfile.
 
 ## User stories
@@ -54,13 +54,19 @@ Error views use `web/templates/message.html` or the error branch of `table.html`
 
 > Data: nflverse (nflverse-data), licensed CC BY 4.0. Changes: subset of columns, loaded into a database. Not affiliated with or endorsed by the NFL or nflverse. NFL data belong to their respective owners.
 
-The two links are `nflverse-data` at `https://github.com/nflverse/nflverse-data` and `CC BY 4.0` at `https://creativecommons.org/licenses/by/4.0/`. The refresh label uses America/New_York as `%Y-%m-%d %H:%M:%S ET`, or `none`.
+The two links are `nflverse-data` at `https://github.com/nflverse/nflverse-data` and `CC BY 4.0` at `https://creativecommons.org/licenses/by/4.0/`. A present refresh label uses America/New_York as `%Y-%m-%d %H:%M:%S ET`. When the value is missing, `web/pages.py` sets `last_refresh_et` to `none` in `_base` and in `load_footer`. `base.html` prints that value with no extra word, so the visible fallback is exactly `Last refresh: none`.
 
-The DraftKings disclaimer is **not** in any current template and is **not** shown on the current site. `web/attribution.py` defines, but `attribution()` does not return, this exact unused constant:
+Phase 1 does not take footer attribution from `GET /api`. The attribution text and both links ship as a static constant in the frontend bundle. Generate that constant from `web/attribution.py`, or check a checked-in constant against it. The drift test fails if the bundled text differs from `ATTRIBUTION_TEXT` or the bundled links differ from `ATTRIBUTION_LINKS`.
+
+The footer always renders that static attribution fallback, before and regardless of any API response. That includes a first visit during a database or API outage, the loading state, every error and message view, and the 404/SPA-fallback view.
+
+The SPA reads only `last_refresh_et` and `datasets` from `GET /api`. `GET /api` still returns the existing `name`, `attribution`, and `endpoints` objects so the current JSON contract stays. The page does not render the footer from `attribution` in that payload. When `last_refresh_et` or `datasets` are unavailable, or the request fails with a network error or any HTTP 5xx, the footer shows `Last refresh: none`. The page shows the parity error message, and the static attribution stays. The parity error message is the current Jinja copy for that failure: `The database is unavailable.` when the failure is HTTP 503 or the database is unavailable, and `Something went wrong.` for a network error or any other 5xx.
+
+Phase 1 shows no DraftKings line, because no public page displays DK salary rows. `web/attribution.py` defines `ROTOGURU_DK_CLASSIC_ATTRIBUTION`, and `attribution()` does not return it. The exact approved string is:
 
 > Historical DraftKings Classic salaries and points via RotoGuru (rotoguru1.com). Not affiliated with DraftKings.
 
-Phase 1 pages do not mention DraftKings or RotoGuru, matching today's public pages. Keep that RotoGuru constant in the Python module. If a later approved page shows historical DraftKings Classic salaries, that page must use this exact string. Do not add it to Phase 1 footers.
+Any future public historical-salary display must show that exact string from `web/attribution.py` `ROTOGURU_DK_CLASSIC_ATTRIBUTION`. Do not add it to Phase 1 footers.
 
 ### Additive `GET /api` contract
 
@@ -95,7 +101,7 @@ Extend `GET /api` with footer fields already computed by `web.queries.footer`. E
 
 `last_refresh_et` and each `datasets[].finished_at` use the same Eastern formatting as the HTML footer, including `none`. `GET /api/health` stays `{ "status", "database", "last_refresh" }` with ISO timestamps, and still returns 503 with `service_unavailable` when the database is down. List and get-by-key endpoints, error shape, `Cache-Control: public, max-age=300` on `/api` paths, and parameter rules stay as in the F001 SPEC.
 
-The SPA reads attribution and refresh labels from `GET /api`, not from a second hardcoded copy, except tests may import the Python constant to check equality.
+The SPA reads `last_refresh_et` and `datasets` from this payload. It does not render attribution from the `attribution` object. Footer attribution is the static attribution fallback. A drift test may import `ATTRIBUTION_TEXT` and `ATTRIBUTION_LINKS` from `web/attribution.py` and compare them to the bundled constant.
 
 ### URL state, paging, and errors
 
@@ -161,21 +167,38 @@ Automate each case. Pages and end-to-end checks run against the built Vite app s
 - **AT2 (R1)** Given a loaded database, when you open `/teams`, `/players`, `/games`, `/stats`, and `/load-runs`, then each page returns a rendered table and the filter fields listed in the route table, including `game_id` on `/stats`.
 - **AT3 (R1)** Given the F001 CIN week-10 fixture data, when you open `/stats?season=2024&week=10&team=CIN`, then Ja'Marr Chase appears, sorting by `receiving_yards` updates the URL and row order, and Next keeps the filters and moves to offset 50 with `rows 51-100 of ` visible.
 - **AT4 (R1)** Given `/games?week=abc`, when the app loads that URL, then the text "week must be an integer from 1 to 22" is visible, the filter form is still present, and no traceback is shown. The list API request for those params is HTTP 400. An unknown non-API path shows "Not found".
-- **AT5 (R2)** Given `/`, each table path, `/games?week=abc`, and a not-found path, then the footer contains the exact nflverse attribution string quoted above, both attribution hrefs, and `Last refresh: ` followed by the Eastern timestamp or `none`.
+- **AT5 (R2)** Given `/`, each table path, `/games?week=abc`, and a not-found path, then the footer contains the exact nflverse attribution string quoted above and both attribution hrefs from the static attribution fallback, plus `Last refresh: ` followed by the Eastern timestamp or `none`. The attribution is already in the shell. It does not appear only after `GET /api` returns.
 - **AT6 (R1)** Given those same paths, then the document contains no `<img>` tag and no `url(http` or `url(//` stylesheet image.
 - **AT7 (R3)** Given the `frontend/` package and the built output, when inspected by tests, then the app depends on React, TypeScript, Vite, TanStack Table, TanStack Virtual, TanStack Query, and TanStack Router, and it does not depend on TanStack Start or an SSR framework. Table pages use the shared `DataTable`. List data is fetched with TanStack Query.
 - **AT8 (R4)** Given a synthetic fixture of at least 500 rows, when `DataTable` renders in Vitest, then the row body is virtualized so fewer than 500 row nodes are in the DOM, controlled sort and filter change the visible set, `getRowId` stays stable, and a test can set a lock or exclude toggle on one row through the hook point without changing column defs.
-- **AT9 (R8)** Given the database is up, when `GET /api` is called, then the response keeps `name`, `attribution.text`, both links, and `endpoints`, and it also returns `last_refresh_et` and `datasets` in the footer shape. `GET /api/health` still returns `{status, database, last_refresh}` and still returns 503 `service_unavailable` when the database is down. One existing list or get-by-key contract, including pagination limits, is unchanged.
+- **AT9 (R8)** CI runs the existing API contract suite `tests/test_api.py` twice, with that file unchanged, and both runs pass. The suite is every existing `/api` route test in that module, including `GET /api` and `GET /api/health` (`test_at10_health` and `test_at10_health_when_database_is_down`), the list and get-by-key routes, pagination limits, and bad parameters. One run has `SERVE_SPA` unset or set to any value other than exactly `true`. The other run has `SERVE_SPA=true`. JSON status, body, and cache headers stay what those tests already assert. Additive `last_refresh_et` and `datasets` on `GET /api` must not break those assertions. The matrix is in [CI additions](#ci-additions). `test_at10_health_when_database_is_down` also GETs `/teams` and expects HTTP 503, `The database is unavailable.`, the attribution text, and no traceback. That assertion stays in the unchanged file and passes in both runs. It locks the server response when `create_app` points at an unreachable database. The browser outage is AT16.
 - **AT10 (R5)** Given `SERVE_SPA=true` and a successful frontend build, when you request `GET /api/health`, `GET /api/teams`, and an unknown `/api/missing`, then the responses are JSON with the current contracts and status codes, not `index.html`. A non-API app path serves the SPA shell. Hashed asset responses may be long-cached. `index.html` is not marked immutable with a long max-age.
 - **AT11 (R6)** Given `SERVE_SPA` is unset or not exactly `true`, when the existing F001 page tests run, then they still pass against Jinja, and `GET /api/health` is 200 when the database is up. Given `SERVE_SPA=true` and a missing build output, when you request `/` and `/api/health`, then `/` fails clearly and `/api/health` still returns its normal JSON when the database is up. Turning the switch off again restores Jinja from the same app.
 - **AT12 (R7)** Given the FastAPI route table and a real Postgres role granted by `loader/grants.py`, when tests inventory `/api` routes and query as the web role, then the only API paths are the current public F001 endpoints, grants for the web role are unchanged, and that role still cannot read `salary_private` or `dk_classic_slate`.
 - **AT13 (R7)** Given the frontend source and the production bundle, when searched, then they do not contain `salary_private`, `dk_salary_unified`, `dk_lobby_salaries`, `dff_salaries`, or `dknfl_salaries`, and the app's HTTP client is limited to the documented public `/api` paths.
 - **AT14 (R9)** Given `.github/workflows/ci.yml`, when reviewed and run, then the workflow pins Node 26, runs `npm ci` from the lockfile, typecheck, lint, frontend unit tests, the production build, and Playwright end-to-end tests, and it still runs `ruff check loader web tests migrations`, pytest, and gitleaks. The lockfile is committed.
 - **AT15 (R9)** Given Playwright running against the built app, FastAPI with `SERVE_SPA=true`, and real Postgres, when the suite runs, then it covers the home page, one table's filter, sort, and paging, the attribution footer, `GET /api/health`, and the bad-parameter message.
+- **AT16 (R2)** Static attribution fallback.
+  - Unit (Vitest and Testing Library): render the app shell with `GET /api` mocked to a network error, and again mocked to a 5xx. Both times the footer shows the exact `ATTRIBUTION_TEXT` and both links (`nflverse-data` to `https://github.com/nflverse/nflverse-data`, and `CC BY 4.0` to `https://creativecommons.org/licenses/by/4.0/`). The same footer is present in the loading state, in every error and message view, and in the 404/SPA-fallback view, before any successful API response.
+  - E2E (Playwright): a cold first load with `SERVE_SPA=true` and `GET /api` returning 503, or the database unavailable. The document shows the exact attribution text, both links, and `Last refresh: none`. The page shows `The database is unavailable.`
+  - Drift: the bundled constant equals `ATTRIBUTION_TEXT` and `ATTRIBUTION_LINKS` in `web/attribution.py`.
+
+## CI additions
+
+API contract coverage runs the unchanged module `tests/test_api.py` twice. That module is every existing `/api` route test, including `GET /api/health`. Do not edit, skip, or weaken any test in the file. Both runs pass.
+
+| Run | `SERVE_SPA` | Command |
+|---|---|---|
+| off | unset, or any value other than exactly `true` | `pytest tests/test_api.py` |
+| on | `true` | `pytest tests/test_api.py` |
+
+Put that in `.github/workflows/ci.yml` as those two commands in the Test step, or as a matrix `serve_spa: ["off", "on"]` whose off cell unsets `SERVE_SPA` and whose on cell sets `SERVE_SPA=true`. The pytest target for the pair is `tests/test_api.py` only. The default full `pytest` stays one off run, so the Jinja page tests are not required to pass with the SPA on. Ruff, gitleaks, and the Node steps in AT14 stay.
 
 ## Non-goals
 
 Optimizer UI, lock and exclude controls in the product pages, public salary pages or downloads, new auth, a custom domain, a paid plan, a visual redesign, a committed `render.yaml`, removing Jinja in the first SPA release, schedule activation, production migration, and a live cutover from this docs package.
+
+Phase 1 shows no DraftKings line, because no public page displays DK salary rows. Any future public historical-salary display must show the exact approved string from `web/attribution.py` `ROTOGURU_DK_CLASSIC_ATTRIBUTION`.
 
 ## Allowed dependencies
 
@@ -192,8 +215,8 @@ Not allowed: TanStack Start, Next.js or another SSR host, a second JS framework,
 1. TanStack Router is in scope. The site already has multiple pages, and filter, sort, and paging already live in the URL. That is the justification the brief asked for. TanStack Start and SSR stay out.
 2. Hosting is FastAPI serving the built assets on the existing Render web service, not a separate Render static site. Reasons are in ADR 0008.
 3. Cutover is `SERVE_SPA` exactly equal to `true`. The default is off so an auto-deploy from `main` cannot change the live HTML until Cosmo sets the variable and updates the Render build command.
-4. Home and footer data come from an additive `GET /api` extension, not a new `/api/meta` route and not client-side Eastern formatting of `/api/health`.
-5. Phase 1 does not display the unused RotoGuru DraftKings disclaimer, because the current templates do not display it.
+4. Footer attribution is the static attribution fallback, generated from or checked against `web/attribution.py`. Home dataset lines and the last-refresh label come from the additive `GET /api` fields `datasets` and `last_refresh_et`, not a new `/api/meta` route and not client-side Eastern formatting of `/api/health`. If that request fails or the fields are missing, the footer shows `Last refresh: none` and the attribution stays.
+5. Phase 1 shows no DraftKings line, because no public page displays DK salary rows. Any future public historical-salary display must show the exact approved string from `web/attribution.py` `ROTOGURU_DK_CLASSIC_ATTRIBUTION`.
 6. Node is pinned to 26, Active LTS as of 2026-11-10.
 
 ## Open questions
@@ -205,7 +228,7 @@ None. The choices above are reversible technical defaults, not product questions
 | Requirement | Acceptance tests |
 |---|---|
 | R1 | AT1, AT2, AT3, AT4, AT6 |
-| R2 | AT5 |
+| R2 | AT5, AT16 |
 | R3 | AT7 |
 | R4 | AT8 |
 | R5 | AT10 |
@@ -214,7 +237,7 @@ None. The choices above are reversible technical defaults, not product questions
 | R8 | AT9 |
 | R9 | AT14, AT15 |
 
-R1-R9 all covered. AT1-AT15 none orphaned. This feature conflicts with two constitution stack sentences until the pending amendment is approved. ADR 0008 records the hosting and frontend decision and, once accepted, partially supersedes ADR 0001. No other ADR or constitution privacy rule is contradicted. No clarification markers are open.
+Analyze pass: R1-R9 all covered (9 requirements). AT1-AT16 none orphaned (16 acceptance tests). This feature conflicts with two constitution stack sentences until the pending amendment is approved. ADR 0008 records the hosting and frontend decision and, once accepted, partially supersedes ADR 0001. No other ADR or constitution privacy rule is contradicted. No clarification markers are open.
 
 ## ADRs
 
