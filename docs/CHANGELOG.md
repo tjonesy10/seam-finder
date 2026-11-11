@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-11
+
+- Planned [F012 dataset query](features/F012-dataset-query/SPEC.md), READY R1–R10/AT1–AT16, and [F013 dataset table controls](features/F013-dataset-table-controls/SPEC.md), READY R1–R8/AT1–AT12, as separate one-pass builds after F011 (then F012 before F013). Cosmo's dataset-wide follow-up approval at 07:57 ET is relayed by Groko. No implementation, delivery, deployment or independent approval claimed.
+- Proposed [ADR 0011](adr/0011-public-dataset-query-grammar.md): opt-in typed/allowlisted grammar, max-three stable sorts, fixed literal text search, exact snapshot count and bounded advanced SQL execution. Legacy-only parameters/errors remain unchanged; new unknown params still 400. Two specified public stats B-tree indexes, no pg_trgm/extension or grant change; forge authors migrations and production application requires separate Cosmo approval including automatic refresh-migration paths.
+- Explicit page/dataset scopes preserve F011 links, map `ui_*` state to server params and bypass local sort/filter in dataset mode. Dataset-wide CSV deferred for boundedness/cost/abuse reasons; existing guarded page CSV remains explicitly page-only. No salary data/exposure, exact attribution preserved. Updated architecture/data dictionary/glossary and append-only handoff records; analyzed both R/AT mappings and constitution/all ADRs.
+- ADR 0010 status-only sync to Accepted, owner-merged via PR #33 (`3b61fcd`, 2026-11-10); no decision substance changed.
+
 ## 2026-11-10
 
 - F010/F011 planning split: [F010 visual redesign](features/F010-visual-redesign/SPEC.md) READY (R1–R9 / AT1–AT14) supplies dark tokens, CSS Modules, shell/states, responsive/a11y baseline and deterministic Playwright comparison/axe CI. [F011 premium tables](features/F011-premium-tables/SPEC.md) READY (R1–R10 / AT1–AT16) depends on F010 implementation merged; adds explicitly current-page interactions, URL state and guarded public-page CSV export without API changes.

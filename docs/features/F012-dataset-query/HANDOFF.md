@@ -1,0 +1,1 @@
+[2026-11-11 08:08 ET] [blueprint] DONE -> SPEC.md -> next: [forge] (after F011 merges) | Analyze: R1–R10 all covered, AT1–AT16 none orphaned, ADR/constitution conflicts none | Decided/Rejected: opt-in grammar/exact snapshot count; two indexes require production approval; reject bulk CSV/GIN

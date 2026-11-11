@@ -100,3 +100,19 @@
 | Logical visible rows | Filtered/sorted current-page rows, including rows outside the virtual viewport. | TanStack row model / CSV export |
 | Sticky column | First visible column retained at inline start while the table scrolls. | shared `DataTable` |
 | Formula-injection guard | Apostrophe prefix preventing dangerous spreadsheet cell starts before CSV quoting. | F011 CSV serializer contract |
+
+
+## F012–F013 dataset query terms (planned)
+
+| Term | Definition | Code / data name |
+|---|---|---|
+| Advanced dataset query | Opt-in allowlisted server sort/filter/search before pagination on an existing public list. | `sorts`, `filters`, `search` |
+| Query registry | Fixed per-endpoint mapping of public column keys to allowed SQL expressions, filter kinds and sort capability. | F012 T/M/N registry |
+| Literal contains | Case-insensitive substring matching with wildcard characters escaped, not SQL wildcard or regex input. | `filters` text `op=contains`, `search` |
+| Multi-select predicate | Equality OR across selected column values plus optional missing selection, AND with other columns. | `kind=multi`, `values`, `missing` |
+| Stable tiebreak | Remaining unique-key columns appended ascending to make unchanged-data pagination deterministic. | resource `tie_break` |
+| Snapshot-consistent total | Exact filtered count and page rows read in one short database snapshot, not a cross-request guarantee. | READ ONLY REPEATABLE READ / `page.total` |
+| SQL execution budget | Per-advanced-request monotonic time budget enforced with transaction-local statement timeouts. | 3000ms / `query_timeout` |
+| Query admission | Nonwaiting per-process cap on advanced database transactions, not a distributed rate limiter. | two in flight / `query_busy` |
+| Refinement scope | Explicit choice of local page controls or server-wide controls; old links retain page meaning. | `ui_scope=page|dataset` |
+| Dataset page export | CSV of only the returned successful API page even while filtering the whole dataset. | F013 Export this page CSV |
