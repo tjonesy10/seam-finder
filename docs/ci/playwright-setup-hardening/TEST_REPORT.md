@@ -51,4 +51,13 @@ No path under `frontend/e2e/`, and no `*.png`, is in the diff. `frontend/playwri
 | [43049385207](https://github.com/tjonesy10/seam-finder/actions/runs/43049385207) | push | `264f342faa5fb57b37c484fd8aaadce2d08f3a9c` | failure | failure |
 | [43049403544](https://github.com/tjonesy10/seam-finder/actions/runs/43049403544) | pull_request | `264f342faa5fb57b37c484fd8aaadce2d08f3a9c` | failure | failure |
 
-`264f342` removed `actions: write` and added the first copy of this report. It did not change the install script. Both of its workflows were still on the public Actions page as running at 16:15:29Z and failed at 16:16:45Z, about 43 minutes after Install Playwright started (15:33Z). That matches the four-attempt apt exhaustion on `bf27d4e` (15:13Z–15:56Z). The step log for `264f342` was not downloaded: the Actions API rate limit was exhausted until 16:43:56Z. The mirror fallback in this commit is the change aimed at that repeated DNS failure. Passing `test` and `visual` runs for this commit are added here when they finish.
+`264f342` removed `actions: write` and added the first copy of this report. It did not change the install script. Both of its workflows were still on the public Actions page as running at 16:15:29Z and failed at 16:16:45Z, about 43 minutes after Install Playwright started (15:33Z). That matches the four-attempt apt exhaustion on `bf27d4e` (15:13Z–15:56Z).
+
+Head `1c7d72bc9542bec7167f9ad3c953f753dc02cf6d` adds the mirror fallback and merges main `a3cbd5d`. Both workflows passed:
+
+| Run | Event | `test` | `visual` |
+|---|---|---|---|
+| [43057072259](https://github.com/tjonesy10/seam-finder/actions/runs/43057072259) | push | success, including Test and Frontend end-to-end | success, including Visual and accessibility comparisons (run twice). Upload synthetic visual diffs skipped |
+| [43057081277](https://github.com/tjonesy10/seam-finder/actions/runs/43057081277) | pull_request | success | success |
+
+On the push run, both jobs logged `mirror dns miss` for `azure.archive.ubuntu.com`, `archive.ubuntu.com`, and `security.ubuntu.com`, then `fallback dns ok` for `mirrors.kernel.org`, `mirrors.edge.kernel.org`, `mirror.csclub.uwaterloo.ca`, and `mirrors.ocf.berkeley.edu`, wrote `/etc/apt/apt-mirrors.txt`, and `succeeded on attempt 1/4: install_chromium_deps`. Browser install was `succeeded on attempt 1/4`. Visual comparisons passed on that fallback mirror set, so the committed baselines stayed valid without an update. `Post Cache Playwright browsers` succeeded and saved `Linux-ms-playwright-visual-1.65.0` with workflow permissions still `contents: read` only. Recording these results does not change the workflow.
