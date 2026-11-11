@@ -188,3 +188,6 @@ R1–R9 all covered; AT1–AT16 none orphaned. No new requirement or acceptance-
 ## ADRs
 
 [0001](../../adr/0001-stack-and-hosting.md), [0002](../../adr/0002-nflverse-load-and-refresh.md), [0003](../../adr/0003-rotoguru-dk-classic-salaries.md), [0004 (Accepted; status only, substance preserved)](../../adr/0004-dk-current-slate-csv.md), [0005 (Accepted)](../../adr/0005-private-salary-capture-and-archives.md), [0006 (Accepted)](../../adr/0006-slate-safe-salary-unification.md), [0007 (Accepted)](../../adr/0007-authoritative-schedule-completeness.md), [0012 (Proposed 2026-11-11; discovery object cap; Accepted on owner merge)](../../adr/0012-dk-discovery-object-cap.md).
+
+
+Proposed follow-up: [ADR 0013](../../adr/0013-refresh-before-lobby-capture.md) / [F014](../F014-refresh-before-capture/SPEC.md) orders normal refresh before capture and binds proof to that execution; it does not relax F005 validation or authorize rollout. Its target cadence is the PR #41/#42 Wednesday 10:07 ET amendment (one `7 10 * * 3` America/New_York cron); PR #42 owns R10–R14/AT17–AT31. This link does not replace or declare that open amendment merged.
