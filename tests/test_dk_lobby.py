@@ -61,6 +61,19 @@ class MutableClock:
         return self.mono_now
 
 
+def pinned_datetime(moment):
+    """A datetime type whose now() stays on one fixture instant."""
+
+    class Pinned(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return moment.replace(tzinfo=None)
+            return moment.astimezone(tz)
+
+    return Pinned
+
+
 class ScriptTransport(httpx.BaseTransport):
     def __init__(self, handler):
         self.handler = handler
@@ -2238,11 +2251,14 @@ def test_multiseason_parquet_receipt_captures(engine, tmp_path, monkeypatch):
         _install_schedule_proof(
             conn,
             rows[1:],
-            datetime.now(UTC),
+            NOW - timedelta(minutes=2),
             load_run_id=1,
             source_version="synthetic-nflverse-2026-11-07",
         )
     monkeypatch.setenv("SALARY_PRIVATE_MIGRATION", "true")
+    # The parquet receipt must be later than the seeded JSON receipt and still
+    # inside the same week as the 2026-11-08 games. NOW is Wednesday of that week.
+    monkeypatch.setattr("loader.run.datetime", pinned_datetime(NOW - timedelta(minutes=1)))
     assert load_games(engine, DirSource(tmp_path), [2026], uuid4(), "local", "secret") == set()
     raw = _rows(
         engine,
@@ -2256,7 +2272,7 @@ def test_multiseason_parquet_receipt_captures(engine, tmp_path, monkeypatch):
         f"RB,Synthetic Rusher (900003),Synthetic Rusher,900003,RB,4444,{sun2},GB,2,Active",
     ]
     box = _box(csv=_csv(csv_rows), groups=[_group(90001, [("NYJ", "NE", sunday), ("GB", "CHI", later)])])
-    assert _run(engine, ScriptTransport(_happy_handler(box)), clock=MutableClock(datetime.now(ET))) == 0
+    assert _run(engine, ScriptTransport(_happy_handler(box)), clock=MutableClock(NOW)) == 0
     assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2025") == 0
     assert _scalar(engine, "SELECT count(*) FROM games WHERE season = 2026") == 2
     selected = _rows(
