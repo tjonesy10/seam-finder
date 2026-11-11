@@ -29,6 +29,12 @@ import httpx
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
+from loader.coordination import (
+    COORDINATION_WAIT_S,
+    CoordinationError,
+    coordination,
+    ensure_pipeline_ownership,
+)
 from loader.salary_private import (
     DISCOVERY_OBJECT_LIMIT,
     OBJECT_LIMIT,
@@ -1370,11 +1376,11 @@ def _priority(reasons: list[str]) -> str:
     return reasons[0] if reasons else "rejected"
 
 
-def load_schedule(conn, now: datetime) -> tuple[str, tuple[RegGame, ...], dict]:
+def load_schedule(conn, now: datetime, *, binding=None) -> tuple[str, tuple[RegGame, ...], dict]:
     """Return gap, verified, or missing. Completeness comes from the pinned authority."""
     from loader.schedule_proof import verify_schedule
 
-    verdict = verify_schedule(conn, now)
+    verdict = verify_schedule(conn, now, binding=binding)
     games = []
     for row in verdict.games:
         if row["gametime"] is None:
@@ -1517,9 +1523,49 @@ def run_capture(
     sleeper=None,
     failpoint: str | None = None,
     before_terminal=None,
+    proof_binding=None,
+    pipeline_meta: dict | None = None,
+    wait_seconds: float = COORDINATION_WAIT_S,
 ) -> AttemptResult:
     clock = clock or system_clock()
     sleeper = sleeper or time.sleep
+    try:
+        with coordination(engine, clock=clock, wait_seconds=wait_seconds):
+            return _execute_capture(
+                engine,
+                season=season,
+                week=week,
+                trigger=trigger,
+                selection=selection,
+                draft_group_id=draft_group_id,
+                transport=transport,
+                clock=clock,
+                sleeper=sleeper,
+                failpoint=failpoint,
+                before_terminal=before_terminal,
+                proof_binding=proof_binding,
+                pipeline_meta=pipeline_meta,
+            )
+    except CoordinationError as exc:
+        return AttemptResult(False, False, exc.reason, "failed", season, week, 0)
+
+
+def _execute_capture(
+    engine,
+    *,
+    season: int | None,
+    week: int | None,
+    trigger: str,
+    selection: str | None,
+    draft_group_id: str | None,
+    transport=None,
+    clock: Clock | None = None,
+    sleeper=None,
+    failpoint: str | None = None,
+    before_terminal=None,
+    proof_binding=None,
+    pipeline_meta: dict | None = None,
+) -> AttemptResult:
     try:
         conn = engine.connect()
     except Exception:  # noqa: BLE001 - connection failure must not echo the URL
@@ -1544,6 +1590,8 @@ def run_capture(
                 sleeper=sleeper,
                 failpoint=failpoint,
                 before_terminal=before_terminal,
+                proof_binding=proof_binding,
+                pipeline_meta=pipeline_meta,
             )
         finally:
             unlock_capture(conn)
@@ -1556,7 +1604,8 @@ def _locked(conn, **kwargs) -> AttemptResult:
     reconcile(conn, finished_at=clock.wall())
     opened = clock.wall()
     started_mono = clock.mono()
-    evidence, games, schedule_meta = load_schedule(conn, opened)
+    ensure_pipeline_ownership()
+    evidence, games, schedule_meta = load_schedule(conn, opened, binding=kwargs.get("proof_binding"))
     _release(conn)
     plan = _plan(
         evidence=evidence,
@@ -1594,13 +1643,17 @@ def _locked(conn, **kwargs) -> AttemptResult:
     state.week = plan["week"]
     state.label = plan["label"]
     state.schedule_meta = schedule_meta
+    state.pipeline_meta = kwargs.get("pipeline_meta")
     try:
         if plan["stop"] is not None:
             raise CaptureFailure(plan["stop"])
+        ensure_pipeline_ownership()
         _capture_body(state, plan, games)
         return _finish_success(state)
     except Crash:
         raise
+    except CoordinationError as exc:
+        return _finish_failure(state, CaptureFailure(exc.reason))
     except CaptureFailure as exc:
         return _finish_failure(state, exc)
     except PrivateWriteError as exc:
@@ -1640,6 +1693,7 @@ class _State:
     headers: tuple[str, ...] = ()
     discovery_body_bytes: int | None = None
     guard_meta: dict | None = None
+    pipeline_meta: dict | None = None
 
     def __post_init__(self):
         self.artifacts = []
@@ -1699,6 +1753,7 @@ def _plan(*, evidence, games, now, season, week, trigger, selection, draft_group
 
 
 def _capture_body(state: _State, plan: dict, games: tuple[RegGame, ...]) -> None:
+    ensure_pipeline_ownership()
     state.client = BoundedClient(state.transport, state.clock, state.sleeper)
     try:
         if plan["mode"] == "sunday":
@@ -2108,6 +2163,10 @@ def _write_terminal(
         metadata.update(state.guard_meta)
     if getattr(state, "schedule_meta", None):
         metadata.update(state.schedule_meta)
+    if state.pipeline_meta:
+        metadata.update(state.pipeline_meta)
+    if publish:
+        ensure_pipeline_ownership()
     try:
         with state.conn.begin():
             if state.failpoint == "constraint":

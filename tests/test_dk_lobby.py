@@ -773,7 +773,7 @@ def test_at4_schedule_text_and_disabled_gate():
     assert "timezone: 'America/New_York'" in text_value
     assert "vars.DK_LOBBY_CAPTURE_ENABLED == 'true'" in text_value
     assert "capture_schedule_enabled" in text_value
-    assert text_value.index("capture_schedule_enabled") < text_value.index("python -m loader.migrate")
+    assert text_value.index("capture_schedule_enabled") < text_value.index("python -m loader.pipeline")
     assert 'DK_LOBBY_CAPTURE_ENABLED: "true"' not in text_value
     assert "cancel-in-progress: false" in text_value
     assert text_value.count("cron:") == 1
@@ -845,7 +845,7 @@ def test_at5_off_season_stale_and_absent_group(engine):
         "SELECT reason_code FROM salary_private.salary_observations ORDER BY loaded_at DESC",
     )[0]["reason_code"] == "slate_unavailable"
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
-    text_value = WORKFLOW.read_text()
+    text_value = (ROOT / "loader" / "pipeline.py").read_text()
     assert "invalid_season" in text_value
     assert "invalid_week" in text_value
     assert "invalid_draft_group" in text_value
@@ -1870,7 +1870,13 @@ def test_production_migrate_stops_before_0004(database_url):
     ):
         workflow = (ROOT / ".github" / "workflows" / name).read_text()
         assert "alembic upgrade head" not in workflow
-        assert "python -m loader.migrate" in workflow
+        if name == "dk-lobby-capture.yml":
+            assert "python -m loader.pipeline" in workflow
+            pipeline_source = (ROOT / "loader" / "pipeline.py").read_text()
+            assert pipeline_source.count("migrate_production(") == 1
+            assert "alembic upgrade head" not in pipeline_source
+        else:
+            assert "python -m loader.migrate" in workflow
     admin = create_engine(database_url)
     name = "seam_f005_gate"
     previous = os.environ.get("DATABASE_URL")
@@ -2648,6 +2654,9 @@ def test_multiseason_parquet_receipt_captures(engine, tmp_path, monkeypatch):
     schedules.mkdir()
     frame.write_parquet(schedules / "games.parquet")
     (schedules / "timestamp.json").write_text(json.dumps({"last_updated": "synthetic-nflverse-2026-11-07"}))
+    (schedules / "retrieval.json").write_text(
+        json.dumps({"retrieved_at": (NOW - timedelta(minutes=1)).astimezone(UTC).isoformat()})
+    )
     with engine.begin() as conn:
         for abbr in ("NE", "KC", "NYJ", "GB", "CHI"):
             conn.execute(

@@ -39,6 +39,14 @@ class ScheduleVerdict:
     metadata: dict
 
 
+@dataclass(frozen=True)
+class ProofBinding:
+    """Games loads from the refresh that just finished in this execution."""
+
+    run_group: str
+    games_load_run_ids: tuple[int, ...]
+
+
 def canonical_bytes(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
@@ -228,7 +236,7 @@ def _load_run(conn, run_id: int, season: int) -> dict | None:
     row = conn.execute(
         text(
             """
-            SELECT id, status, source_version, finished_at, dataset, season
+            SELECT id, run_group, status, source_version, finished_at, dataset, season
             FROM load_runs
             WHERE id = :id
             """
@@ -380,7 +388,17 @@ def _observed_ids(conn, season: int) -> list[str]:
     return [str(row) for row in rows]
 
 
-def _assess_receipt(conn, body: bytes, root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool) -> dict:
+def _bound_to_run(receipt: dict, binding: ProofBinding | None) -> bool:
+    if binding is None:
+        return True
+    try:
+        load_id = int(receipt.get("games_load_run_id"))
+    except (TypeError, ValueError):
+        return False
+    return load_id in {int(item) for item in binding.games_load_run_ids}
+
+
+def _assess_receipt(conn, body: bytes, root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool, binding: ProofBinding | None = None) -> dict:
     """Judge one receipt. A Postgres miss is not fatal until every candidate is judged."""
     try:
         receipt = json.loads(bytes(body))
@@ -391,6 +409,8 @@ def _assess_receipt(conn, body: bytes, root_sha: str, inventory_sha: str, season
     if int(receipt.get("season", -1)) != season:
         return {"ok": False, "reason": "ignored", "eligible": False}
     if receipt.get("authority_root_sha256") != root_sha or receipt.get("inventory_sha256") != inventory_sha:
+        return {"ok": False, "reason": "ignored", "eligible": False}
+    if not _bound_to_run(receipt, binding):
         return {"ok": False, "reason": "ignored", "eligible": False}
     receipt_sha = _sha(receipt)
     observed = _observed_ids(conn, season)
@@ -424,6 +444,8 @@ def _assess_receipt(conn, body: bytes, root_sha: str, inventory_sha: str, season
         run = _load_run(conn, int(receipt["games_load_run_id"]), season)
         if run is None or run.get("source_version") != version:
             return {**base, "reason": "load_run_mismatch"}
+        if binding is not None and str(run.get("run_group")) != str(binding.run_group):
+            return {"ok": False, "reason": "ignored", "eligible": False}
         retrieved = _parse_time(receipt["retrieved_at"])
         stale = _retrieval_ok(retrieved, now, allow_historical=allow_historical)
         if stale:
@@ -459,12 +481,14 @@ def _assess_receipt(conn, body: bytes, root_sha: str, inventory_sha: str, season
         return {**base, "reason": getattr(exc, "reason", None) or "receipt_unreadable"}
 
 
-def choose_receipt(conn, bodies: list[bytes], root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool):
+def choose_receipt(conn, bodies: list[bytes], root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool, binding: ProofBinding | None = None):
     """Pick the latest eligible receipt that matches Postgres, independent of input order."""
     matches = []
     failures = []
     for body in bodies:
-        outcome = _assess_receipt(conn, body, root_sha, inventory_sha, season, now, allow_historical)
+        outcome = _assess_receipt(
+            conn, body, root_sha, inventory_sha, season, now, allow_historical, binding
+        )
         if not outcome.get("eligible"):
             continue
         if outcome.get("ok"):
@@ -516,7 +540,7 @@ def _aggregate_failures(failures: list[dict]) -> dict:
     }
 
 
-def _bind_receipt(conn, root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool):
+def _bind_receipt(conn, root_sha: str, inventory_sha: str, season: int, now: datetime, allow_historical: bool, binding: ProofBinding | None = None):
     rows = conn.execute(
         text(
             """
@@ -534,6 +558,7 @@ def _bind_receipt(conn, root_sha: str, inventory_sha: str, season: int, now: dat
         season,
         now,
         allow_historical,
+        binding,
     )
 
 
@@ -572,12 +597,12 @@ def repeatable_read(conn):
         yield
 
 
-def verify_schedule(conn, now: datetime) -> ScheduleVerdict:
+def verify_schedule(conn, now: datetime, *, binding: ProofBinding | None = None) -> ScheduleVerdict:
     with repeatable_read(conn):
-        return _verify_in_snapshot(conn, now)
+        return _verify_in_snapshot(conn, now, binding=binding)
 
 
-def _verify_in_snapshot(conn, now: datetime) -> ScheduleVerdict:
+def _verify_in_snapshot(conn, now: datetime, binding: ProofBinding | None = None) -> ScheduleVerdict:
     pin = os.environ.get(AUTHORITY_ENV)
     if not pin or len(pin) != 64:
         return _reject("authority_unpinned")
@@ -648,13 +673,15 @@ def _verify_in_snapshot(conn, now: datetime) -> ScheduleVerdict:
         season = int(inventory["season"])
         if mode == "interseason_gap" and inventory.get("closure") != "final":
             return _reject("prior_not_final", schedule_inventory_sha256s=[inventory_sha], **seen)
+        historical = bool(allow_historical and inventory.get("closure") == "final")
         status, *bound = _bind_receipt(
             conn,
             pin,
             inventory_sha,
             season,
             now,
-            allow_historical and inventory.get("closure") == "final",
+            historical,
+            binding=None if historical else binding,
         )
         if status != "ok":
             detail = bound[1] if len(bound) > 1 and isinstance(bound[1], dict) else {}
@@ -779,6 +806,8 @@ def maybe_emit_schedule_receipt(
     A missing pin or a mismatch leaves the public games load untouched.
     """
     if os.environ.get("SALARY_PRIVATE_MIGRATION") != "true":
+        return False
+    if retrieved_at is None:
         return False
     pin = os.environ.get(AUTHORITY_ENV)
     if not pin or not source_version or source_version == sha256_bytes(raw_body):
