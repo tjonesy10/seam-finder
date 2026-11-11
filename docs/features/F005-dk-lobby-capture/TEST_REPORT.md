@@ -461,3 +461,39 @@ $ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q -
 ```
 
 The two skips are the `RUN_NETWORK_TESTS` gates. They do not call DraftKings. The warning is Starlette's deprecation of the httpx test client. gitleaks 8.30.1 ran inside the suite.
+
+## 2026-11-11 inexact Sunday set is the Rams code
+
+Run [43076943744](https://github.com/tjonesy10/seam-finder/actions/runs/43076943744) on `707d7bf` passed Gate and Migrate. Capture printed only `inexact_game_set` and `rows=0`. The #46 parse had already succeeded.
+
+A later public GET of the same lobby URL returned HTTP 200 and 5,967,498 bytes. nflverse `schedules/games.parquet` supplied 2026 week 10 REG. The Sunday window is 13:00–16:30 America/New_York and was not the mismatch. These ten games are inside it. Nine match DraftKings on code and kickoff. The tenth does not:
+
+| Side | Game | Kickoff |
+|---|---|---|
+| nflverse, missing from the size-10 Classic set | `LA@ARI` | 2026-11-15 16:05 EST |
+| DraftKings, extra in that set | `LAR@ARI` | 2026-11-15 16:05 EST |
+
+The other nine are `BUF@NYJ`, `CAR@NO`, `HOU@CLE`, `JAX@TEN`, `KC@ATL`, `MIA@IND`, and `MIN@GB` at 13:00 EST, plus `SEA@LV` at 16:05 EST and `SF@DAL` at 16:25 EST. `NE@DET` 09:30, `PIT@CIN` 20:20, Thursday `WAS@NYG`, and Monday `LAC@BAL` stay outside the window. No same-club pair had two kickoff times. nflverse uses `LA` for the Rams from 2016 through 2026 and never `LAR`. This lobby's club codes include `LAR` and not `LA`. `WAS` and `JAX` already agree. `WSH` and `JAC` are absent from both current sources and use the same map.
+
+Comparison now canonicalizes `LAR` to `LA`, `WSH` to `WAS`, and `JAC` to `JAX` in `_club_key` only. The sets must still be equal. An extra `PIT@CIN` stays `inexact_game_set`. After the map, the live size-10 group matches the ten-game window. That GET is not the artifact stored on the failed run.
+
+The failure log names the window and the closest Classic group's missing and extra keys. Stderr stays `inexact_game_set`. `load_runs` notes stay `reason=inexact_game_set;rows=0;snapshots=0`.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Rams alias is one Sunday game | PASS | `test_rams_la_and_lar_are_one_sunday_game`. `LA@ARI` and `LAR@ARI` at the same kickoff match. Adding `PIT@CIN` stays `inexact_game_set`. |
+| Capture publishes that slate | PASS | `test_capture_accepts_dk_lar_for_schedule_la`. Schedule row `LA@ARI`, DK description `LAR @ ARI`, one snapshot, stored pair still `LAR@ARI`. |
+| Inexact log | PASS | `test_inexact_game_set_log_names_missing_and_extra`. Status line has `window=sunday-13:00-16:30-et`, `missing=GB@CHI@...`, `extra=SEA@SF@...`, and `draft_group_id=91012`. |
+| Live week-10 match | PASS | Parsed lobby versus current nflverse week 10. Reason `ok`, chosen size 10, expected size 10. |
+| Stored production artifact | UNKNOWN | The public GET is not the body saved on run 43076943744. |
+| Mutator `--changed` | ADVISORY | Exit 3. 560 sites in `loader/dk_lobby.py`, killed 8, survived 498, uncovered 54, score 1.6%. The command was only `test_rams_la_and_lar_are_one_sunday_game`, so the rest of the file was not under test. `_match_groups` killed 8, survived 0, uncovered 2, score 100%. `_club` and `_keys` had no mutation sites. |
+
+```text
+$ python3 -m ruff check loader web tests migrations
+All checks passed!
+
+$ DATABASE_URL=postgresql://seam@127.0.0.1:5432/seam_test python3 -m pytest -q --tb=line
+361 passed, 2 skipped, 1 warning in 63.41s
+```
+
+The two skips are the `RUN_NETWORK_TESTS` gates. They do not call DraftKings.

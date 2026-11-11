@@ -349,8 +349,8 @@ def _restamp_schedule_proof(engine, when):
         )
 
 
-def _seed(engine, *, source_version="synthetic-schedule-v1"):
-    plan = _seed_plan()
+def _seed(engine, *, source_version="synthetic-schedule-v1", plan=None):
+    plan = list(plan) if plan is not None else _seed_plan()
     teams = sorted({team for _gid, _s, _w, away, home, _when in plan for team in (away, home)})
     with engine.begin() as conn:
         for abbr in teams:
@@ -3696,6 +3696,89 @@ def test_game_set_with_an_extra_kickoff_stays_inexact(engine):
     assert _rows(
         engine, "SELECT reason_code FROM salary_private.salary_observations"
     )[0]["reason_code"] == "inexact_game_set"
+    assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
+
+
+def test_rams_la_and_lar_are_one_sunday_game():
+    """nflverse codes the Rams as LA. DK codes them as LAR. Same kickoff."""
+    from loader.dk_lobby import DraftGroup, GameEvidence, _keys, _match_groups
+
+    sun1, sun2 = _kickoffs()["sun1"], _kickoffs()["sun2"]
+    late = _et(2026, 11, 8, 16, 5)
+    expected = _keys(
+        (
+            GameEvidence("NYJ", "NE", sun1),
+            GameEvidence("GB", "CHI", sun2),
+            GameEvidence("LA", "ARI", late),
+        )
+    )
+    group = DraftGroup(
+        91011,
+        21,
+        1,
+        (
+            GameEvidence("NYJ", "NE", sun1),
+            GameEvidence("GB", "CHI", sun2),
+            GameEvidence("LAR", "ARI", late),
+        ),
+    )
+    reason, chosen = _match_groups((group,), expected)
+    assert reason == "ok"
+    assert chosen is not None and chosen.draft_group_id == 91011
+    late_night = _kickoffs()["snf"]
+    wider = DraftGroup(
+        91012,
+        21,
+        1,
+        group.games + (GameEvidence("PIT", "CIN", late_night),),
+    )
+    wider_reason, wider_chosen = _match_groups((wider,), expected)
+    assert wider_reason == "inexact_game_set"
+    assert wider_chosen is None
+
+
+def test_capture_accepts_dk_lar_for_schedule_la(engine):
+    late = _et(2026, 11, 8, 16, 5)
+    plan = _seed_plan() + [("2026_10_LA_ARI", 2026, 10, "LA", "ARI", late)]
+    _seed(engine, plan=plan)
+    games = _sunday_games() + [("LAR", "ARI", late)]
+    rams = _info("LAR", "ARI", late)
+    rows = _classic_rows() + [
+        f"RB,Synthetic Rams (910111),Synthetic Rams,910111,RB,4200,{rams},LAR,1,Active",
+    ]
+    box = _box(csv=_csv(rows), groups=[_group(91011, games, game_type=1)])
+    assert _run(engine, ScriptTransport(_happy_handler(box))) == 0
+    snapshot = _rows(
+        engine,
+        "SELECT draft_group_id, games FROM salary_private.salary_snapshots",
+    )
+    assert len(snapshot) == 1
+    assert snapshot[0]["draft_group_id"] == "91011"
+    assert { (row["away"], row["home"]) for row in snapshot[0]["games"] } == {
+        ("NYJ", "NE"),
+        ("GB", "CHI"),
+        ("LAR", "ARI"),
+    }
+
+
+def test_inexact_game_set_log_names_missing_and_extra(engine, capsys):
+    _seed(engine)
+    kicks = _kickoffs()
+    games = [("NYJ", "NE", kicks["sun1"]), ("SEA", "SF", kicks["snf"])]
+    box = _box(groups=[_group(91012, games, game_type=1)])
+    assert _run(engine, ScriptTransport(_happy_handler(box))) == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "inexact_game_set"
+    missing = f"GB@CHI@{kicks['sun2'].astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}"
+    extra = f"SEA@SF@{kicks['snf'].astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}"
+    assert f"window=sunday-13:00-16:30-et missing={missing} extra={extra}" in captured.out
+    assert "draft_group_id=91012" in captured.out
+    assert "4200" not in captured.out + captured.err
+    notes = _rows(
+        engine,
+        "SELECT notes FROM load_runs WHERE dataset = 'dk_lobby_salaries'",
+    )[0]["notes"]
+    assert notes == "reason=inexact_game_set;rows=0;snapshots=0"
     assert _scalar(engine, "SELECT count(*) FROM salary_private.salary_snapshots") == 0
 
 
